@@ -1,0 +1,5 @@
+We are implementing an ISDS (IT security analysis) for a new financial data
+processing system. The system will store customer bank account numbers and
+transaction history. We need to assess security risks and produce a
+Schutzbedarfsanalyse. Key stakeholder is the ISBO (IT security officer).
+We have 4 weeks and a budget of CHF 15k.

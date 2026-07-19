@@ -1,0 +1,34 @@
+# HERMES 2022 generic phase spine.
+#
+# The ordered backbone of phases and their quality-gate milestones. Individual
+# project types reference these phase ids (see any <type>.yaml `phases:` list)
+# and attach type-specific deliverables to them. Adding or reordering phases
+# here is a data-only change.
+phases:
+  - id: initiation
+    name: Initialisierung
+    milestones:
+      - id: ms_project_release
+        name: Projektfreigabe
+        is_quality_gate: true
+        release_criteria:
+          - "Projektauftrag genehmigt"
+          - "Ziele, Abgrenzung und Rollen definiert"
+  - id: analysis
+    name: Analyse
+    milestones:
+      - id: ms_analysis_release
+        name: Analyse freigegeben
+        is_quality_gate: true
+        release_criteria:
+          - "Schutzobjekt und Schutzbedarf festgestellt"
+          - "Risiken bewertet"
+  - id: concept
+    name: Konzept
+    milestones:
+      - id: ms_concept_release
+        name: Konzept freigegeben
+        is_quality_gate: true
+        release_criteria:
+          - "Massnahmen definiert und priorisiert"
+          - "Restrisiko dokumentiert"

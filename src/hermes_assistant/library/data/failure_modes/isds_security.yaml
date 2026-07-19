@@ -1,0 +1,66 @@
+# Failure-mode library — ISDS / information-security analysis projects.
+# Each record seeds the pre-mortem/red-team agent (doc_kind=failure_mode).
+failure_modes:
+  - id: fm-scope-creep
+    title: Uncontrolled scope creep in the protection-needs analysis
+    description: >
+      The Schutzbedarfsanalyse keeps expanding to new systems and interfaces
+      without a change-control gate, so the ISDS concept never stabilises and
+      the deadline slips repeatedly.
+    project_type: isds-analyse
+    phase: konzept
+    dimension: completeness
+    early_warning_signs:
+      - New in-scope systems appear after the concept milestone.
+      - Boundary section edited more than twice post sign-off.
+    typical_mitigation: >
+      Freeze the protection object inventory at the concept gate; route additions
+      through a documented change request with sponsor approval.
+
+  - id: fm-missing-owner
+    title: Risks recorded without an accountable owner
+    description: >
+      The risk register lists threats and mitigations but leaves the owner blank
+      or set to a whole team, so no individual drives the mitigation and residual
+      risk is never re-assessed.
+    project_type: isds-analyse
+    phase: konzept
+    dimension: risk_coverage
+    early_warning_signs:
+      - Owner column contains "team", "TBD", or is empty.
+      - Mitigations have no due date or tracking.
+    typical_mitigation: >
+      Assign each risk a single named owner (typically the ISBO) and a review
+      date; reject the register at the quality gate if any owner is missing.
+
+  - id: fm-unmeasurable-metric
+    title: Security objectives stated without measurable criteria
+    description: >
+      Success is described as "improve security posture" with no baseline,
+      threshold, or date, so the quality gate cannot objectively decide whether
+      the objective was met.
+    project_type: isds-analyse
+    phase: initialisierung
+    dimension: correctness
+    early_warning_signs:
+      - Objectives contain no numbers, percentages, or dates.
+      - Reviewers disagree on whether an objective is achieved.
+    typical_mitigation: >
+      Rewrite each objective with a baseline and a target (e.g. "reduce critical
+      findings from 12 to 0 by Q4"), verifiable at the gate.
+
+  - id: fm-budget-inconsistency
+    title: Budget figures contradict across sections
+    description: >
+      The management summary quotes one project budget while the cost breakdown
+      or annex quotes a different figure, undermining the plan's credibility and
+      the sponsor's sign-off decision.
+    project_type: ""
+    phase: ""
+    dimension: internal_consistency
+    early_warning_signs:
+      - The same cost appears with two different numbers.
+      - Totals do not reconcile with line items.
+    typical_mitigation: >
+      Maintain a single source of truth for figures; add a consistency check that
+      cross-references every monetary claim before sign-off.

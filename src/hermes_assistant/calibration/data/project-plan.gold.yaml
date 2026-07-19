@@ -1,0 +1,154 @@
+# Human-graded gold set for the `project-plan` rubric (Phase 4, C2).
+#
+# 12 human-reviewed ProjectPlan deliverables, each graded per criterion by a
+# senior reviewer (pass | partial | fail). The calibrator joins these labels to
+# recorded critic results (by item_id + criterion_id) and reports judge-human
+# agreement (Cohen's kappa) plus per-criterion leniency/severity.
+#
+# This is DATA: add gold items or new rubrics' gold files here, no code changes.
+# criterion_id values must match `rubrics/data/project-plan.v1.yaml`.
+
+gold:
+  - item_id: gold-001
+    note: strong ISDS analysis plan
+    results:
+      objectives_stated: pass
+      roles_assigned: pass
+      deliverables_present: pass
+      success_metrics_measurable: pass
+      risk_has_mitigation: pass
+      risk_has_owner: pass
+      no_tbd_placeholders: pass
+      phases_ordered: pass
+
+  - item_id: gold-002
+    note: solid but metrics vague
+    results:
+      objectives_stated: pass
+      roles_assigned: pass
+      deliverables_present: pass
+      success_metrics_measurable: partial
+      risk_has_mitigation: pass
+      risk_has_owner: partial
+      no_tbd_placeholders: pass
+      phases_ordered: pass
+
+  - item_id: gold-003
+    note: missing risk owners
+    results:
+      objectives_stated: pass
+      roles_assigned: pass
+      deliverables_present: pass
+      success_metrics_measurable: pass
+      risk_has_mitigation: pass
+      risk_has_owner: fail
+      no_tbd_placeholders: pass
+      phases_ordered: pass
+
+  - item_id: gold-004
+    note: TBD placeholders in critical fields
+    results:
+      objectives_stated: pass
+      roles_assigned: partial
+      deliverables_present: pass
+      success_metrics_measurable: partial
+      risk_has_mitigation: pass
+      risk_has_owner: pass
+      no_tbd_placeholders: fail
+      phases_ordered: pass
+
+  - item_id: gold-005
+    note: weak plan, several gaps
+    results:
+      objectives_stated: partial
+      roles_assigned: fail
+      deliverables_present: partial
+      success_metrics_measurable: fail
+      risk_has_mitigation: fail
+      risk_has_owner: fail
+      no_tbd_placeholders: partial
+      phases_ordered: partial
+
+  - item_id: gold-006
+    note: risks unmitigated
+    results:
+      objectives_stated: pass
+      roles_assigned: pass
+      deliverables_present: pass
+      success_metrics_measurable: pass
+      risk_has_mitigation: fail
+      risk_has_owner: partial
+      no_tbd_placeholders: pass
+      phases_ordered: pass
+
+  - item_id: gold-007
+    note: exemplary
+    results:
+      objectives_stated: pass
+      roles_assigned: pass
+      deliverables_present: pass
+      success_metrics_measurable: pass
+      risk_has_mitigation: pass
+      risk_has_owner: pass
+      no_tbd_placeholders: pass
+      phases_ordered: pass
+
+  - item_id: gold-008
+    note: phases out of order
+    results:
+      objectives_stated: pass
+      roles_assigned: pass
+      deliverables_present: partial
+      success_metrics_measurable: pass
+      risk_has_mitigation: pass
+      risk_has_owner: pass
+      no_tbd_placeholders: pass
+      phases_ordered: fail
+
+  - item_id: gold-009
+    note: objectives implicit only
+    results:
+      objectives_stated: partial
+      roles_assigned: pass
+      deliverables_present: pass
+      success_metrics_measurable: partial
+      risk_has_mitigation: pass
+      risk_has_owner: pass
+      no_tbd_placeholders: pass
+      phases_ordered: pass
+
+  - item_id: gold-010
+    note: deliverables list absent
+    results:
+      objectives_stated: pass
+      roles_assigned: pass
+      deliverables_present: fail
+      success_metrics_measurable: partial
+      risk_has_mitigation: pass
+      risk_has_owner: pass
+      no_tbd_placeholders: pass
+      phases_ordered: pass
+
+  - item_id: gold-011
+    note: good draft, minor issues
+    results:
+      objectives_stated: pass
+      roles_assigned: pass
+      deliverables_present: pass
+      success_metrics_measurable: pass
+      risk_has_mitigation: partial
+      risk_has_owner: pass
+      no_tbd_placeholders: pass
+      phases_ordered: pass
+
+  - item_id: gold-012
+    note: roles unclear, metrics missing
+    results:
+      objectives_stated: pass
+      roles_assigned: fail
+      deliverables_present: pass
+      success_metrics_measurable: fail
+      risk_has_mitigation: pass
+      risk_has_owner: pass
+      no_tbd_placeholders: partial
+      phases_ordered: pass

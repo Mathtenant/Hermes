@@ -1,0 +1,80 @@
+# ISDS-Analyse — Informationssicherheits- und Datenschutzkonzept (HERMES 2022).
+#
+# Security & data-protection analysis for an IT system. Seed project type for
+# Phase 2. New types are added as sibling YAML files with no code changes.
+id: isds-analyse
+name: ISDS-Analyse (Informationssicherheits- und Datenschutzkonzept)
+description: >
+  Security and data-protection analysis under HERMES 2022. Determines the
+  protection need (Schutzbedarf) of an information system, assesses risks, and
+  defines the mitigating measures (Massnahmenkonzept).
+
+# Ordered phase ids into the generic phase spine (_generic_phases.yaml).
+phases:
+  - initiation
+  - analysis
+  - concept
+
+# Minimum roles that MUST be assigned. The checker flags any that are missing.
+min_roles:
+  - Auftraggeber
+  - Projektleiter
+  - ISBO
+
+# Deliverables. Those with no `condition` are always mandatory. A `condition`
+# names a sizing flag: the deliverable becomes mandatory only when that flag
+# is set (single source of truth: project_types.mandatory_deliverables).
+deliverables:
+  - id: informatikschutzobjekt
+    name: Informatikschutzobjekt-Beschreibung
+    kind: document
+    phase: analysis
+  - id: schutzbedarf
+    name: Schutzbedarfsanalyse
+    kind: document
+    phase: analysis
+  - id: risikoanalyse
+    name: Risikoanalyse
+    kind: document
+    phase: analysis
+  - id: massnahmen
+    name: Massnahmenkonzept
+    kind: document
+    phase: concept
+  - id: restrisiko_freigabe
+    name: Restrisiko-Freigabe (Auftraggeber)
+    kind: decision
+    phase: concept
+    condition: high_protection_need
+
+# Type-specific sizing questions. Each sets a boolean sizing flag that can gate
+# conditional deliverables and tailor the plan.
+sizing_questions:
+  - id: q_protection_need
+    prompt: >
+      Besteht ein hoher Schutzbedarf (z. B. besonders schützenswerte
+      Personendaten, Finanz- oder Gesundheitsdaten)?
+    field: sizing_flags
+    kind: sizing
+    sizing_flag: high_protection_need
+  - id: q_external_processors
+    prompt: >
+      Werden Daten durch externe Dienstleister (Auftragsbearbeiter) verarbeitet?
+    field: sizing_flags
+    kind: sizing
+    sizing_flag: external_processors
+
+# Junior blind spots: things an inexperienced consultant routinely forgets.
+# Answers are captured as known_unknowns so they surface in the plan.
+junior_blindspots:
+  - id: q_restrisiko_owner
+    prompt: >
+      Wer trägt und zeichnet das Restrisiko formell ab (i. d. R. der
+      Auftraggeber, nicht die Projektleitung)?
+    field: known_unknowns
+    kind: blindspot
+  - id: q_isbo_signoff
+    prompt: >
+      Ist die frühzeitige Einbindung des ISBO für das Freigabe-Gate geplant?
+    field: known_unknowns
+    kind: blindspot

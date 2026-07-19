@@ -1,0 +1,144 @@
+# Rubric: HERMES ProjectPlan quality standard (v1).
+#
+# The critic executes this file criterion-by-criterion (one structured() call
+# each). New criteria/versions are added as data with no code changes. Every
+# criterion is atomic and answerable from a single reading of the deliverable.
+rubric_id: project-plan
+version: "1"
+deliverable_type: ProjectPlan
+description: >
+  Quality rubric for a HERMES 2022 project plan. Checks completeness of phases
+  and deliverables, correctness of metrics, internal consistency of milestones,
+  clarity of scope, and coverage of risks (mitigation + owner + rating).
+
+criteria:
+  - id: every_phase_quality_gate
+    dimension: completeness
+    text: >
+      Every phase defines at least one quality-gate milestone (a named control
+      point / decision gate). A phase with no quality gate is a blocker.
+    check_type: binary
+    severity_if_failed: blocker
+    evidence_required: true
+
+  - id: objectives_stated
+    dimension: completeness
+    text: >
+      The plan states at least one explicit, concrete objective or goal.
+    check_type: binary
+    severity_if_failed: major
+    evidence_required: true
+
+  - id: roles_assigned
+    dimension: completeness
+    text: >
+      Core stakeholder roles are assigned (at minimum a sponsor/owner and a
+      project lead). Unassigned mandatory roles fail this criterion.
+    check_type: binary
+    severity_if_failed: major
+    evidence_required: true
+
+  - id: deliverables_present
+    dimension: completeness
+    text: >
+      The plan enumerates the mandatory deliverables expected for its project
+      type; none of the required deliverables is silently omitted.
+    check_type: graded
+    severity_if_failed: major
+    evidence_required: false
+
+  - id: success_metrics_measurable
+    dimension: correctness
+    text: >
+      Every success metric is measurable: it contains a number, threshold,
+      percentage, or date. Vague metrics such as "improve security" fail.
+    check_type: binary
+    severity_if_failed: major
+    evidence_required: true
+
+  - id: no_tbd_placeholders
+    dimension: correctness
+    text: >
+      No critical field is left as "TBD", "N/A", "???", or blank. Placeholder
+      values in mitigation, owner, or metric fields fail this criterion.
+    check_type: binary
+    severity_if_failed: major
+    evidence_required: true
+
+  - id: phases_ordered
+    dimension: internal_consistency
+    text: >
+      Phases appear in a logical, non-contradictory order (e.g. initiation
+      before analysis before concept). Out-of-order phases fail.
+    check_type: binary
+    severity_if_failed: minor
+    evidence_required: true
+
+  - id: milestones_have_criteria
+    dimension: internal_consistency
+    text: >
+      Milestones state their release / acceptance criteria rather than being
+      bare labels.
+    check_type: graded
+    severity_if_failed: minor
+    evidence_required: false
+
+  - id: scope_boundaries_clear
+    dimension: clarity
+    text: >
+      Scope and out-of-scope boundaries are stated unambiguously so the reader
+      knows what the project does and does not cover.
+    check_type: graded
+    severity_if_failed: minor
+    evidence_required: true
+
+  - id: risk_has_mitigation
+    dimension: risk_coverage
+    text: >
+      Each identified risk states a concrete mitigation. A mitigation of "TBD",
+      "none", or empty fails this criterion.
+    check_type: binary
+    severity_if_failed: major
+    evidence_required: true
+
+  - id: risk_has_owner
+    dimension: risk_coverage
+    text: >
+      Each identified risk names an accountable owner. A risk with a blank or
+      missing owner fails this criterion.
+    check_type: binary
+    severity_if_failed: major
+    evidence_required: true
+
+  - id: risks_impact_rated
+    dimension: risk_coverage
+    text: >
+      Each risk carries an impact / severity rating (e.g. High/Medium/Low or a
+      numeric score) so risks can be prioritised.
+    check_type: binary
+    severity_if_failed: minor
+    evidence_required: true
+
+anti_patterns:
+  - id: ungated_phase
+    text: >
+      A phase declared with no quality-gate milestone / decision point.
+    example_fail: "## Initiation\nNo quality gate defined."
+    example_pass: "## Initiation\nMilestone: Project Order Approved (quality gate)."
+    severity: blocker
+
+  - id: tbd_critical_field
+    text: >
+      A critical field (risk mitigation, owner, metric) filled with a
+      placeholder such as "TBD" or left blank.
+    example_fail: "| Data breach | High | TBD | |"
+    example_pass: "| Data breach | High | Encrypt at rest + access review | ISBO |"
+    severity: major
+
+  - id: unmeasurable_metric
+    text: >
+      A success metric with no number, threshold, percentage, or date, so
+      attainment cannot be objectively verified.
+    example_fail: "- Improve security posture"
+    example_pass: "- Reduce critical findings to 0 by Q4 2026 (from 12 today)"
+    severity: major

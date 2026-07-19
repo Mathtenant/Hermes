@@ -1,0 +1,81 @@
+Metadata-Version: 2.4
+Name: hermes-assistant
+Version: 0.1.0
+Summary: Fully-local AI assistant for HERMES 2022 project management
+Author-email: Project Lead <user@example.com>
+License: MIT
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: requests>=2.31.0
+Requires-Dist: chromadb<2.0.0,>=1.5.0
+Requires-Dist: pypdf>=4.0.0
+Requires-Dist: python-docx>=1.1.0
+Requires-Dist: openpyxl>=3.1.0
+Requires-Dist: langgraph>=0.1.0
+Requires-Dist: pydantic>=2.0
+Requires-Dist: pydantic-settings>=2.0
+Requires-Dist: typer[all]>=0.9.0
+Requires-Dist: rich>=13.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: icalendar>=5.1.0
+Requires-Dist: workalendar>=16.0.0
+Requires-Dist: python-dateutil>=2.8.0
+Provides-Extra: tui
+Requires-Dist: textual<1.0,>=0.47; extra == "tui"
+Provides-Extra: webapp
+Requires-Dist: fastapi>=0.104.0; extra == "webapp"
+Requires-Dist: uvicorn>=0.24.0; extra == "webapp"
+Requires-Dist: python-multipart>=0.0.6; extra == "webapp"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+Requires-Dist: pytest-cov>=4.1; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
+Requires-Dist: ruff>=0.1.0; extra == "dev"
+Requires-Dist: mypy>=1.5; extra == "dev"
+Requires-Dist: types-pyyaml>=6.0; extra == "dev"
+Requires-Dist: types-requests>=2.31.0; extra == "dev"
+Requires-Dist: textual<1.0,>=0.47; extra == "dev"
+Requires-Dist: fastapi>=0.104.0; extra == "dev"
+Requires-Dist: httpx>=0.27.0; extra == "dev"
+Provides-Extra: e2e
+Requires-Dist: playwright>=1.40.0; extra == "e2e"
+Requires-Dist: httpx>=0.27.0; extra == "e2e"
+Requires-Dist: uvicorn>=0.24.0; extra == "e2e"
+Requires-Dist: fastapi>=0.104.0; extra == "e2e"
+
+# HERMES Local Assistant
+
+A fully-local AI assistant that helps junior consultants operate at senior level under HERMES 2022 Swiss project management method.
+
+- **Fully local:** Ollama-only, no cloud reasoning, no confidential data leaves the box
+- **Structured:** Rubric-driven quality review, grammar-constrained JSON, explicit acceptance criteria
+- **Hardware-aware:** Designed for i7-1265U + 64GB RAM (MoE models, Q4 quantization, async job queue)
+- **Asynchronous:** Heavy passes run overnight via SQLite job queue
+
+## Quick Start
+
+```bash
+bash scripts/bootstrap.sh        # Install deps, pull models
+python -m hermes_assistant.cli --help   # See available commands
+```
+
+## Documentation
+
+- **Full spec:** see `docs/HERMES_Local_Assistant_PROJECT.md`
+- **Project structure & phase backlog:** §15–16 in the spec
+- **Quality-review system (rubrics):** §4D–4J
+
+## Building
+
+Phases are in order (Phase 0 → Phase 5). Keep `ruff check`, `mypy src`, `pytest -q` green at each step.
+
+```bash
+# Phase 0: Skeleton & guardrails (in progress)
+pytest -q          # mocked Ollama tests green
+ruff check .       # lint clean
+mypy src           # types clean
+```
+
+## License
+
+MIT

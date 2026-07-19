@@ -1,0 +1,44 @@
+# Exemplar library — good/bad deliverable fragments (doc_kind=exemplar).
+exemplars:
+  - id: ex-risk-row-good
+    title: Well-formed risk-register row
+    deliverable_type: risk_register
+    project_type: isds-analyse
+    phase: konzept
+    dimension: risk_coverage
+    quality: good
+    content: >
+      | Data breach via misconfigured S3 bucket | High | Medium |
+      Encrypt at rest, enforce least-privilege IAM, quarterly access review |
+      Low | ISBO (J. Meier) |
+    note: Names a single accountable owner, a concrete mitigation, and a residual rating.
+
+  - id: ex-risk-row-bad
+    title: Placeholder risk-register row
+    deliverable_type: risk_register
+    project_type: isds-analyse
+    phase: konzept
+    dimension: risk_coverage
+    quality: bad
+    content: "| Data breach | High | TBD | |"
+    note: Mitigation and owner are blank/TBD — fails risk-coverage criteria.
+
+  - id: ex-objective-good
+    title: Measurable security objective
+    deliverable_type: objectives
+    project_type: isds-analyse
+    phase: initialisierung
+    dimension: correctness
+    quality: good
+    content: "Reduce critical vulnerabilities from 12 (baseline 2026-Q1) to 0 by 2026-Q4."
+    note: Contains a baseline, a target, and a date — objectively verifiable.
+
+  - id: ex-objective-bad
+    title: Vague security objective
+    deliverable_type: objectives
+    project_type: isds-analyse
+    phase: initialisierung
+    dimension: correctness
+    quality: bad
+    content: "Improve the overall security posture of the organisation."
+    note: No number, threshold, or date — not measurable at the gate.

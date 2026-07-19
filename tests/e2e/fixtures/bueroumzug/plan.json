@@ -1,0 +1,181 @@
+{
+  "title": "Büroumzug & IT-Migration Muristrasse",
+  "scenario": "Office relocation from old Muristrasse location to new building with full IT infrastructure migration over 42 days",
+  "approach": "traditional",
+  "phases": [
+    {
+      "id": "initiation",
+      "name": "Initialisierung",
+      "milestones": [
+        {
+          "id": "ms_kickoff",
+          "name": "Kickoff",
+          "is_quality_gate": true,
+          "release_criteria": [
+            "Projektauftrag genehmigt",
+            "Team konstituiert"
+          ],
+          "depends_on": [],
+          "effort_days": 2
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "oc_projektauftrag",
+          "name": "Projektauftrag",
+          "kind": "document",
+          "mandatory": true,
+          "module": "init",
+          "phase": "initiation",
+          "condition": null,
+          "depends_on": [],
+          "effort_days": 3
+        }
+      ]
+    },
+    {
+      "id": "planning",
+      "name": "Planung",
+      "milestones": [
+        {
+          "id": "ms_plan_complete",
+          "name": "Planung abgeschlossen",
+          "is_quality_gate": true,
+          "release_criteria": [
+            "Raumkonzept freigegeben",
+            "IT-Migrationskonzept freigegeben"
+          ],
+          "depends_on": ["oc_projektauftrag"],
+          "effort_days": 5
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "oc_raumkonzept",
+          "name": "Raumkonzept",
+          "kind": "document",
+          "mandatory": true,
+          "module": "planning",
+          "phase": "planning",
+          "condition": null,
+          "depends_on": ["ms_kickoff"],
+          "effort_days": 4
+        },
+        {
+          "id": "oc_it_konzept",
+          "name": "IT-Migrationskonzept",
+          "kind": "document",
+          "mandatory": true,
+          "module": "planning",
+          "phase": "planning",
+          "condition": null,
+          "depends_on": ["ms_kickoff"],
+          "effort_days": 5
+        },
+        {
+          "id": "oc_kommunikation",
+          "name": "Kommunikationsplan",
+          "kind": "document",
+          "mandatory": true,
+          "module": "planning",
+          "phase": "planning",
+          "condition": null,
+          "depends_on": ["oc_raumkonzept"],
+          "effort_days": 2
+        }
+      ]
+    },
+    {
+      "id": "execution",
+      "name": "Realisierung",
+      "milestones": [
+        {
+          "id": "ms_umzug",
+          "name": "Umzug abgeschlossen",
+          "is_quality_gate": true,
+          "release_criteria": [
+            "Alle Arbeitsplaetze betriebsbereit",
+            "IT-Systeme migriert"
+          ],
+          "depends_on": ["ms_plan_complete"],
+          "effort_days": 3
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "oc_it_migration",
+          "name": "IT-Migration",
+          "kind": "state",
+          "mandatory": true,
+          "module": "execution",
+          "phase": "execution",
+          "condition": null,
+          "depends_on": ["oc_it_konzept"],
+          "effort_days": 15
+        },
+        {
+          "id": "oc_umzug_durchgefuehrt",
+          "name": "Umzug durchgefuehrt",
+          "kind": "state",
+          "mandatory": true,
+          "module": "execution",
+          "phase": "execution",
+          "condition": null,
+          "depends_on": ["oc_raumkonzept", "oc_it_migration"],
+          "effort_days": 2
+        },
+        {
+          "id": "oc_abnahme",
+          "name": "Abnahme",
+          "kind": "decision",
+          "mandatory": true,
+          "module": "execution",
+          "phase": "execution",
+          "condition": null,
+          "depends_on": ["oc_umzug_durchgefuehrt"],
+          "effort_days": 1
+        }
+      ]
+    },
+    {
+      "id": "closeout",
+      "name": "Abschluss",
+      "milestones": [
+        {
+          "id": "ms_projektabschluss",
+          "name": "Projektabschluss",
+          "is_quality_gate": true,
+          "release_criteria": ["Schlussbericht genehmigt"],
+          "depends_on": ["ms_umzug"],
+          "effort_days": 2
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "oc_schlussbericht",
+          "name": "Schlussbericht",
+          "kind": "document",
+          "mandatory": true,
+          "module": "closeout",
+          "phase": "closeout",
+          "condition": null,
+          "depends_on": ["ms_umzug"],
+          "effort_days": 3
+        }
+      ]
+    }
+  ],
+  "roles": [
+    "Projektleiter",
+    "IT-Verantwortlicher",
+    "Facility Manager",
+    "HR"
+  ],
+  "open_assumptions": [
+    "IT-Systeme koennen parallel betrieben werden"
+  ],
+  "risks": [
+    "Datenverlust waehrend Migration",
+    "Baulliche Verzoegerungen"
+  ]
+}

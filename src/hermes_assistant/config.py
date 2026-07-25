@@ -1,8 +1,29 @@
 """Configuration & settings for HERMES assistant (Pydantic v2)."""
 
+import sys
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+def _compute_default_data_dir() -> str:
+    """Return a platform-specific data directory outside the repository.
+
+    Override at runtime with the ``HERMES_DATA_DIR`` environment variable.
+
+    Defaults:
+    - Windows:  ``%LOCALAPPDATA%\\hermes-data``
+    - macOS/Linux: ``~/.hermes/data``
+    """
+    import os  # noqa: PLC0415
+
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return str(Path(base) / "hermes-data")
+    return str(Path.home() / ".hermes" / "data")
+
+
+_DEFAULT_DATA_DIR = _compute_default_data_dir()
 
 # Project-type taxonomy ships with the package as YAML data. Resolved relative
 # to this file so it works regardless of the caller's working directory.
@@ -27,6 +48,16 @@ class Settings(BaseSettings):
         env_file=".env",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
+    )
+
+    # --- Data directory (Layer 1b) --------------------------------------- #
+    # Platform-specific directory outside the repository for all runtime
+    # SQLite databases and generated artefacts.  Override with the
+    # ``HERMES_DATA_DIR`` environment variable.
+    data_dir: str = Field(
+        default=_DEFAULT_DATA_DIR,
+        validation_alias=AliasChoices("HERMES_DATA_DIR", "data_dir"),
     )
 
     ollama_host: str = "http://localhost:11434"
@@ -76,8 +107,9 @@ class Settings(BaseSettings):
     panel_weights_path: str = ""
 
     # --- Task store (Phase 2.5) ------------------------------------------ #
-    # SQLite database for the WBS task/pendenz tree.
-    tasks_db_path: str = str(_PKG_ROOT / "data" / "tasks.db")
+    # SQLite database for the WBS task/pendenz tree.  Stored outside the repo
+    # under data_dir to prevent accidental commits of runtime state.
+    tasks_db_path: str = str(Path(_DEFAULT_DATA_DIR) / "tasks.db")
 
     # --- RAG (Phase 1) --------------------------------------------------- #
     # Single Chroma collection for the whole corpus; a per-model collection

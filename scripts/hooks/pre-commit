@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# HERMES-Guardrail pre-commit hook — blocks confidential/runtime files.
+# Activate with: git config core.hooksPath scripts/hooks
+set -euo pipefail
+
+STAGED=$(git diff --cached --name-only)
+
+# --- Forbidden extensions --------------------------------------------------
+FORBIDDEN_EXTS=(".db" ".db-wal" ".db-shm" ".log")
+for ext in "${FORBIDDEN_EXTS[@]}"; do
+  if echo "$STAGED" | grep -qE "\\${ext}$"; then
+    echo "HERMES-Guardrail: runtime/confidential file blocked: *${ext}"
+    echo "  Remove from staging: git restore --staged <file>"
+    exit 1
+  fi
+done
+
+# --- Forbidden .env files ---------------------------------------------------
+if echo "$STAGED" | grep -qE "(^|\/)\.env"; then
+  echo "HERMES-Guardrail: credential file blocked: .env*"
+  echo "  Remove from staging: git restore --staged <file>"
+  exit 1
+fi
+
+# --- Forbidden runtime folders (should never appear as staged files) --------
+FORBIDDEN_DIRS=("__pycache__/" "node_modules/" ".pytest_cache/" "build/" "dist/" ".egg-info/")
+for dir in "${FORBIDDEN_DIRS[@]}"; do
+  if echo "$STAGED" | grep -qF "$dir"; then
+    echo "HERMES-Guardrail: runtime/build folder blocked: ${dir}"
+    echo "  Add to .gitignore and run: git rm -r --cached <path>"
+    exit 1
+  fi
+done
+
+# --- PII terms dictionary check --------------------------------------------
+if [ -f ".hermes/pii_terms.txt" ]; then
+  DIFF_CONTENT=$(git diff --cached)
+  while IFS= read -r term; do
+    # Skip blank lines and comments
+    [[ -z "$term" || "$term" == \#* ]] && continue
+    if echo "$DIFF_CONTENT" | grep -qi "$term"; then
+      echo "HERMES-Guardrail: PII term detected in staged diff: \"${term}\""
+      echo "  Review and remove sensitive content before committing."
+      exit 1
+    fi
+  done < ".hermes/pii_terms.txt"
+fi
+
+exit 0

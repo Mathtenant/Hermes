@@ -31,6 +31,34 @@ ruff check .       # lint clean
 mypy src           # types clean
 ```
 
+## Security
+
+HERMES processes sensitive project data locally. Five guardrail layers
+protect confidential information from leaking:
+
+1. **External data directory** — runtime SQLite databases are stored in
+   `~/.hermes/data/` (macOS/Linux) or `%LOCALAPPDATA%\hermes-data\`
+   (Windows), not inside the repository. Override with `HERMES_DATA_DIR`.
+
+2. **Pre-commit hook** — blocks `.db`, `.env`, `.log`, and files matching
+   PII terms before a commit is written to history. Activate once with:
+   ```bash
+   git config core.hooksPath scripts/hooks
+   ```
+
+3. **PII terms dictionary** — add organisation-specific sensitive terms to
+   `.hermes/pii_terms.txt` to extend the pre-commit check without code
+   changes.
+
+4. **API response validation** — every JSON endpoint is scanned for
+   forbidden field names, filesystem paths, and email addresses before the
+   response is delivered to the browser.
+
+5. **HTTP security headers** — `Content-Security-Policy`, `X-Frame-Options`,
+   and friends are applied to every server response.
+
+See `docs/SECURITY.md` for the full security model.
+
 ## License
 
 MIT

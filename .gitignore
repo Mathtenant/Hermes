@@ -29,6 +29,15 @@ htmlcov/
 .idea/
 .vscode/
 
-# Runtime data (uncomment if these should not be versioned)
-# data/**/*.db
-# src/hermes_assistant/data/*.db
+# Runtime data — never commit SQLite files or logs
+data/**/*.db
+data/**/*.db-wal
+data/**/*.db-shm
+src/hermes_assistant/data/*.db
+src/hermes_assistant/data/*.db-wal
+src/hermes_assistant/data/*.db-shm
+*.log
+
+# Credentials
+.env
+.env.*

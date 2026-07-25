@@ -1,6 +1,9 @@
 """FastAPI web server for HERMES Local Assistant dashboard (Phase 4)."""
 from __future__ import annotations
 
+import functools
+import json as _json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +18,13 @@ from hermes_assistant.dashboard_html import (
     _FS_RE,
     load_dashboard_data,
 )
+
+# Matches field names that begin with internal_ or confidential_ (any suffix).
+_INTERNAL_FIELD_RE = re.compile(
+    r'"(internal_[^"]*|confidential_[^"]*)\s*"', re.IGNORECASE
+)
+# RFC-5322-ish email detector for values that must not appear in API output.
+_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -48,17 +58,58 @@ def _validate_safe_json(json_str: str) -> list[str]:
     """Return a list of confidentiality violations found in the serialised JSON.
 
     An empty list means the payload is clean and safe to send to clients.
-    Mirrors the logic of ``validate_safe_export`` from dashboard_html, but
-    operates on a JSON string rather than an HTML string.
+    Checks performed:
+    - Exact forbidden field names (raw_notes, evidence_quote, …)
+    - Field names matching internal_* or confidential_* patterns
+    - Absolute filesystem paths in values
+    - Email addresses in values
     """
     violations: list[str] = []
     lower = json_str.lower()
+
+    # Exact forbidden field names from the shared allowlist
     for field in _FORBIDDEN_FIELDS:
         if f'"{field}"' in lower:
             violations.append(f"Forbidden field {field!r} found in API response")
+
+    # Pattern-matched forbidden field name prefixes
+    if _INTERNAL_FIELD_RE.search(json_str):
+        violations.append(
+            "Field matching internal_* or confidential_* pattern found in API response"
+        )
+
+    # Absolute filesystem paths
     if _FS_RE.search(json_str):
         violations.append("Absolute filesystem path found in API response")
+
+    # Email addresses
+    if _EMAIL_RE.search(json_str):
+        violations.append("Email address found in API response")
+
     return violations
+
+
+def confidentiality_guard(func):  # type: ignore[no-untyped-def]
+    """Decorator: validate all endpoint responses for confidential data.
+
+    Applied to any endpoint that returns a plain ``dict`` (FastAPI auto-JSON
+    responses).  Endpoints that return an explicit ``Response`` object handle
+    validation inline (e.g. ``/api/dashboard``).
+    """
+
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):  # type: ignore[no-untyped-def]
+        response = await func(*args, **kwargs)
+        if isinstance(response, dict):
+            violations = _validate_safe_json(_json.dumps(response))
+            if violations:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Confidentiality guard triggered: {'; '.join(violations)}",
+                )
+        return response
+
+    return wrapper
 
 
 app = FastAPI(
@@ -80,6 +131,7 @@ if _STATIC_DIR.is_dir():
 
 
 @app.get("/api/health")
+@confidentiality_guard
 async def health() -> dict[str, str]:
     """Health check — always returns 200 OK with current timestamp."""
     return {

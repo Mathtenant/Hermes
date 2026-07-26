@@ -1,0 +1,28 @@
+{
+  "risks": [
+    {
+      "description": "This risk has no title field",
+      "severity": "high",
+      "likelihood": 3
+    },
+    {
+      "title": "Valid risk with all fields",
+      "severity": "low",
+      "likelihood": 2,
+      "owner": "PM"
+    },
+    {
+      "title": "",
+      "description": "Empty title should also fail"
+    }
+  ],
+  "plans": [
+    {
+      "items": [{"title": "Item without plan_id"}]
+    },
+    {
+      "plan_id": "valid-plan",
+      "items": [{"title": "Valid plan item"}]
+    }
+  ]
+}

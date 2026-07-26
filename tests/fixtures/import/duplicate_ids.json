@@ -1,0 +1,24 @@
+{
+  "risks": [
+    {
+      "id": "dup001",
+      "title": "First entry with id dup001",
+      "severity": "low",
+      "likelihood": 2,
+      "owner": "PM"
+    },
+    {
+      "id": "dup001",
+      "title": "Updated entry with id dup001 (should upsert)",
+      "severity": "high",
+      "likelihood": 4,
+      "owner": "Tech Lead"
+    },
+    {
+      "id": "dup002",
+      "title": "Unique entry dup002",
+      "severity": "medium",
+      "likelihood": 3
+    }
+  ]
+}

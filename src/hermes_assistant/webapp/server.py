@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+from hermes_assistant.config import settings
 from hermes_assistant.dashboard_html import (
     _FORBIDDEN_FIELDS,
     _FS_RE,
@@ -169,6 +170,92 @@ async def dashboard(project_id: str | None = Query(default=None)) -> Response:
 async def refresh(project_id: str | None = Query(default=None)) -> Response:
     """Trigger a fresh data load from disk and return updated DashboardData."""
     return await dashboard(project_id)
+
+
+def _get_import_paths() -> dict[str, str]:
+    """Return database path kwargs for import_payload. Patched in tests."""
+    data = Path(settings.data_dir)
+    return {
+        "risks_db": str(data / "risks.db"),
+        "plans_db": str(data / "plans.db"),
+        "tasks_db": settings.tasks_db_path,
+        "projects_root": settings.projects_path,
+    }
+
+
+@app.post("/api/import/json")
+async def import_json(request: Request) -> Response:
+    """Import JSON data (risks, plans, pendenzen, projects).
+
+    Accepts:
+    - ``Content-Type: application/json`` — body is the import payload dict.
+    - ``Content-Type: multipart/form-data`` — field ``file`` (UploadFile)
+      or field ``raw_json`` (text string).
+
+    Returns an ImportResult JSON object with created/updated/skipped counts
+    and per-item detail.  Validation errors produce HTTP 422; an oversized
+    payload produces HTTP 413.
+    """
+    from hermes_assistant.webapp.import_json import (
+        MAX_IMPORT_BYTES,
+        ImportResult,
+        import_payload,
+        validate_import_payload,
+    )
+
+    content_type = request.headers.get("content-type", "")
+
+    # ── Parse input ───────────────────────────────────────────────────────
+    try:
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            raw_file = form.get("file")
+            raw_text = form.get("raw_json")
+            if raw_file is not None:
+                content = await raw_file.read()  # type: ignore[union-attr]
+                if len(content) > MAX_IMPORT_BYTES:
+                    raise HTTPException(
+                        status_code=413, detail="File exceeds 10 MB limit"
+                    )
+                payload = _json.loads(content)
+            elif raw_text is not None:
+                payload = _json.loads(str(raw_text))
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail="No 'file' or 'raw_json' field in form data",
+                )
+        else:
+            body = await request.body()
+            if len(body) > MAX_IMPORT_BYTES:
+                raise HTTPException(
+                    status_code=413, detail="Payload exceeds 10 MB limit"
+                )
+            if not body:
+                raise HTTPException(status_code=422, detail="Empty request body")
+            payload = _json.loads(body)
+    except HTTPException:
+        raise
+    except _json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid JSON: {exc}"
+        ) from exc
+
+    # ── Validate structure ────────────────────────────────────────────────
+    structure_errors = validate_import_payload(payload)
+    if structure_errors:
+        raise HTTPException(status_code=422, detail={"errors": structure_errors})
+
+    # ── Execute import ────────────────────────────────────────────────────
+    result: ImportResult = import_payload(payload, **_get_import_paths())
+    json_str = result.model_dump_json()
+    violations = _validate_safe_json(json_str)
+    if violations:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Confidentiality guard triggered: {'; '.join(violations)}",
+        )
+    return Response(content=json_str, media_type="application/json")
 
 
 @app.get("/{full_path:path}")

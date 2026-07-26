@@ -1,0 +1,16 @@
+{
+  "projects": [
+    {
+      "project_id": "alpha",
+      "label": "Alpha Project - Digital Transformation"
+    },
+    {
+      "project_id": "beta",
+      "label": "Beta Project - Infrastructure Modernisation"
+    },
+    {
+      "project_id": "gamma",
+      "label": "Gamma Project - Customer Portal"
+    }
+  ]
+}

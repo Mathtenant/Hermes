@@ -1,0 +1,79 @@
+{
+  "plans": [
+    {
+      "plan_id": "project-alpha",
+      "author": "test-import",
+      "items": [
+        {
+          "id": "item-a1",
+          "title": "Phase 1 kickoff meeting",
+          "phase": "Phase 1 - Initiation",
+          "assignee": "PM",
+          "role": "project-manager",
+          "status": "open",
+          "order": 0
+        },
+        {
+          "id": "item-a2",
+          "title": "Requirements gathering workshop",
+          "phase": "Phase 1 - Initiation",
+          "assignee": "BA",
+          "role": "business-analyst",
+          "status": "open",
+          "order": 1
+        },
+        {
+          "id": "item-a3",
+          "title": "Technical architecture design",
+          "phase": "Phase 2 - Planning",
+          "assignee": "Tech Lead",
+          "role": "architect",
+          "status": "open",
+          "order": 2
+        },
+        {
+          "id": "item-a4",
+          "title": "Project plan approval",
+          "phase": "Phase 2 - Planning",
+          "assignee": "PM",
+          "role": "project-manager",
+          "status": "open",
+          "order": 3
+        }
+      ]
+    },
+    {
+      "plan_id": "project-beta",
+      "author": "test-import",
+      "items": [
+        {
+          "id": "item-b1",
+          "title": "Stakeholder identification",
+          "phase": "Phase 1 - Initiation",
+          "assignee": "PM",
+          "role": "project-manager",
+          "status": "done",
+          "order": 0
+        },
+        {
+          "id": "item-b2",
+          "title": "Risk assessment workshop",
+          "phase": "Phase 1 - Initiation",
+          "assignee": "Risk Manager",
+          "role": "risk-manager",
+          "status": "in_progress",
+          "order": 1
+        },
+        {
+          "id": "item-b3",
+          "title": "Budget approval",
+          "phase": "Phase 2 - Planning",
+          "assignee": "CFO",
+          "role": "sponsor",
+          "status": "open",
+          "order": 2
+        }
+      ]
+    }
+  ]
+}

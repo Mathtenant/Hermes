@@ -1,0 +1,94 @@
+{
+  "risks": [
+    {
+      "id": "risk001",
+      "title": "Integration delays due to vendor dependencies",
+      "description": "Third-party APIs may not be ready on time",
+      "severity": "high",
+      "likelihood": 4,
+      "owner": "Tech Lead",
+      "status": "open"
+    },
+    {
+      "id": "risk002",
+      "title": "Budget overrun on infrastructure",
+      "description": "Cloud costs may exceed estimates",
+      "severity": "medium",
+      "likelihood": 3,
+      "owner": "PM",
+      "status": "open"
+    },
+    {
+      "id": "risk003",
+      "title": "Key personnel departure",
+      "description": "Core developer may leave during critical phase",
+      "severity": "critical",
+      "likelihood": 2,
+      "owner": "HR",
+      "status": "open"
+    },
+    {
+      "id": "risk004",
+      "title": "Scope creep from stakeholder requests",
+      "description": "Requirements expanding beyond agreed boundaries",
+      "severity": "medium",
+      "likelihood": 4,
+      "owner": "PM",
+      "status": "mitigated"
+    },
+    {
+      "id": "risk005",
+      "title": "Security vulnerabilities in dependencies",
+      "description": "Third-party packages may have CVEs",
+      "severity": "high",
+      "likelihood": 3,
+      "owner": "Security",
+      "status": "open"
+    },
+    {
+      "id": "risk006",
+      "title": "Performance under load",
+      "description": "System may not meet SLAs under peak load",
+      "severity": "high",
+      "likelihood": 2,
+      "owner": "Tech Lead",
+      "status": "open"
+    },
+    {
+      "id": "risk007",
+      "title": "Data migration issues",
+      "description": "Legacy data may not migrate cleanly",
+      "severity": "medium",
+      "likelihood": 3,
+      "owner": "DBA",
+      "status": "open"
+    },
+    {
+      "id": "risk008",
+      "title": "Regulatory compliance gap",
+      "description": "GDPR requirements may require additional work",
+      "severity": "critical",
+      "likelihood": 2,
+      "owner": "Legal",
+      "status": "open"
+    },
+    {
+      "id": "risk009",
+      "title": "Test coverage insufficient",
+      "description": "Automated tests may miss edge cases",
+      "severity": "low",
+      "likelihood": 3,
+      "owner": "QA",
+      "status": "open"
+    },
+    {
+      "id": "risk010",
+      "title": "Documentation lag",
+      "description": "Technical docs may fall behind implementation",
+      "severity": "low",
+      "likelihood": 5,
+      "owner": "Tech Writer",
+      "status": "accepted"
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "projects": [
+    {
+      "project_id": "mixed-project",
+      "label": "Mixed Data Import Test Project"
+    }
+  ],
+  "risks": [
+    {
+      "id": "mix-risk001",
+      "title": "Mixed import: integration risk",
+      "description": "Risk from mixed data import",
+      "severity": "medium",
+      "likelihood": 3,
+      "owner": "PM",
+      "status": "open"
+    },
+    {
+      "id": "mix-risk002",
+      "title": "Mixed import: timeline risk",
+      "description": "Delivery timeline at risk",
+      "severity": "high",
+      "likelihood": 4,
+      "owner": "PM",
+      "status": "open"
+    }
+  ],
+  "plans": [
+    {
+      "plan_id": "mixed-project",
+      "author": "mixed-import",
+      "items": [
+        {
+          "title": "Define project scope",
+          "phase": "Initiation",
+          "assignee": "PM",
+          "status": "open",
+          "order": 0
+        },
+        {
+          "title": "Setup development environment",
+          "phase": "Planning",
+          "assignee": "Dev Lead",
+          "status": "open",
+          "order": 1
+        }
+      ]
+    }
+  ],
+  "pendenzen": [
+    {
+      "title": "Clarify budget approval process",
+      "priority": "high",
+      "source": "manual",
+      "owner": "PM"
+    },
+    {
+      "title": "Review security requirements",
+      "priority": "medium",
+      "source": "review",
+      "owner": "Security"
+    },
+    {
+      "title": "Schedule kickoff meeting",
+      "priority": "blocker",
+      "source": "meeting",
+      "owner": "PM"
+    }
+  ]
+}

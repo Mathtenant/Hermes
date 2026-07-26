@@ -68,7 +68,7 @@ class RiskRegistry:
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
-    def close(self) -> None:
+    def close_connection(self) -> None:
         """Close the underlying SQLite connection."""
         self._conn.close()
 
@@ -193,8 +193,17 @@ class RiskRegistry:
         """Mark a risk as mitigated (countermeasure applied)."""
         return self.update(risk_id, status=RiskStatus.mitigated)
 
-    def close(self, risk_id: str) -> Risk:
-        """Mark a risk as closed (no longer applicable)."""
+    def close(self, risk_id: str | None = None) -> Risk | None:
+        """Mark a risk as closed, or close the connection if no id is given.
+
+        Called with a ``risk_id`` -> marks that risk as closed (no longer
+        applicable) and returns the updated :class:`Risk`.
+        Called with no arguments -> closes the underlying SQLite connection
+        (equivalent to :meth:`close_connection`) and returns ``None``.
+        """
+        if risk_id is None:
+            self.close_connection()
+            return None
         return self.update(risk_id, status=RiskStatus.closed)
 
     # ------------------------------------------------------------------

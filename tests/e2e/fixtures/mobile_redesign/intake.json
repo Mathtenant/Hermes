@@ -1,0 +1,19 @@
+{
+  "project_id": "mobile-app-redesign",
+  "project_label": "Mobile App Redesign",
+  "client": "AppStudio GmbH",
+  "brief": "45-day mobile app redesign covering iOS and Android. Focus on accessibility, performance, and WCAG 2.1 AA compliance.",
+  "start_date": "2026-08-01",
+  "hard_deadline": "2026-09-15",
+  "team_size": 12,
+  "budget_chf": 280000,
+  "platforms": ["iOS", "Android"],
+  "phases": [
+    {"id": "ph1", "title": "Discovery & UX Research", "duration_days": 7},
+    {"id": "ph2", "title": "Design & Prototyping", "duration_days": 10},
+    {"id": "ph3", "title": "iOS Development", "duration_days": 12},
+    {"id": "ph4", "title": "Android Development", "duration_days": 12},
+    {"id": "ph5", "title": "QA & Beta Testing", "duration_days": 8},
+    {"id": "ph6", "title": "Release & Monitoring", "duration_days": 4}
+  ]
+}

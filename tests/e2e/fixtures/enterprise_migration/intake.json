@@ -1,0 +1,18 @@
+{
+  "project_id": "enterprise-data-migration",
+  "project_label": "Enterprise Data Migration",
+  "client": "LegacyCorp AG",
+  "brief": "60-day enterprise data migration from on-prem to cloud. 2TB data, 12 legacy systems, strict GDPR compliance required.",
+  "start_date": "2026-08-01",
+  "hard_deadline": "2026-09-30",
+  "team_size": 25,
+  "budget_chf": 1200000,
+  "phases": [
+    {"id": "ph1", "title": "Discovery & Audit", "duration_days": 10},
+    {"id": "ph2", "title": "Data Mapping", "duration_days": 12},
+    {"id": "ph3", "title": "Migration Scripts", "duration_days": 14},
+    {"id": "ph4", "title": "Test Migration", "duration_days": 10},
+    {"id": "ph5", "title": "Compliance Review", "duration_days": 7},
+    {"id": "ph6", "title": "Cutover & Go-Live", "duration_days": 7}
+  ]
+}

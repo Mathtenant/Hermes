@@ -1,0 +1,19 @@
+{
+  "project_id": "saas-mvp-launch",
+  "project_label": "SaaS MVP Launch",
+  "client": "StartupCo",
+  "brief": "30-day SaaS MVP launch for 50-person distributed team. $500K budget. Must ship before Q3 hard deadline.",
+  "start_date": "2026-08-01",
+  "hard_deadline": "2026-08-31",
+  "team_size": 50,
+  "budget_chf": 500000,
+  "phases": [
+    {"id": "ph1", "title": "Architecture & Security Review", "duration_days": 5},
+    {"id": "ph2", "title": "Backend Development", "duration_days": 8},
+    {"id": "ph3", "title": "Frontend Development", "duration_days": 8},
+    {"id": "ph4", "title": "Testing & QA", "duration_days": 5},
+    {"id": "ph5", "title": "Deployment & DevOps", "duration_days": 3},
+    {"id": "ph6", "title": "Security & Compliance", "duration_days": 4},
+    {"id": "ph7", "title": "Launch & Go-Live", "duration_days": 2}
+  ]
+}

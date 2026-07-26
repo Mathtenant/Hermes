@@ -1,0 +1,25 @@
+{
+  "plan_id": "saas-mvp-launch",
+  "version": 1,
+  "author": "junior-consultant",
+  "items": [
+    {"id": "t01", "title": "Security audit", "phase": "Architecture & Security Review", "assignee": "alice", "role": "security-lead", "status": "open", "order": 0},
+    {"id": "t02", "title": "API design", "phase": "Architecture & Security Review", "assignee": "bob", "role": "tech-lead", "status": "open", "order": 1},
+    {"id": "t03", "title": "Auth plan", "phase": "Architecture & Security Review", "assignee": "alice", "role": "security-lead", "status": "open", "order": 2},
+    {"id": "t04", "title": "Core services", "phase": "Backend Development", "assignee": "charlie", "role": "backend-dev", "status": "open", "order": 3},
+    {"id": "t05", "title": "Database schema", "phase": "Backend Development", "assignee": "charlie", "role": "backend-dev", "status": "open", "order": 4},
+    {"id": "t06", "title": "API endpoints", "phase": "Backend Development", "assignee": "dave", "role": "backend-dev", "status": "open", "order": 5},
+    {"id": "t07", "title": "Third-party integrations", "phase": "Backend Development", "assignee": "charlie", "role": "backend-dev", "status": "open", "order": 6},
+    {"id": "t08", "title": "UI components", "phase": "Frontend Development", "assignee": "eve", "role": "frontend-dev", "status": "open", "order": 7},
+    {"id": "t09", "title": "State management", "phase": "Frontend Development", "assignee": "eve", "role": "frontend-dev", "status": "open", "order": 8},
+    {"id": "t10", "title": "Responsive design", "phase": "Frontend Development", "assignee": "frank", "role": "frontend-dev", "status": "open", "order": 9},
+    {"id": "t11", "title": "Accessibility", "phase": "Frontend Development", "assignee": "frank", "role": "frontend-dev", "status": "open", "order": 10},
+    {"id": "t12", "title": "Unit tests", "phase": "Testing & QA", "assignee": "grace", "role": "qa-engineer", "status": "open", "order": 11},
+    {"id": "t13", "title": "Integration tests", "phase": "Testing & QA", "assignee": "grace", "role": "qa-engineer", "status": "open", "order": 12},
+    {"id": "t14", "title": "User acceptance testing", "phase": "Testing & QA", "assignee": "heidi", "role": "pm", "status": "open", "order": 13},
+    {"id": "t15", "title": "CI/CD pipeline", "phase": "Deployment & DevOps", "assignee": "ivan", "role": "devops", "status": "open", "order": 14},
+    {"id": "t16", "title": "Staging/prod infrastructure", "phase": "Deployment & DevOps", "assignee": "ivan", "role": "devops", "status": "open", "order": 15},
+    {"id": "t17", "title": "Penetration testing", "phase": "Security & Compliance", "assignee": "alice", "role": "security-lead", "status": "open", "order": 16},
+    {"id": "t18", "title": "Launch plan", "phase": "Launch & Go-Live", "assignee": "heidi", "role": "pm", "status": "open", "order": 17}
+  ]
+}

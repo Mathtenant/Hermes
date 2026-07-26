@@ -3,9 +3,7 @@
 # The pre-commit hook blocks any staged diff that contains these strings
 # (case-insensitive). Extend this list with your organisation's sensitive terms.
 
-acme corp
-customer name
-internal project
+# Add organization-specific terms below (customer names, internal projects, etc.)
 confidential
 secret
 password

@@ -29,10 +29,11 @@ htmlcov/
 .idea/
 .vscode/
 
-# Runtime data — never commit SQLite files or logs
+# Runtime data — never commit SQLite files, logs, or trace artefacts
 data/**/*.db
 data/**/*.db-wal
 data/**/*.db-shm
+data/**/*.jsonl
 src/hermes_assistant/data/*.db
 src/hermes_assistant/data/*.db-wal
 src/hermes_assistant/data/*.db-shm

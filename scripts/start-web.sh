@@ -29,7 +29,11 @@ else
     echo "         Start with: ollama serve"
 fi
 
-# ── Install webapp dependencies if not present ─────────────────────────────
+# ── Install package and dependencies ──────────────────────────────────────
+if ! python -c "import hermes_assistant" 2>/dev/null; then
+    echo "Installing package..."
+    pip install -e . -q
+fi
 if ! python -c "import fastapi" 2>/dev/null; then
     echo "Installing webapp dependencies..."
     pip install -e ".[webapp]" -q

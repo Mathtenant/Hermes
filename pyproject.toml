@@ -118,4 +118,5 @@ python_files = ["test_*.py"]
 addopts = "-v --tb=short"
 markers = [
     "integration: requires a live Ollama service (skipped by default offline)",
+    "e2e: requires Playwright and a live web server (skipped by default)",
 ]

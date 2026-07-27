@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     # under data_dir to prevent accidental commits of runtime state.
     tasks_db_path: str = str(Path(_DEFAULT_DATA_DIR) / "tasks.db")
 
+    # --- Chat assistant (Phase 5) ---------------------------------------- #
+    # SQLite database for chat sessions, messages, and actions.  Stored
+    # outside the repo under data_dir alongside the other runtime stores.
+    chat_db_path: str = str(Path(_DEFAULT_DATA_DIR) / "chat.db")
+
     # --- RAG (Phase 1) --------------------------------------------------- #
     # Single Chroma collection for the whole corpus; a per-model collection
     # split is deferred to Phase 2 (see rag/store.py).

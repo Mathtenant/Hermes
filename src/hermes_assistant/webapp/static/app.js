@@ -15,6 +15,7 @@ const state = reactive({
   error: null,
   lastRefresh: null,
   showHelp: false,
+  showImport: false,
 });
 
 // ── Theme ──────────────────────────────────────────────────────────────────
@@ -105,6 +106,109 @@ function stopPolling() {
   if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
 }
 
+// ── JSON Import ────────────────────────────────────────────────────────────
+const importMode = ref('text');        // 'text' | 'file'
+const importText = ref('');
+const importFilename = ref('');
+const importFileContent = ref('');
+const importLoading = ref(false);
+const importResult = ref(null);
+const importError = ref('');
+const importPreview = ref(null);
+
+function _computePreview(jsonStr) {
+  try {
+    const data = JSON.parse(jsonStr);
+    if (typeof data !== 'object' || Array.isArray(data)) return null;
+    const counts = {};
+    for (const [k, v] of Object.entries(data)) {
+      if (Array.isArray(v)) counts[k] = v.length;
+    }
+    return Object.keys(counts).length > 0 ? counts : null;
+  } catch {
+    return null;
+  }
+}
+
+function openImport() {
+  state.showImport = true;
+  importMode.value = 'text';
+  importText.value = '';
+  importFilename.value = '';
+  importFileContent.value = '';
+  importLoading.value = false;
+  importResult.value = null;
+  importError.value = '';
+  importPreview.value = null;
+}
+
+function closeImport() {
+  state.showImport = false;
+}
+
+function onImportFile(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  importFilename.value = `${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    importFileContent.value = ev.target.result;
+    importPreview.value = _computePreview(importFileContent.value);
+  };
+  reader.readAsText(file);
+}
+
+async function runImport() {
+  if (importLoading.value) return;
+  const jsonStr = (importMode.value === 'text'
+    ? importText.value
+    : importFileContent.value
+  ).trim();
+  if (!jsonStr) {
+    importError.value = 'No JSON provided.';
+    return;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(jsonStr);
+  } catch (e) {
+    importError.value = `Invalid JSON: ${e.message}`;
+    return;
+  }
+  // Unused but validates object structure client-side
+  void payload;
+  importLoading.value = true;
+  importError.value = '';
+  importResult.value = null;
+  try {
+    const resp = await fetch('/api/import/json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: jsonStr,
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const detail = data.detail;
+      importError.value = typeof detail === 'string'
+        ? detail
+        : (detail && detail.errors ? detail.errors.join('; ') : `HTTP ${resp.status}`);
+    } else {
+      importResult.value = data;
+      if (data.ok) {
+        showToast(
+          `Import done — ${data.created} created, ${data.updated} updated`
+          + (data.skipped ? `, ${data.skipped} skipped` : '')
+        );
+        await refresh();
+      }
+    }
+  } catch (e) {
+    importError.value = String(e.message || e);
+  } finally {
+    importLoading.value = false;
+  }
+}
+
 // ── Keyboard shortcuts ─────────────────────────────────────────────────────
 function onKeydown(e) {
   // Ignore shortcuts when focus is inside an input or select
@@ -118,8 +222,12 @@ function onKeydown(e) {
     case '4': goTo('reviews'); break;
     case 'r': refresh(); break;
     case 'd': toggleTheme(); break;
+    case 'i': openImport(); break;
     case '?': state.showHelp = !state.showHelp; break;
-    case 'Escape': state.showHelp = false; break;
+    case 'Escape':
+      state.showHelp = false;
+      if (state.showImport) closeImport();
+      break;
     default: break;
   }
 }
@@ -135,6 +243,9 @@ const App = {
   setup() {
     // Show toast whenever an API error occurs
     watch(() => state.error, (err) => { if (err) showToast(err); });
+
+    // Live preview as user types JSON
+    watch(importText, (val) => { importPreview.value = _computePreview(val); });
 
     onMounted(() => {
       applyTheme(theme.value);
@@ -161,6 +272,7 @@ const App = {
       ['3', 'Pendenzen'],
       ['4', 'Reviews'],
       ['r', 'Refresh data'],
+      ['i', 'Import JSON'],
       ['d', 'Toggle dark / light theme'],
       ['?', 'Show / hide this help'],
       ['Esc', 'Close modal'],
@@ -169,6 +281,10 @@ const App = {
     return {
       state, theme, toast, navItems, shortcuts,
       toggleTheme, refresh, goTo, selectProject,
+      // Import modal
+      openImport, closeImport, onImportFile, runImport,
+      importMode, importText, importFilename, importLoading,
+      importResult, importError, importPreview,
     };
   },
   template: `
@@ -189,6 +305,13 @@ const App = {
           class="text-slate-300 hover:text-white text-sm px-2 py-1 rounded hover:bg-slate-700 transition-colors"
           :aria-label="state.loading ? 'Loading…' : 'Refresh (r)'"
         >{{ state.loading ? '⏳' : '↻' }}&nbsp;Refresh</button>
+
+        <button
+          @click="openImport"
+          class="text-slate-300 hover:text-white text-sm px-2 py-1 rounded hover:bg-slate-700 transition-colors"
+          aria-label="Import JSON (i)"
+          title="Import JSON (i)"
+        >&#8593;&nbsp;Import</button>
 
         <button
           @click="toggleTheme"
@@ -277,6 +400,137 @@ const App = {
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- ── Import JSON Modal ──────────────────────────────────────────── -->
+      <div v-if="state.showImport"
+           class="modal-overlay"
+           @click.self="closeImport"
+           role="dialog"
+           aria-modal="true"
+           aria-label="Import JSON data"
+           data-testid="import-modal">
+        <div class="modal-box" style="max-width:560px">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="font-semibold text-base">Import JSON</h2>
+            <button @click="closeImport"
+                    class="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+                    aria-label="Close import modal">&times;</button>
+          </div>
+
+          <!-- Mode toggle -->
+          <div class="flex gap-2 mb-3">
+            <button @click="importMode='text'"
+                    class="text-xs px-3 py-1 rounded border transition-colors"
+                    :style="importMode==='text'
+                      ? 'background:var(--c-primary);color:#fff;border-color:var(--c-primary)'
+                      : 'border-color:var(--c-border)'"
+                    data-testid="mode-text">Paste JSON</button>
+            <button @click="importMode='file'"
+                    class="text-xs px-3 py-1 rounded border transition-colors"
+                    :style="importMode==='file'
+                      ? 'background:var(--c-primary);color:#fff;border-color:var(--c-primary)'
+                      : 'border-color:var(--c-border)'"
+                    data-testid="mode-file">Upload File</button>
+          </div>
+
+          <!-- Text mode -->
+          <div v-if="importMode==='text'">
+            <textarea
+              v-model="importText"
+              placeholder='{"risks": [{"title": "Example risk"}]}'
+              class="w-full font-mono text-xs rounded p-2"
+              style="min-height:180px;background:var(--c-bg-card);border:1px solid var(--c-border);color:var(--c-text);resize:vertical"
+              data-testid="import-textarea"
+            ></textarea>
+          </div>
+
+          <!-- File mode -->
+          <div v-else
+               class="flex flex-col items-center justify-center p-8 rounded cursor-pointer"
+               style="border:2px dashed var(--c-border);min-height:180px"
+               @click="$el.querySelector('#import-file-input').click()">
+            <input id="import-file-input"
+                   type="file"
+                   accept=".json,application/json"
+                   @change="onImportFile"
+                   style="display:none"
+                   data-testid="import-file-input">
+            <span style="color:var(--c-primary)">Click to select a JSON file</span>
+            <span v-if="importFilename"
+                  class="mt-2 text-xs"
+                  style="color:var(--c-text-muted)"
+                  data-testid="import-filename">{{ importFilename }}</span>
+            <span v-else class="mt-2 text-xs" style="color:var(--c-text-muted)">
+              or drag and drop
+            </span>
+          </div>
+
+          <!-- Preview -->
+          <div v-if="importPreview"
+               class="mt-3 p-2 rounded text-xs"
+               style="background:var(--c-bg-card);border:1px solid var(--c-border)"
+               data-testid="import-preview">
+            <strong>Will import:</strong>
+            <span v-for="(count, type) in importPreview" :key="type" class="ml-2">
+              {{ type }}: <strong>{{ count }}</strong>
+            </span>
+          </div>
+
+          <!-- Result -->
+          <div v-if="importResult"
+               class="mt-3 p-2 rounded text-xs"
+               style="background:var(--c-bg-card);border:1px solid var(--c-border)"
+               data-testid="import-result">
+            <span v-if="importResult.ok" style="color:#22c55e">
+              Done: {{ importResult.created }} created,
+              {{ importResult.updated }} updated
+              <template v-if="importResult.skipped">,
+                {{ importResult.skipped }} skipped
+              </template>
+            </span>
+            <span v-else style="color:#ef4444">Import failed</span>
+            <ul v-if="importResult.errors && importResult.errors.length"
+                class="mt-1 list-disc pl-4"
+                style="color:#f97316">
+              <li v-for="e in importResult.errors.slice(0, 5)" :key="e">{{ e }}</li>
+              <li v-if="importResult.errors.length > 5"
+                  style="color:var(--c-text-muted)">
+                +{{ importResult.errors.length - 5 }} more errors
+              </li>
+            </ul>
+          </div>
+
+          <!-- Inline error -->
+          <div v-if="importError"
+               class="mt-3 text-xs"
+               style="color:#ef4444"
+               data-testid="import-error">{{ importError }}</div>
+
+          <!-- Spinner -->
+          <div v-if="importLoading" class="mt-3 flex items-center gap-2 text-xs" style="color:var(--c-text-muted)">
+            <span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span>
+            Importing&hellip;
+          </div>
+
+          <!-- Action buttons -->
+          <div class="flex gap-3 mt-4">
+            <button
+              @click="runImport"
+              :disabled="importLoading"
+              class="text-sm px-4 py-2 rounded transition-colors"
+              style="background:var(--c-primary);color:#fff"
+              :style="importLoading ? 'opacity:0.6;cursor:not-allowed' : ''"
+              data-testid="import-submit"
+            >{{ importLoading ? 'Importing…' : 'Import' }}</button>
+            <button
+              @click="closeImport"
+              class="text-sm px-4 py-2 rounded transition-colors"
+              style="background:var(--c-bg-card);border:1px solid var(--c-border)"
+              data-testid="import-cancel"
+            >Cancel</button>
+          </div>
         </div>
       </div>
 

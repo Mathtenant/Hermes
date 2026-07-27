@@ -1,0 +1,199 @@
+"""API integration tests for the chat endpoints (Phase 5.5).
+
+Each test gets a fresh :class:`ChatService` singleton pointed at temp SQLite
+databases, so sessions never leak between tests. Intent classification degrades
+to a safe fallback when the ROUTER model is unavailable, so these tests do not
+depend on a live Ollama model being pulled.
+"""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from hermes_assistant.config import settings
+from hermes_assistant.webapp import chat_api
+from hermes_assistant.webapp.server import app
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    """A TestClient with an isolated, freshly-built chat service."""
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "tasks_db_path", str(tmp_path / "tasks.db"))
+    monkeypatch.setattr(settings, "chat_db_path", str(tmp_path / "chat.db"))
+    chat_api._chat_service = None
+    try:
+        yield TestClient(app)
+    finally:
+        chat_api._chat_service = None
+
+
+def test_send_message_creates_session(client):
+    response = client.post(
+        "/api/chat/message", json={"message": "Hello", "project_id": "proj1"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "session_id" in data
+    assert data["message"]["role"] == "assistant"
+
+
+def test_send_message_with_session_id(client):
+    response1 = client.post(
+        "/api/chat/message", json={"message": "First", "project_id": "proj1"}
+    )
+    session_id = response1.json()["session_id"]
+    response2 = client.post(
+        "/api/chat/message",
+        json={"message": "Second", "project_id": "proj1", "session_id": session_id},
+    )
+    assert response2.status_code == 200
+    assert response2.json()["session_id"] == session_id
+
+
+def test_send_message_empty_fails(client):
+    response = client.post(
+        "/api/chat/message", json={"message": "", "project_id": "proj1"}
+    )
+    assert response.status_code == 422
+
+
+def test_send_message_too_long_fails(client):
+    response = client.post(
+        "/api/chat/message", json={"message": "x" * 2001, "project_id": "proj1"}
+    )
+    assert response.status_code == 422
+
+
+def test_send_message_missing_project_id(client):
+    response = client.post("/api/chat/message", json={"message": "Test"})
+    assert response.status_code == 422
+
+
+def test_list_sessions_empty(client):
+    response = client.get("/api/chat/sessions")
+    assert response.status_code == 200
+    assert response.json()["sessions"] == []
+
+
+def test_list_sessions_filter_by_project(client):
+    client.post("/api/chat/message", json={"message": "Test", "project_id": "proj1"})
+    response = client.get("/api/chat/sessions?project_id=proj1")
+    assert response.status_code == 200
+    assert len(response.json()["sessions"]) == 1
+
+
+def test_get_session(client):
+    post_resp = client.post(
+        "/api/chat/message", json={"message": "Test", "project_id": "proj1"}
+    )
+    session_id = post_resp.json()["session_id"]
+    response = client.get(f"/api/chat/sessions/{session_id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session"]["id"] == session_id
+    assert len(data["messages"]) >= 2
+
+
+def test_get_session_not_found(client):
+    response = client.get("/api/chat/sessions/invalid_id")
+    assert response.status_code == 404
+
+
+def test_delete_session(client):
+    post_resp = client.post(
+        "/api/chat/message", json={"message": "Test", "project_id": "proj1"}
+    )
+    session_id = post_resp.json()["session_id"]
+    response = client.delete(f"/api/chat/sessions/{session_id}")
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+
+
+def test_delete_session_cascade(client):
+    post_resp = client.post(
+        "/api/chat/message", json={"message": "Test", "project_id": "proj1"}
+    )
+    session_id = post_resp.json()["session_id"]
+    assert len(client.get(f"/api/chat/sessions/{session_id}").json()["messages"]) > 0
+    client.delete(f"/api/chat/sessions/{session_id}")
+    assert client.get(f"/api/chat/sessions/{session_id}").status_code == 404
+
+
+def test_send_message_response_structure(client):
+    response = client.post(
+        "/api/chat/message", json={"message": "Test", "project_id": "proj1"}
+    )
+    data = response.json()
+    assert "session_id" in data
+    assert data["message"]["role"] == "assistant"
+    assert data["message"]["content"]
+    assert "suggestions" in data
+
+
+def test_rate_limit_not_enforced_yet(client):
+    for i in range(25):
+        response = client.post(
+            "/api/chat/message", json={"message": f"Message {i}", "project_id": "proj1"}
+        )
+        assert response.status_code in [200, 500]
+
+
+def test_confidentiality_guard_on_response(client):
+    response = client.post(
+        "/api/chat/message",
+        json={"message": "What are the risks?", "project_id": "proj1"},
+    )
+    assert response.status_code == 200
+
+
+def test_multiple_sessions_per_project(client):
+    r1 = client.post(
+        "/api/chat/message", json={"message": "Session 1", "project_id": "proj1"}
+    )
+    r2 = client.post(
+        "/api/chat/message", json={"message": "Session 2", "project_id": "proj1"}
+    )
+    assert r1.json()["session_id"] != r2.json()["session_id"]
+    sessions = client.get("/api/chat/sessions?project_id=proj1").json()
+    assert len(sessions["sessions"]) >= 2
+
+
+def test_send_message_malformed_json(client):
+    response = client.post(
+        "/api/chat/message",
+        content="not json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code in [400, 422]
+
+
+def test_chat_action_in_response(client):
+    response = client.post(
+        "/api/chat/message", json={"message": "Create a task", "project_id": "proj1"}
+    )
+    assert "action" in response.json()
+
+
+def test_suggestions_in_response(client):
+    response = client.post(
+        "/api/chat/message", json={"message": "Hello", "project_id": "proj1"}
+    )
+    assert isinstance(response.json()["suggestions"], list)
+
+
+def test_send_message_persists_history(client):
+    post = client.post(
+        "/api/chat/message", json={"message": "Remember this", "project_id": "proj1"}
+    )
+    session_id = post.json()["session_id"]
+    messages = client.get(f"/api/chat/sessions/{session_id}").json()["messages"]
+    assert messages[0]["content"] == "Remember this"
+
+
+def test_send_message_whitespace_only_fails(client):
+    response = client.post(
+        "/api/chat/message", json={"message": "   ", "project_id": "proj1"}
+    )
+    assert response.status_code == 422

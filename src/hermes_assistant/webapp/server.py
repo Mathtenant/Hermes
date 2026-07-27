@@ -130,6 +130,14 @@ app.add_middleware(_SecurityHeadersMiddleware)
 if _STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
+# Mount the chat assistant API (Phase 5). Imported here — after ``app`` and
+# ``confidentiality_guard`` exist — because ``chat_api`` imports the guard from
+# this module, and the router must be registered before the catch-all SPA route
+# below so ``/api/chat/*`` paths are not swallowed by the client-side fallback.
+from hermes_assistant.webapp import chat_api  # noqa: E402
+
+app.include_router(chat_api.router)
+
 
 @app.get("/api/health")
 @confidentiality_guard

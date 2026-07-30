@@ -1,0 +1,33 @@
+# Static, language-aware response templates for conversational intents
+# (Phase 5 / Q1). These replace the generic capability fallback for greetings,
+# capability queries, and meta questions — no LLM call required.
+
+smalltalk:
+  en:
+    greeting: "Hello! What are you working on?"
+    thanks: "You're welcome."
+    goodbye: "See you later!"
+  de:
+    greeting: "Hallo! Woran arbeitest du gerade?"
+    thanks: "Gern."
+    goodbye: "Bis dann!"
+
+capability:
+  en:
+    default: "I can help with: creating risks, tasks, and plans; showing what you're working on; running reviews. For example: 'Create a task to deploy' or 'Show me the risks' or 'What's the plan?'"
+  de:
+    default: "Ich kann dir helfen mit: Risiken, Aufgaben und Pläne erstellen; zeigen, woran du arbeitest; Reviews durchführen. Zum Beispiel: 'Erstelle eine Aufgabe zum Testen' oder 'Zeige mir die Risiken' oder 'Was ist der Plan?'"
+
+meta:
+  en:
+    model: "I'm a local AI assistant using the Qwen model, running entirely on your machine with no external services."
+    local: "Yes, I run completely locally on your computer. No data leaves your machine."
+    data: "I can see your current project data (risks, plans, tasks) and help you manage it."
+  de:
+    model: "Ich bin ein lokaler KI-Assistent basierend auf Qwen, der vollständig auf deinem Gerät läuft."
+    local: "Ja, ich laufe komplett lokal auf deinem Computer. Keine Daten verlassen dein Gerät."
+    data: "Ich sehe deine aktuellen Projektdaten (Risiken, Pläne, Aufgaben) und helfe dir, sie zu verwalten."
+
+unknown:
+  en: "I understood your message, but I'm not sure how to help. Did you mean: [suggestions]? Or ask me something else."
+  de: "Ich habe deine Nachricht verstanden, bin mir aber unsicher, wie ich helfen kann. Meintest du: [suggestions]? Oder frag mich etwas anderes."

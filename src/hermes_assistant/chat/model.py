@@ -67,6 +67,9 @@ class IntentClassification(BaseModel):
         "run_review",
         "answer_question",
         "smalltalk",
+        "capability",
+        "meta",
+        "unknown",
     ]
     params: dict[str, str] = Field(default_factory=dict)
     confidence: float

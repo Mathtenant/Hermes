@@ -420,3 +420,27 @@ body {
   .hermes-layout { display: block; }
   .card { border: 1px solid #ccc; }
 }
+
+/* ── Collapsible panels (Q2) ────────────────────────────────────────────── */
+/* Uniform collapse behaviour for any panel body. A `.panel` gains the
+   `is-collapsed` class when its toggle button (`[data-collapse-target]`) is
+   clicked; the body animates its max-height to zero. The chat widget also
+   renders its body empty when collapsed, so this animation degrades safely. */
+.panel-body {
+  overflow: hidden;
+  transition: max-height 0.18s ease;
+  max-height: 60vh;
+}
+
+.is-collapsed .panel-body {
+  max-height: 0;
+}
+
+[id$="-body"] {
+  overflow: hidden;
+  transition: max-height 0.18s ease;
+}
+
+.is-collapsed [id$="-body"] {
+  max-height: 0;
+}

@@ -113,3 +113,81 @@ def test_service_suggestions():
     store = ChatStore(":memory:")
     turn = _service(store).handle_turn("Show risks", "proj1")
     assert isinstance(turn.suggestions, list)
+
+
+# --------------------------------------------------------------------------- #
+# Q1 — conversational intents (smalltalk / capability / meta / unknown)
+# --------------------------------------------------------------------------- #
+
+
+def test_formatter_smalltalk_greeting_en():
+    text = ResponseFormatter.format_result({}, "smalltalk", "Hello there")
+    assert "Hello" in text
+
+
+def test_formatter_smalltalk_greeting_de():
+    text = ResponseFormatter.format_result({}, "smalltalk", "Hallo, grüße dich")
+    assert "Hallo" in text
+
+
+def test_formatter_smalltalk_thanks():
+    text = ResponseFormatter.format_result({}, "smalltalk", "Thanks a lot")
+    assert "welcome" in text.lower()
+
+
+def test_formatter_capability_lists_examples():
+    text = ResponseFormatter.format_result({}, "capability", "What can you do?")
+    assert "risk" in text.lower()
+    assert "task" in text.lower()
+
+
+def test_formatter_meta_model():
+    text = ResponseFormatter.format_result({}, "meta", "What model are you?")
+    assert "qwen" in text.lower()
+
+
+def test_formatter_meta_local():
+    text = ResponseFormatter.format_result({}, "meta", "Do you run locally?")
+    assert "local" in text.lower()
+
+
+def test_formatter_unknown_has_suggestions():
+    text = ResponseFormatter.format_result({}, "unknown", "flibber the wozzle")
+    assert "[suggestions]" not in text
+    assert "risk" in text.lower()
+
+
+def test_service_capability_no_action():
+    class CapabilityRouter:
+        def classify(self, message, context):  # noqa: ANN001
+            return IntentClassification(intent="capability", params={}, confidence=0.95)
+
+    store = ChatStore(":memory:")
+    service = ChatService(store, CapabilityRouter(), FakeExecutor(), FakeLLMClient())
+    turn = service.handle_turn("What can you do?", "proj1")
+    assert turn.action is None
+    assert "risk" in turn.message.content.lower()
+
+
+def test_service_meta_no_action():
+    class MetaRouter:
+        def classify(self, message, context):  # noqa: ANN001
+            return IntentClassification(intent="meta", params={}, confidence=0.9)
+
+    store = ChatStore(":memory:")
+    service = ChatService(store, MetaRouter(), FakeExecutor(), FakeLLMClient())
+    turn = service.handle_turn("What model are you?", "proj1")
+    assert turn.action is None
+    assert "qwen" in turn.message.content.lower()
+
+
+def test_service_greeting_not_rephrase_fallback():
+    class SmallTalkRouter:
+        def classify(self, message, context):  # noqa: ANN001
+            return IntentClassification(intent="smalltalk", params={}, confidence=0.99)
+
+    store = ChatStore(":memory:")
+    service = ChatService(store, SmallTalkRouter(), FakeExecutor(), FakeLLMClient())
+    turn = service.handle_turn("Hello", "proj1")
+    assert "rephrase" not in turn.message.content.lower()
+    assert "Hello" in turn.message.content

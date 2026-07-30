@@ -137,3 +137,43 @@ def test_widget_header_title(page_with_chat: "Page"):
 
 def test_send_button_present(page_with_chat: "Page"):
     assert page_with_chat.locator(".chat-send").is_visible()
+
+
+# --------------------------------------------------------------------------- #
+# Q2 — chat panel collapse defect
+# --------------------------------------------------------------------------- #
+
+
+def test_chat_widget_collapse(page_with_chat: "Page"):
+    """Chat widget collapses when the '−' button is clicked, and re-expands."""
+    widget = page_with_chat.locator("#chat-widget")
+    button = widget.locator("button").first
+    body = page_with_chat.locator("#chat-widget-body")
+
+    # Initial state: expanded.
+    assert button.text_content() == "−"
+    assert body.is_visible()
+
+    # Click to collapse.
+    button.click()
+    assert page_with_chat.locator("#chat-widget button").first.text_content() == "+"
+    assert page_with_chat.locator("#chat-widget-body").is_hidden()
+
+    # Click to expand.
+    page_with_chat.locator("#chat-widget button").first.click()
+    assert page_with_chat.locator("#chat-widget button").first.text_content() == "−"
+    assert page_with_chat.locator("#chat-widget-body").is_visible()
+
+
+def test_chat_widget_collapse_persists(page_with_chat: "Page"):
+    """Collapsed state persists across a page reload (sessionStorage)."""
+    button = page_with_chat.locator("#chat-widget button").first
+
+    # Collapse.
+    button.click()
+    assert page_with_chat.locator("#chat-widget button").first.text_content() == "+"
+
+    # Reload — the restored state should still be collapsed.
+    page_with_chat.reload()
+    page_with_chat.wait_for_selector("#chat-widget", timeout=5000)
+    assert page_with_chat.locator("#chat-widget button").first.text_content() == "+"

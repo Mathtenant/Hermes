@@ -35,10 +35,86 @@ _CONFIDENCE_THRESHOLD = 0.7
 
 
 class ResponseFormatter:
-    """Render an executor result dict into a natural-language reply."""
+    """Render an executor result dict into a natural-language reply.
+
+    Conversational intents (``smalltalk``, ``capability``, ``meta``,
+    ``unknown``) are answered from a static, language-aware YAML template
+    (``responses.yaml``) with no LLM call. All other intents fall through to
+    :meth:`format_result_existing`, which renders an executor result dict.
+    """
+
+    _RESPONSES: dict[str, Any] | None = None
+    _CONVERSATIONAL = ("smalltalk", "capability", "meta", "unknown")
+
+    @classmethod
+    def load_responses(cls) -> dict[str, Any]:
+        """Lazily load and cache the static response templates."""
+        if cls._RESPONSES is None:
+            import yaml
+            from pathlib import Path
+
+            responses_path = Path(__file__).parent / "responses.yaml"
+            cls._RESPONSES = yaml.safe_load(responses_path.read_text())
+        return cls._RESPONSES
 
     @staticmethod
-    def format_result(result: dict[str, Any], intent: str) -> str:
+    def detect_language(message: str) -> str:
+        """Detect DE/EN from message content (umlauts/ß imply German)."""
+        return "de" if any(c in message for c in "äöüßÄÖÜ") else "en"
+
+    @classmethod
+    def format_result(
+        cls, result: dict[str, Any], intent: str, message: str = ""
+    ) -> str:
+        """Convert an action result (or conversational intent) into prose.
+
+        For conversational intents the ``result`` dict is ignored and the reply
+        is drawn from the static templates, disambiguated by keywords in
+        ``message``. Existing action intents ignore ``message`` and render
+        ``result`` as before, preserving the historical two-arg signature.
+        """
+        if intent in cls._CONVERSATIONAL:
+            return cls._format_conversational(intent, message)
+        return cls.format_result_existing(result, intent)
+
+    @classmethod
+    def _format_conversational(cls, intent: str, message: str) -> str:
+        """Render a smalltalk/capability/meta/unknown reply from templates."""
+        language = cls.detect_language(message)
+        responses = cls.load_responses()
+        msg_lower = message.lower()
+
+        if intent == "smalltalk":
+            block = responses["smalltalk"][language]
+            if any(w in msg_lower for w in ["hello", "hi", "hallo", "hey", "guten"]):
+                return block.get("greeting", "Hello!")
+            if any(w in msg_lower for w in ["thanks", "thank you", "danke", "dank dir"]):
+                return block.get("thanks", "You're welcome!")
+            if any(w in msg_lower for w in ["bye", "goodbye", "ciao", "auf wiedersehen"]):
+                return block.get("goodbye", "See you!")
+            return block["greeting"]
+
+        if intent == "capability":
+            return responses["capability"][language]["default"]
+
+        if intent == "meta":
+            block = responses["meta"][language]
+            if any(w in msg_lower for w in ["model", "modell", "which ai", "welch"]):
+                return block["model"]
+            if any(w in msg_lower for w in ["local", "lokal", "offline", "my machine"]):
+                return block["local"]
+            if any(w in msg_lower for w in ["data", "daten", "see", "sehen", "project"]):
+                return block["data"]
+            return block["model"]
+
+        # unknown
+        suggestions = ["create a risk", "list risks", "show plan"]
+        return responses["unknown"][language].replace(
+            "[suggestions]", " / ".join(suggestions)
+        )
+
+    @staticmethod
+    def format_result_existing(result: dict[str, Any], intent: str) -> str:
         """Convert an action result into user-facing prose."""
         if "error" in result:
             return f"Sorry, I encountered an error: {result['error']}"
@@ -116,24 +192,30 @@ class ChatService:
         # 4. Classify intent (degrade gracefully on any router failure).
         classification = self._classify(message, context)
 
-        # 5. Execute the action, or fall back to a grounded answer.
+        # 5. Execute the action, or handle a conversational intent.
+        #    Conversational intents (smalltalk/capability/meta/unknown) are
+        #    answered from static templates with no side effect and no LLM call.
         high_confidence = classification.confidence >= _CONFIDENCE_THRESHOLD
-        if high_confidence and classification.intent != "smalltalk":
+        conversational = classification.intent in ResponseFormatter._CONVERSATIONAL
+        if conversational:
+            result = {"action": "conversational"}
+            response_text = ResponseFormatter.format_result(
+                result, classification.intent, message
+            )
+        elif high_confidence:
             result = self.executor.execute(
                 classification.intent, classification.params, context
             )
-        elif classification.intent == "smalltalk":
-            result = {"action": "answer", "answer": "Hi! How can I help with your project?"}
+            response_text = ResponseFormatter.format_result(
+                result, classification.intent, message
+            )
         else:
-            result = {
-                "action": "answer",
-                "answer": self._fallback_answer(message, context),
-            }
+            # Low confidence and not a recognised conversational intent:
+            # degrade to the improved "unknown" fallback (suggestions).
+            result = {"action": "conversational"}
+            response_text = ResponseFormatter.format_result(result, "unknown", message)
 
-        # 6. Format the reply.
-        response_text = ResponseFormatter.format_result(result, classification.intent)
-
-        # 7. Persist the assistant message.
+        # 6. Persist the assistant message.
         assistant_msg = self.store.add_message(
             session.id,
             ChatRole.assistant,
@@ -144,9 +226,9 @@ class ChatService:
             },
         )
 
-        # 8. Persist the action (skip pure smalltalk).
+        # 7. Persist the action (skip conversational intents — no side effect).
         action = None
-        if classification.intent != "smalltalk":
+        if not conversational and high_confidence:
             action = self.store.add_action(
                 session.id,
                 user_msg.id,
@@ -177,18 +259,6 @@ class ChatService:
             return IntentClassification(
                 intent="answer_question", params={}, confidence=0.0
             )
-
-    def _fallback_answer(self, message: str, context: ChatContext) -> str:
-        """Produce a safe, non-committal answer when confidence is low.
-
-        Intentionally does not call the LLM: this path is reached when the
-        router is unavailable or unsure, so we return a deterministic prompt
-        for clarification rather than risk a hallucinated answer.
-        """
-        return (
-            "I'm here to help with risks, tasks, plans, and reviews. "
-            "Could you rephrase what you'd like to do?"
-        )
 
     def _build_suggestions(
         self, context: ChatContext, classification: IntentClassification

@@ -1,6 +1,6 @@
 """Intent router for the chat assistant (Phase 5.2).
 
-Classifies a user message into one of eight intents using the ROUTER model
+Classifies a user message into one of the supported intents using the ROUTER model
 (qwen3:4b) via grammar-constrained structured output. The router is a thin
 wrapper: it assembles a grounded system prompt from :class:`ChatContext`, then
 delegates to the injected LLM client. The client is duck-typed (Protocol) so
@@ -44,13 +44,19 @@ Classify the user's message into one of these intents:
 - review_status: User wants to know about review results
 - run_review: User wants to run a new review
 - answer_question: User is asking a question about the project
-- smalltalk: User is making casual conversation
+- smalltalk: Greetings, thanks, or goodbyes (Hello, thank you, bye, how are you)
+- capability: User asks what the assistant can do ("What can you do?", "Help", "What commands?")
+- meta: User asks about the assistant itself ("What model are you?", "Do you run locally?")
+- unknown: The message is understood but none of the above intents fit
 
 Examples:
 "Show me the high-priority risks" -> list_risks (params: priority=high)
 "Create a task to fix the security issue" -> create_task (params: title="Fix security issue")
 "What's the plan?" -> show_plan
 "Run a review" -> run_review
+"Hello" -> smalltalk
+"What can you do?" -> capability
+"What model are you?" -> meta
 
 Current project context:
 {context}
@@ -72,7 +78,7 @@ class IntentRouter:
         self.model = model
 
     def classify(self, message: str, context: ChatContext) -> IntentClassification:
-        """Classify ``message`` into one of the eight intents.
+        """Classify ``message`` into one of the the supported intents.
 
         The classification is grounded in ``context`` (risks, plan, tasks,
         latest verdict), which is embedded in the system prompt.

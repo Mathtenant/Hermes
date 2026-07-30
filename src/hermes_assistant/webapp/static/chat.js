@@ -6,8 +6,27 @@
 (function () {
   "use strict";
 
+  var COLLAPSE_KEY = "panel-collapsed-chat-widget-body";
+
+  function readCollapsed() {
+    try {
+      return sessionStorage.getItem(COLLAPSE_KEY) === "true";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function writeCollapsed(collapsed) {
+    try {
+      sessionStorage.setItem(COLLAPSE_KEY, String(collapsed));
+    } catch (e) {
+      /* sessionStorage unavailable (private mode) — ignore. */
+    }
+  }
+
   var state = {
-    isOpen: true,
+    // Restore collapsed state from a prior visit so a reload preserves it.
+    isOpen: !readCollapsed(),
     isLoading: false,
     session: null,
     project: "default",
@@ -63,7 +82,7 @@
       ? '<div class="chat-typing" style="align-self:flex-start;color:#94a3b8;font-size:0.875rem;">Assistant is typing...</div>'
       : "";
 
-    var body = state.isOpen
+    var bodyInner = state.isOpen
       ? '<div class="chat-messages" style="flex:1;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:0.75rem;">' +
         msgs +
         typing +
@@ -74,11 +93,29 @@
         "</div>"
       : "";
 
+    // The body is always a distinctly-identified panel so collapse state is
+    // addressable (#chat-widget-body). When collapsed it renders empty (no
+    // child input), which both hides the panel and drops interactive controls.
+    var bodyStyle = state.isOpen
+      ? "flex:1;display:flex;flex-direction:column;overflow:hidden;"
+      : "display:none;";
+    var body =
+      '<div id="chat-widget-body" class="panel-body" style="' +
+      bodyStyle +
+      '">' +
+      bodyInner +
+      "</div>";
+
+    var collapsedClass = state.isOpen ? "" : " is-collapsed";
     root.innerHTML =
-      '<div id="chat-widget" style="position:fixed;bottom:20px;right:20px;width:400px;height:500px;border:1px solid #334155;border-radius:8px;background:#1e293b;display:flex;flex-direction:column;z-index:900;box-shadow:0 4px 12px rgba(0,0,0,0.3);">' +
+      '<div id="chat-widget" class="panel' +
+      collapsedClass +
+      '" style="position:fixed;bottom:20px;right:20px;width:400px;height:500px;border:1px solid #334155;border-radius:8px;background:#1e293b;display:flex;flex-direction:column;z-index:900;box-shadow:0 4px 12px rgba(0,0,0,0.3);">' +
       '<div style="background:#0f172a;padding:1rem;border-bottom:1px solid #334155;display:flex;justify-content:space-between;align-items:center;">' +
       '<h3 style="margin:0;color:#e2e8f0;font-size:1rem;">Hermes Chat</h3>' +
-      '<button class="chat-toggle" style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1.5rem;">' +
+      '<button class="chat-toggle" data-collapse-target="chat-widget-body" aria-expanded="' +
+      String(state.isOpen) +
+      '" style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1.5rem;">' +
       (state.isOpen ? "−" : "+") +
       "</button>" +
       "</div>" +
@@ -93,6 +130,8 @@
     if (toggle) {
       toggle.onclick = function () {
         state.isOpen = !state.isOpen;
+        // Persist so a page reload keeps the panel collapsed/expanded.
+        writeCollapsed(!state.isOpen);
         render(root);
       };
     }
@@ -166,10 +205,52 @@
     },
   };
 
+  // Generic collapse for any *other* panel that opts in via
+  // [data-collapse-target]. The chat widget re-renders itself, so its own
+  // toggle (inside #chat-widget) is intentionally excluded here to avoid a
+  // double toggle. Uses event delegation so panels injected later still work.
+  function genericCollapse(e) {
+    var btn = e.target.closest && e.target.closest("[data-collapse-target]");
+    if (!btn) return;
+    if (btn.closest("#chat-widget")) return; // handled by the widget itself
+    var panel = document.getElementById(btn.dataset.collapseTarget);
+    if (!panel) return;
+    var isCollapsed = panel.classList.toggle("is-collapsed");
+    btn.textContent = isCollapsed ? "+" : "−";
+    btn.setAttribute("aria-expanded", String(!isCollapsed));
+    try {
+      sessionStorage.setItem(
+        "panel-collapsed-" + btn.dataset.collapseTarget,
+        String(isCollapsed)
+      );
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
+  function restoreGenericPanels() {
+    var btns = document.querySelectorAll("[data-collapse-target]");
+    for (var i = 0; i < btns.length; i++) {
+      var btn = btns[i];
+      if (btn.closest("#chat-widget")) continue;
+      var targetId = btn.dataset.collapseTarget;
+      var panel = document.getElementById(targetId);
+      var wasCollapsed =
+        sessionStorage.getItem("panel-collapsed-" + targetId) === "true";
+      if (wasCollapsed && panel) {
+        panel.classList.add("is-collapsed");
+        btn.textContent = "+";
+        btn.setAttribute("aria-expanded", "false");
+      }
+    }
+  }
+
   if (typeof document !== "undefined") {
+    document.addEventListener("click", genericCollapse);
     document.addEventListener("DOMContentLoaded", function () {
       var mountEl = document.getElementById("chat-app");
       if (mountEl) window.ChatWidget.mount(mountEl);
+      restoreGenericPanels();
     });
   }
 })();

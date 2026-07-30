@@ -92,6 +92,36 @@ def test_router_classify_smalltalk():
     assert result.intent == "smalltalk"
 
 
+def test_router_classify_capability():
+    """'What can you do' -> capability intent."""
+    client = FakeLLMClient(
+        IntentClassification(intent="capability", params={}, confidence=0.95)
+    )
+    router = IntentRouter(client)
+    result = router.classify("What can you do?", ChatContext(project_id="proj1"))
+    assert result.intent == "capability"
+
+
+def test_router_classify_meta():
+    """'What model are you' -> meta intent."""
+    client = FakeLLMClient(
+        IntentClassification(intent="meta", params={}, confidence=0.90)
+    )
+    router = IntentRouter(client)
+    result = router.classify("What model are you?", ChatContext(project_id="proj1"))
+    assert result.intent == "meta"
+
+
+def test_router_classify_unknown():
+    """Understood-but-unhandled message -> unknown intent."""
+    client = FakeLLMClient(
+        IntentClassification(intent="unknown", params={}, confidence=0.80)
+    )
+    router = IntentRouter(client)
+    result = router.classify("Tell me a joke", ChatContext(project_id="proj1"))
+    assert result.intent == "unknown"
+
+
 def test_router_low_confidence_fallback():
     client = FakeLLMClient(
         IntentClassification(intent="answer_question", params={}, confidence=0.65)

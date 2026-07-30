@@ -197,3 +197,116 @@ def test_send_message_whitespace_only_fails(client):
         "/api/chat/message", json={"message": "   ", "project_id": "proj1"}
     )
     assert response.status_code == 422
+
+
+# --------------------------------------------------------------------------- #
+# Q1 — conversational politeness (smalltalk / capability / meta)
+#
+# Ollama is not available in CI, so we install a deterministic keyword router
+# into the chat-service singleton. The real ResponseFormatter still produces
+# the static, language-aware replies from responses.yaml.
+# --------------------------------------------------------------------------- #
+
+
+class _KeywordRouter:
+    """Classify by keyword so conversational intents are testable offline."""
+
+    def classify(self, message, context):  # noqa: ANN001
+        from hermes_assistant.chat.model import IntentClassification
+
+        low = message.lower()
+        if any(w in low for w in ["hello", "hi", "hallo", "hey", "thanks", "danke", "bye"]):
+            intent = "smalltalk"
+        elif "can you do" in low or "help" in low or "commands" in low:
+            intent = "capability"
+        elif "model" in low or "locally" in low or "local" in low:
+            intent = "meta"
+        else:
+            intent = "answer_question"
+        return IntentClassification(intent=intent, params={}, confidence=0.95)
+
+
+@pytest.fixture
+def convo_client(tmp_path, monkeypatch):
+    """A TestClient whose chat service uses the deterministic keyword router."""
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "tasks_db_path", str(tmp_path / "tasks.db"))
+    monkeypatch.setattr(settings, "chat_db_path", str(tmp_path / "chat.db"))
+
+    from hermes_assistant.chat.executor import ActionExecutor
+    from hermes_assistant.chat.service import ChatService
+    from hermes_assistant.chat.store import ChatStore
+
+    store = ChatStore(str(tmp_path / "chat.db"))
+    executor = ActionExecutor(None, None, None)
+    chat_api._chat_service = ChatService(store, _KeywordRouter(), executor, None)
+    try:
+        yield TestClient(app)
+    finally:
+        chat_api._chat_service = None
+
+
+def test_chat_smalltalk_no_action(convo_client):
+    """Smalltalk doesn't create actions and returns a greeting."""
+    response = convo_client.post(
+        "/api/chat/message", json={"message": "Hello!", "project_id": "proj1"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] is None
+    content = data["message"]["content"].lower()
+    assert "hello" in content or "hallo" in content
+
+
+def test_chat_capability_lists_examples(convo_client):
+    """Capability shows concrete examples and takes no action."""
+    response = convo_client.post(
+        "/api/chat/message",
+        json={"message": "What can you do?", "project_id": "proj1"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    content = data["message"]["content"].lower()
+    assert "risk" in content or "task" in content
+    assert data["action"] is None
+
+
+def test_chat_meta_returns_model_info(convo_client):
+    """Meta question returns model information, no action."""
+    response = convo_client.post(
+        "/api/chat/message",
+        json={"message": "What model are you?", "project_id": "proj1"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "qwen" in data["message"]["content"].lower()
+    assert data["action"] is None
+
+
+def test_chat_greeting_not_rephrase(convo_client):
+    """A greeting must not trigger the old 'could you rephrase' fallback."""
+    response = convo_client.post(
+        "/api/chat/message", json={"message": "Hi there", "project_id": "proj1"}
+    )
+    assert "rephrase" not in response.json()["message"]["content"].lower()
+
+
+# --------------------------------------------------------------------------- #
+# Q3 — import endpoint remains functional with two-step UI
+# --------------------------------------------------------------------------- #
+
+
+def test_import_endpoint_still_works(client):
+    """The /api/import/json endpoint accepts JSON directly (two-step UI doesn't break it)."""
+    payload = {"risks": [{"title": "Risk from Copilot"}]}
+    response = client.post("/api/import/json", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["created"] == 1
+
+
+def test_copilot_prompt_file_served(client):
+    """The static prompt file used in the two-step dialog is accessible."""
+    response = client.get("/static/prompts/copilot_state_export.txt")
+    assert response.status_code == 200
+    assert "JSON" in response.text or "Aufgabe" in response.text

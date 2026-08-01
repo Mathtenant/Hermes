@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -59,12 +60,19 @@ class TaskStore:
         self.db_path = str(db_path)
         if self.db_path != ":memory:":
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path)
+        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        # RLock serialises all public method calls so that concurrent FastAPI
+        # worker threads cannot interleave execute/commit sequences on the same
+        # shared connection. RLock (re-entrant) is used because some public
+        # methods call other public methods internally (e.g. create calls get
+        # and list_by_parent, update calls get, close_task calls update,
+        # tree calls list_by_parent).
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------ #
     def close(self) -> None:
@@ -84,93 +92,98 @@ class TaskStore:
         If ``task.id`` is empty, a new UUID hex is assigned.
         If ``wbs_number`` is empty, it is computed from parent position.
         """
-        if not task.id:
-            task = task.model_copy(update={"id": uuid.uuid4().hex})
-        if not task.wbs_number:
-            task = task.model_copy(update={"wbs_number": self._compute_wbs(task)})
-        now = _now()
-        task = task.model_copy(update={"created_at": now, "updated_at": now})
+        with self._lock:
+            if not task.id:
+                task = task.model_copy(update={"id": uuid.uuid4().hex})
+            if not task.wbs_number:
+                task = task.model_copy(update={"wbs_number": self._compute_wbs(task)})
+            now = _now()
+            task = task.model_copy(update={"created_at": now, "updated_at": now})
 
-        self._conn.execute(
-            "INSERT INTO tasks (id, parent_id, status, node_kind, blob, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                task.id,
-                task.parent_id,
-                task.status,
-                task.node_kind,
-                self._task_to_blob(task),
-                now.isoformat(),
-                now.isoformat(),
-            ),
-        )
-        # Register this child in its parent's children_ids.
-        if task.parent_id:
-            parent = self.get(task.parent_id)
-            if parent is not None:
-                new_children = list(parent.children_ids) + [task.id]
-                self._update_blob(parent.id, {"children_ids": new_children})
-        self._conn.commit()
-        return task.id
+            self._conn.execute(
+                "INSERT INTO tasks (id, parent_id, status, node_kind, blob, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    task.id,
+                    task.parent_id,
+                    task.status,
+                    task.node_kind,
+                    self._task_to_blob(task),
+                    now.isoformat(),
+                    now.isoformat(),
+                ),
+            )
+            # Register this child in its parent's children_ids.
+            if task.parent_id:
+                parent = self.get(task.parent_id)
+                if parent is not None:
+                    new_children = list(parent.children_ids) + [task.id]
+                    self._update_blob(parent.id, {"children_ids": new_children})
+            self._conn.commit()
+            return task.id
 
     def get(self, task_id: str) -> Task | None:
         """Fetch a task by id, or ``None`` if not found."""
-        row = self._conn.execute(
-            "SELECT blob FROM tasks WHERE id = ?", (task_id,)
-        ).fetchone()
-        return self._row_to_task(row) if row else None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT blob FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            return self._row_to_task(row) if row else None
 
     def list_by_parent(self, parent_id: str | None) -> list[Task]:
         """Return all direct children of ``parent_id`` (or roots if ``None``)."""
-        if parent_id is None:
-            rows = self._conn.execute(
-                "SELECT blob FROM tasks WHERE parent_id IS NULL ORDER BY created_at ASC"
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT blob FROM tasks WHERE parent_id = ? ORDER BY created_at ASC",
-                (parent_id,),
-            ).fetchall()
-        return [self._row_to_task(r) for r in rows]
+        with self._lock:
+            if parent_id is None:
+                rows = self._conn.execute(
+                    "SELECT blob FROM tasks WHERE parent_id IS NULL ORDER BY created_at ASC"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT blob FROM tasks WHERE parent_id = ? ORDER BY created_at ASC",
+                    (parent_id,),
+                ).fetchall()
+            return [self._row_to_task(r) for r in rows]
 
     def update(self, task_id: str, changed_by: str = "system", **fields: Any) -> Task:
         """Update named fields on a task, logging each change as a TaskUpdate.
 
         Returns the updated task.  Raises ``KeyError`` if task not found.
         """
-        task = self.get(task_id)
-        if task is None:
-            raise KeyError(f"Task {task_id!r} not found")
-        now = _now()
-        new_updates = list(task.updates)
-        for field, new_val in fields.items():
-            old_val = getattr(task, field, None)
-            if old_val != new_val:
-                new_updates.append(
-                    TaskUpdate(
-                        timestamp=now,
-                        field=field,
-                        old_value=old_val,
-                        new_value=new_val,
-                        changed_by=changed_by,
+        with self._lock:
+            task = self.get(task_id)
+            if task is None:
+                raise KeyError(f"Task {task_id!r} not found")
+            now = _now()
+            new_updates = list(task.updates)
+            for field, new_val in fields.items():
+                old_val = getattr(task, field, None)
+                if old_val != new_val:
+                    new_updates.append(
+                        TaskUpdate(
+                            timestamp=now,
+                            field=field,
+                            old_value=old_val,
+                            new_value=new_val,
+                            changed_by=changed_by,
+                        )
                     )
+            merged: dict[str, Any] = {**fields, "updates": new_updates, "updated_at": now}
+            self._update_blob(task_id, merged)
+            # Keep indexed columns in sync for status changes.
+            if "status" in fields:
+                self._conn.execute(
+                    "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+                    (fields["status"], now.isoformat(), task_id),
                 )
-        merged: dict[str, Any] = {**fields, "updates": new_updates, "updated_at": now}
-        self._update_blob(task_id, merged)
-        # Keep indexed columns in sync for status changes.
-        if "status" in fields:
-            self._conn.execute(
-                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-                (fields["status"], now.isoformat(), task_id),
-            )
-        self._conn.commit()
-        result = self.get(task_id)
-        assert result is not None
-        return result
+            self._conn.commit()
+            result = self.get(task_id)
+            assert result is not None
+            return result
 
     def close_task(self, task_id: str, changed_by: str = "system") -> Task:
         """Convenience method: set status = 'closed'."""
-        return self.update(task_id, changed_by=changed_by, status="closed")
+        with self._lock:
+            return self.update(task_id, changed_by=changed_by, status="closed")
 
     def tree(self, root_id: str | None = None) -> dict[str, Any]:
         """Return a nested dict representation of the (sub)tree.
@@ -179,16 +192,17 @@ class TaskStore:
         ``"children"``.  Each node has keys: id, title, node_kind, status,
         wbs_number, children (recursive).
         """
-        if root_id is None:
-            roots = self.list_by_parent(None)
-            return {"id": None, "children": [self._node_dict(t) for t in roots]}
-        task = self.get(root_id)
-        if task is None:
-            return {}
-        return self._node_dict(task)
+        with self._lock:
+            if root_id is None:
+                roots = self.list_by_parent(None)
+                return {"id": None, "children": [self._node_dict(t) for t in roots]}
+            task = self.get(root_id)
+            if task is None:
+                return {}
+            return self._node_dict(task)
 
     # ------------------------------------------------------------------ #
-    # Private helpers
+    # Private helpers (called only while the lock is already held)
     # ------------------------------------------------------------------ #
     def _update_blob(self, task_id: str, fields: dict[str, Any]) -> None:
         """Merge ``fields`` into the stored blob without re-fetching the row."""

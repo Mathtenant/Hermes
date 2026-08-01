@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 from hermes_assistant.plans.model import PlanDiff, PlanItem, PlanItemStatus, PlanVersion
@@ -50,12 +51,18 @@ class PlanEditor:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        # RLock serialises all public method calls so that concurrent FastAPI
+        # worker threads cannot interleave execute/commit sequences on the same
+        # shared connection. RLock (re-entrant) is used because some public
+        # methods call other public methods internally (e.g. update calls get,
+        # reorder calls get and update, diff calls get).
+        self._lock = threading.RLock()
 
     def close(self) -> None:
         self._conn.close()
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Internal helpers (called only while the lock is already held)
     # ------------------------------------------------------------------
 
     def _row_to_version(self, row: sqlite3.Row) -> PlanVersion:
@@ -105,9 +112,10 @@ class PlanEditor:
         author: str = "",
     ) -> PlanVersion:
         """Create a new plan (version 1) with the given items."""
-        pv = PlanVersion(plan_id=plan_id, version=1, items=items, author=author)
-        self._insert_version(pv)
-        return pv
+        with self._lock:
+            pv = PlanVersion(plan_id=plan_id, version=1, items=items, author=author)
+            self._insert_version(pv)
+            return pv
 
     def update(
         self,
@@ -120,12 +128,13 @@ class PlanEditor:
 
         Raises ``PlanNotFoundError`` if the plan has never been created.
         """
-        if self.get(plan_id) is None:
-            raise PlanNotFoundError(plan_id)
-        version = self._next_version(plan_id)
-        pv = PlanVersion(plan_id=plan_id, version=version, items=items, author=author)
-        self._insert_version(pv)
-        return pv
+        with self._lock:
+            if self.get(plan_id) is None:
+                raise PlanNotFoundError(plan_id)
+            version = self._next_version(plan_id)
+            pv = PlanVersion(plan_id=plan_id, version=version, items=items, author=author)
+            self._insert_version(pv)
+            return pv
 
     def reorder(
         self,
@@ -139,29 +148,31 @@ class PlanEditor:
         Items not in ``item_ids`` are appended at the end in their original
         relative order.
         """
-        latest = self.get(plan_id)
-        if latest is None:
-            raise PlanNotFoundError(plan_id)
-        by_id = {item.id: item for item in latest.items}
-        reordered: list[PlanItem] = []
-        for idx, iid in enumerate(item_ids):
-            if iid in by_id:
-                item = by_id.pop(iid)
-                item.order = idx
-                reordered.append(item)
-        # append remaining items not covered by item_ids
-        for item in latest.items:
-            if item.id in by_id:
-                reordered.append(by_id.pop(item.id))
-        return self.update(plan_id, reordered, author=author)
+        with self._lock:
+            latest = self.get(plan_id)
+            if latest is None:
+                raise PlanNotFoundError(plan_id)
+            by_id = {item.id: item for item in latest.items}
+            reordered: list[PlanItem] = []
+            for idx, iid in enumerate(item_ids):
+                if iid in by_id:
+                    item = by_id.pop(iid)
+                    item.order = idx
+                    reordered.append(item)
+            # append remaining items not covered by item_ids
+            for item in latest.items:
+                if item.id in by_id:
+                    reordered.append(by_id.pop(item.id))
+            return self.update(plan_id, reordered, author=author)
 
     def delete(self, plan_id: str) -> bool:
         """Remove all versions of a plan; returns True if anything was deleted."""
-        cur = self._conn.execute(
-            "DELETE FROM plan_versions WHERE plan_id = ?", (plan_id,)
-        )
-        self._conn.commit()
-        return cur.rowcount > 0
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM plan_versions WHERE plan_id = ?", (plan_id,)
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
 
     # ------------------------------------------------------------------
     # Read operations
@@ -169,71 +180,75 @@ class PlanEditor:
 
     def get(self, plan_id: str, version: int | None = None) -> PlanVersion | None:
         """Return the latest version (or a specific version) of a plan."""
-        if version is None:
-            row = self._conn.execute(
-                "SELECT plan_id, version, items_json, author, created_at "
-                "FROM plan_versions WHERE plan_id = ? "
-                "ORDER BY version DESC LIMIT 1",
-                (plan_id,),
-            ).fetchone()
-        else:
-            row = self._conn.execute(
-                "SELECT plan_id, version, items_json, author, created_at "
-                "FROM plan_versions WHERE plan_id = ? AND version = ?",
-                (plan_id, version),
-            ).fetchone()
-        return self._row_to_version(row) if row else None
+        with self._lock:
+            if version is None:
+                row = self._conn.execute(
+                    "SELECT plan_id, version, items_json, author, created_at "
+                    "FROM plan_versions WHERE plan_id = ? "
+                    "ORDER BY version DESC LIMIT 1",
+                    (plan_id,),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT plan_id, version, items_json, author, created_at "
+                    "FROM plan_versions WHERE plan_id = ? AND version = ?",
+                    (plan_id, version),
+                ).fetchone()
+            return self._row_to_version(row) if row else None
 
     def list_versions(self, plan_id: str) -> list[PlanVersion]:
         """Return all versions of a plan, oldest first."""
-        rows = self._conn.execute(
-            "SELECT plan_id, version, items_json, author, created_at "
-            "FROM plan_versions WHERE plan_id = ? ORDER BY version ASC",
-            (plan_id,),
-        ).fetchall()
-        return [self._row_to_version(r) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT plan_id, version, items_json, author, created_at "
+                "FROM plan_versions WHERE plan_id = ? ORDER BY version ASC",
+                (plan_id,),
+            ).fetchall()
+            return [self._row_to_version(r) for r in rows]
 
     def list_plans(self) -> list[str]:
         """Return all distinct plan IDs stored in this editor."""
-        rows = self._conn.execute(
-            "SELECT DISTINCT plan_id FROM plan_versions ORDER BY plan_id"
-        ).fetchall()
-        return [r["plan_id"] for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT plan_id FROM plan_versions ORDER BY plan_id"
+            ).fetchall()
+            return [r["plan_id"] for r in rows]
 
     def diff(self, plan_id: str, v1: int, v2: int) -> PlanDiff:
         """Compute a structured diff between two versions of a plan.
 
         Raises ``PlanVersionNotFoundError`` if either version does not exist.
         """
-        old = self.get(plan_id, v1)
-        new = self.get(plan_id, v2)
-        if old is None:
-            raise PlanVersionNotFoundError(f"{plan_id}@v{v1}")
-        if new is None:
-            raise PlanVersionNotFoundError(f"{plan_id}@v{v2}")
+        with self._lock:
+            old = self.get(plan_id, v1)
+            new = self.get(plan_id, v2)
+            if old is None:
+                raise PlanVersionNotFoundError(f"{plan_id}@v{v1}")
+            if new is None:
+                raise PlanVersionNotFoundError(f"{plan_id}@v{v2}")
 
-        old_by_id = {item.id: item for item in old.items}
-        new_by_id = {item.id: item for item in new.items}
+            old_by_id = {item.id: item for item in old.items}
+            new_by_id = {item.id: item for item in new.items}
 
-        added = [item for item in new.items if item.id not in old_by_id]
-        removed = [item for item in old.items if item.id not in new_by_id]
-        changed = []
-        for item_id, new_item in new_by_id.items():
-            if item_id in old_by_id:
-                old_item = old_by_id[item_id]
-                if old_item.model_dump() != new_item.model_dump():
-                    changed.append((old_item, new_item))
+            added = [item for item in new.items if item.id not in old_by_id]
+            removed = [item for item in old.items if item.id not in new_by_id]
+            changed = []
+            for item_id, new_item in new_by_id.items():
+                if item_id in old_by_id:
+                    old_item = old_by_id[item_id]
+                    if old_item.model_dump() != new_item.model_dump():
+                        changed.append((old_item, new_item))
 
-        old_order = [item.id for item in old.items if item.id in new_by_id]
-        new_order = [item.id for item in new.items if item.id in old_by_id]
-        reordered = old_order != new_order
+            old_order = [item.id for item in old.items if item.id in new_by_id]
+            new_order = [item.id for item in new.items if item.id in old_by_id]
+            reordered = old_order != new_order
 
-        return PlanDiff(
-            plan_id=plan_id,
-            from_version=v1,
-            to_version=v2,
-            added=added,
-            removed=removed,
-            changed=changed,
-            reordered=reordered,
-        )
+            return PlanDiff(
+                plan_id=plan_id,
+                from_version=v1,
+                to_version=v2,
+                added=added,
+                removed=removed,
+                changed=changed,
+                reordered=reordered,
+            )

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,6 +80,12 @@ class ChatStore:
         # while the connection is opened on the event-loop thread.
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # RLock serialises all public method calls so that concurrent FastAPI
+        # worker threads cannot interleave execute/commit sequences on the same
+        # shared connection. RLock (re-entrant) is used because some public
+        # methods call other public methods internally (e.g. create_session
+        # calls get_session).
+        self._lock = threading.RLock()
         # WAL improves concurrent read/write; busy_timeout avoids spurious
         # "database is locked" under concurrent writers. foreign_keys=ON is
         # required for the ON DELETE CASCADE rules to actually fire.
@@ -150,62 +157,67 @@ class ChatStore:
         self, project_id: str, title: str | None = None
     ) -> ChatSession:
         """Insert a new session and return it."""
-        session_id = uuid.uuid4().hex
-        now = _now()
-        self._conn.execute(
-            "INSERT INTO chat_sessions "
-            "(id, project_id, title, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (session_id, project_id, title, now, now),
-        )
-        self._conn.commit()
-        got = self.get_session(session_id)
-        assert got is not None  # just inserted
-        return got
+        with self._lock:
+            session_id = uuid.uuid4().hex
+            now = _now()
+            self._conn.execute(
+                "INSERT INTO chat_sessions "
+                "(id, project_id, title, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, project_id, title, now, now),
+            )
+            self._conn.commit()
+            got = self.get_session(session_id)
+            assert got is not None  # just inserted
+            return got
 
     def get_session(self, session_id: str) -> ChatSession | None:
         """Fetch a session by id, or ``None`` if it does not exist."""
-        row = self._conn.execute(
-            "SELECT id, project_id, title, created_at, updated_at "
-            "FROM chat_sessions WHERE id = ?",
-            (session_id,),
-        ).fetchone()
-        return self._row_to_session(row) if row is not None else None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, project_id, title, created_at, updated_at "
+                "FROM chat_sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            return self._row_to_session(row) if row is not None else None
 
     def list_sessions(self, project_id: str | None = None) -> list[ChatSession]:
         """List sessions (optionally filtered by project), newest first."""
-        if project_id is None:
-            rows = self._conn.execute(
-                "SELECT id, project_id, title, created_at, updated_at "
-                "FROM chat_sessions ORDER BY updated_at DESC"
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT id, project_id, title, created_at, updated_at "
-                "FROM chat_sessions WHERE project_id = ? "
-                "ORDER BY updated_at DESC",
-                (project_id,),
-            ).fetchall()
-        return [self._row_to_session(r) for r in rows]
+        with self._lock:
+            if project_id is None:
+                rows = self._conn.execute(
+                    "SELECT id, project_id, title, created_at, updated_at "
+                    "FROM chat_sessions ORDER BY updated_at DESC"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT id, project_id, title, created_at, updated_at "
+                    "FROM chat_sessions WHERE project_id = ? "
+                    "ORDER BY updated_at DESC",
+                    (project_id,),
+                ).fetchall()
+            return [self._row_to_session(r) for r in rows]
 
     def delete_session(self, session_id: str) -> bool:
         """Delete a session and (via cascade) its messages and actions.
 
         Returns ``True`` if a session was deleted, ``False`` if none matched.
         """
-        cur = self._conn.execute(
-            "DELETE FROM chat_sessions WHERE id = ?", (session_id,)
-        )
-        self._conn.commit()
-        return cur.rowcount > 0
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM chat_sessions WHERE id = ?", (session_id,)
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
 
     def touch_session(self, session_id: str) -> None:
         """Bump a session's ``updated_at`` to now."""
-        self._conn.execute(
-            "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
-            (_now(), session_id),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+                (_now(), session_id),
+            )
+            self._conn.commit()
 
     # -- messages ------------------------------------------------------- #
     def add_message(
@@ -216,42 +228,44 @@ class ChatStore:
         metadata: dict[str, Any] | None = None,
     ) -> ChatMessage:
         """Insert a message and return it. Also touches the parent session."""
-        message_id = uuid.uuid4().hex
-        now = _now()
-        self._conn.execute(
-            "INSERT INTO chat_messages "
-            "(id, session_id, role, content, metadata, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                message_id,
-                session_id,
-                ChatRole(role).value,
-                content,
-                json.dumps(metadata or {}),
-                now,
-            ),
-        )
-        self._conn.execute(
-            "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
-            (now, session_id),
-        )
-        self._conn.commit()
-        row = self._conn.execute(
-            "SELECT id, session_id, role, content, metadata, created_at "
-            "FROM chat_messages WHERE id = ?",
-            (message_id,),
-        ).fetchone()
-        return self._row_to_message(row)
+        with self._lock:
+            message_id = uuid.uuid4().hex
+            now = _now()
+            self._conn.execute(
+                "INSERT INTO chat_messages "
+                "(id, session_id, role, content, metadata, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    message_id,
+                    session_id,
+                    ChatRole(role).value,
+                    content,
+                    json.dumps(metadata or {}),
+                    now,
+                ),
+            )
+            self._conn.execute(
+                "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+                (now, session_id),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT id, session_id, role, content, metadata, created_at "
+                "FROM chat_messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+            return self._row_to_message(row)
 
     def list_messages(self, session_id: str) -> list[ChatMessage]:
         """List a session's messages ordered oldest-first by ``created_at``."""
-        rows = self._conn.execute(
-            "SELECT id, session_id, role, content, metadata, created_at "
-            "FROM chat_messages WHERE session_id = ? "
-            "ORDER BY created_at ASC, id ASC",
-            (session_id,),
-        ).fetchall()
-        return [self._row_to_message(r) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, session_id, role, content, metadata, created_at "
+                "FROM chat_messages WHERE session_id = ? "
+                "ORDER BY created_at ASC, id ASC",
+                (session_id,),
+            ).fetchall()
+            return [self._row_to_message(r) for r in rows]
 
     # -- actions -------------------------------------------------------- #
     def add_action(
@@ -263,36 +277,38 @@ class ChatStore:
         result: dict[str, Any] | None = None,
     ) -> ChatAction:
         """Insert an action row and return it."""
-        action_id = uuid.uuid4().hex
-        now = _now()
-        self._conn.execute(
-            "INSERT INTO chat_actions "
-            "(id, session_id, message_id, action_type, params, result, executed_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                action_id,
-                session_id,
-                message_id,
-                action_type,
-                json.dumps(params or {}),
-                json.dumps(result or {}),
-                now,
-            ),
-        )
-        self._conn.commit()
-        row = self._conn.execute(
-            "SELECT id, session_id, message_id, action_type, params, result, "
-            "executed_at FROM chat_actions WHERE id = ?",
-            (action_id,),
-        ).fetchone()
-        return self._row_to_action(row)
+        with self._lock:
+            action_id = uuid.uuid4().hex
+            now = _now()
+            self._conn.execute(
+                "INSERT INTO chat_actions "
+                "(id, session_id, message_id, action_type, params, result, executed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    action_id,
+                    session_id,
+                    message_id,
+                    action_type,
+                    json.dumps(params or {}),
+                    json.dumps(result or {}),
+                    now,
+                ),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT id, session_id, message_id, action_type, params, result, "
+                "executed_at FROM chat_actions WHERE id = ?",
+                (action_id,),
+            ).fetchone()
+            return self._row_to_action(row)
 
     def list_actions(self, session_id: str) -> list[ChatAction]:
         """List a session's actions ordered oldest-first by ``executed_at``."""
-        rows = self._conn.execute(
-            "SELECT id, session_id, message_id, action_type, params, result, "
-            "executed_at FROM chat_actions WHERE session_id = ? "
-            "ORDER BY executed_at ASC, id ASC",
-            (session_id,),
-        ).fetchall()
-        return [self._row_to_action(r) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, session_id, message_id, action_type, params, result, "
+                "executed_at FROM chat_actions WHERE session_id = ? "
+                "ORDER BY executed_at ASC, id ASC",
+                (session_id,),
+            ).fetchall()
+            return [self._row_to_action(r) for r in rows]

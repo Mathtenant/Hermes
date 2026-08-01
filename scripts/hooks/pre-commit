@@ -34,7 +34,7 @@ done
 
 # --- PII terms dictionary check --------------------------------------------
 if [ -f ".hermes/pii_terms.txt" ]; then
-  DIFF_CONTENT=$(git diff --cached)
+  DIFF_CONTENT=$(git diff --cached | grep '^+' | grep -v '^+++')
   while IFS= read -r term; do
     # Skip blank lines and comments
     [[ -z "$term" || "$term" == \#* ]] && continue

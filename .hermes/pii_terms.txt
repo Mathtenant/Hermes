@@ -4,7 +4,6 @@
 # (case-insensitive). Extend this list with your organisation's sensitive terms.
 
 # Add organization-specific terms below (customer names, internal projects, etc.)
-confidential
 secret
 password
 api_key

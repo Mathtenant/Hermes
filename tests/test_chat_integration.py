@@ -296,6 +296,86 @@ def test_chat_greeting_not_rephrase(convo_client):
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# H4 — executor errors surface as user-safe messages (integration)
+# --------------------------------------------------------------------------- #
+
+
+class _UniqueConstraintExecutor:
+    """Simulates an executor returning a UNIQUE constraint DB error."""
+
+    def execute(self, action_type, params, context):  # noqa: ANN001
+        return {"error": "UNIQUE constraint failed: risks.id"}
+
+
+class _AlwaysHighConfidenceRouter:
+    def classify(self, message, context):  # noqa: ANN001
+        from hermes_assistant.chat.model import IntentClassification
+
+        return IntentClassification(intent="create_risk", params={}, confidence=0.9)
+
+
+@pytest.fixture
+def error_client(tmp_path, monkeypatch):
+    """TestClient whose executor always returns a UNIQUE constraint error."""
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "tasks_db_path", str(tmp_path / "tasks.db"))
+    monkeypatch.setattr(settings, "chat_db_path", str(tmp_path / "chat.db"))
+
+    from hermes_assistant.chat.service import ChatService
+    from hermes_assistant.chat.store import ChatStore
+
+    store = ChatStore(str(tmp_path / "chat.db"))
+    chat_api._chat_service = ChatService(
+        store, _AlwaysHighConfidenceRouter(), _UniqueConstraintExecutor(), None
+    )
+    try:
+        yield TestClient(app)
+    finally:
+        chat_api._chat_service = None
+
+
+def test_h4_unique_error_not_leaked_in_response(error_client):
+    """H4: UNIQUE constraint error must not appear verbatim in the chat response."""
+    response = error_client.post(
+        "/api/chat/message", json={"message": "Create a risk", "project_id": "proj1"}
+    )
+    assert response.status_code == 200
+    content = response.json()["message"]["content"]
+    assert "UNIQUE" not in content
+    assert "risks.id" not in content
+    assert "already exists" in content
+
+
+def test_h4_not_found_error_not_leaked_in_response(tmp_path, monkeypatch):
+    """H4: 'not found' executor errors produce a user-friendly message."""
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "tasks_db_path", str(tmp_path / "tasks.db"))
+    monkeypatch.setattr(settings, "chat_db_path", str(tmp_path / "chat.db"))
+
+    from hermes_assistant.chat.service import ChatService
+    from hermes_assistant.chat.store import ChatStore
+
+    class _NotFoundExecutor:
+        def execute(self, action_type, params, context):  # noqa: ANN001
+            return {"error": "Risk with id 'abc' not found"}
+
+    store = ChatStore(str(tmp_path / "chat.db"))
+    chat_api._chat_service = ChatService(
+        store, _AlwaysHighConfidenceRouter(), _NotFoundExecutor(), None
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/api/chat/message", json={"message": "Show risk abc", "project_id": "proj1"}
+    )
+    chat_api._chat_service = None
+
+    assert response.status_code == 200
+    content = response.json()["message"]["content"]
+    assert "abc" not in content
+    assert "not found" in content.lower()
+
+
 def test_import_endpoint_still_works(client):
     """The /api/import/json endpoint accepts JSON directly (two-step UI doesn't break it)."""
     payload = {"risks": [{"title": "Risk from Copilot"}]}

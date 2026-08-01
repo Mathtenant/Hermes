@@ -21,7 +21,10 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import re
 from typing import Any
+
+from hermes_assistant.config import settings
 
 from .executor import ActionExecutor
 from .model import (
@@ -34,8 +37,6 @@ from .router import IntentRouter
 from .store import ChatStore
 
 logger = logging.getLogger(__name__)
-
-_CONFIDENCE_THRESHOLD = 0.7
 
 
 class ConfidentialityGuardError(Exception):
@@ -71,9 +72,36 @@ class ResponseFormatter:
         return cls._RESPONSES
 
     @staticmethod
-    def detect_language(message: str) -> str:
-        """Detect DE/EN from message content (umlauts/ß imply German)."""
-        return "de" if any(c in message for c in "äöüßÄÖÜ") else "en"
+    def detect_language(text: str) -> str:
+        """Detect language from message content using keyword heuristics.
+
+        Returns 'de', 'fr', or 'en' (default fallback).
+
+        German umlauts/ß are treated as an unambiguous signal and trigger
+        an early return before word-level matching.  Common German and French
+        function words are used for umlaut-free text (e.g. "Was kannst du?",
+        "Pouvez-vous?").
+        """
+        # Unambiguous German signal — fast path avoids false positives from
+        # short French texts that contain no accented characters.
+        if any(c in text for c in "äöüßÄÖÜ"):
+            return "de"
+
+        words = re.findall(r"\w+", text.lower())
+
+        # German indicators (common function words and modal verbs)
+        de_words = {"ich", "das", "ist", "kannst", "du", "können", "macht", "haben", "nicht"}
+        de_count = sum(1 for word in words if word in de_words)
+
+        # French indicators (common articles, pronouns, and verbs)
+        fr_words = {"je", "le", "la", "les", "vous", "pouvez", "faire", "cela"}
+        fr_count = sum(1 for word in words if word in fr_words)
+
+        if de_count >= 1 and de_count >= fr_count:
+            return "de"
+        if fr_count >= 1:
+            return "fr"
+        return "en"
 
     @classmethod
     def format_result(
@@ -130,7 +158,16 @@ class ResponseFormatter:
     def format_result_existing(result: dict[str, Any], intent: str) -> str:
         """Convert an action result into user-facing prose."""
         if "error" in result:
-            return f"Sorry, I encountered an error: {result['error']}"
+            # H4: Normalize internal error strings before they reach the user.
+            error_msg = result["error"]
+            if "UNIQUE constraint failed" in error_msg:
+                user_message = "A risk with this ID already exists."
+            elif "not found" in error_msg.lower():
+                user_message = "The requested item was not found."
+            else:
+                user_message = "The action could not be completed. Please try again."
+            logger.warning("Executor error for intent=%s: %s", intent, error_msg)
+            return user_message
 
         action = result.get("action", "")
 
@@ -157,7 +194,9 @@ class ResponseFormatter:
             return f"Review queued (Job ID: {result.get('job_id')})"
         if action == "answer":
             return result.get("answer", "I'm not sure.")
-        return str(result)
+        # H3: No handler matched — log for debugging and return a safe fallback.
+        logger.warning("Unhandled result format for intent=%s: %r", intent, result)
+        return "I encountered an issue processing that request. Please try again."
 
 
 class ChatService:
@@ -208,7 +247,7 @@ class ChatService:
         # 5. Execute the action, or handle a conversational intent.
         #    Conversational intents (smalltalk/capability/meta/unknown) are
         #    answered from static templates with no side effect and no LLM call.
-        high_confidence = classification.confidence >= _CONFIDENCE_THRESHOLD
+        high_confidence = classification.confidence >= settings.chat_confidence_threshold
         conversational = classification.intent in ResponseFormatter._CONVERSATIONAL
         if conversational:
             result = {"action": "conversational"}

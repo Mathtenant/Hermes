@@ -108,9 +108,10 @@ def test_formatter_list_risks():
 
 
 def test_formatter_error():
+    # Generic errors (no UNIQUE/not-found keyword) produce the safe fallback.
     result = {"error": "Something went wrong"}
     text = ResponseFormatter.format_result(result, "create_task")
-    assert "error" in text.lower()
+    assert "could not be completed" in text.lower()
 
 
 def test_service_suggestions():
@@ -233,6 +234,71 @@ def test_guard_blocks_before_persist() -> None:
     assert messages[0].role == ChatRole.user
 
 
+# --------------------------------------------------------------------------- #
+# H3 — safe fallback for unhandled result shapes
+# --------------------------------------------------------------------------- #
+
+
+def test_formatter_h3_unhandled_intent_returns_safe_message():
+    """H3: An intent with no formatter branch must NOT expose str(result)."""
+    result = {"action": "some_future_action", "data": {"nested": "dict"}}
+    text = ResponseFormatter.format_result_existing(result, "future_intent")
+    # Must not leak the raw dict representation.
+    assert "some_future_action" not in text
+    assert "nested" not in text
+    assert "dict" not in text
+    assert "issue processing" in text
+
+
+def test_formatter_h3_logs_warning(caplog: pytest.LogCaptureFixture):
+    """H3: Unhandled result triggers a server-side warning log."""
+    result = {"action": "unrecognised", "internal_field": "internal value"}
+    with caplog.at_level(logging.WARNING, logger="hermes_assistant.chat.service"):
+        ResponseFormatter.format_result_existing(result, "mystery_intent")
+    assert "Unhandled result format" in caplog.text
+    assert "mystery_intent" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# H4 — executor error normalisation
+# --------------------------------------------------------------------------- #
+
+
+def test_formatter_h4_unique_constraint_message():
+    """H4: UNIQUE constraint failure produces a user-friendly duplicate message."""
+    result = {"error": "UNIQUE constraint failed: risks.id"}
+    text = ResponseFormatter.format_result_existing(result, "create_risk")
+    assert "already exists" in text.lower()
+    assert "UNIQUE" not in text
+    assert "risks.id" not in text
+
+
+def test_formatter_h4_not_found_message():
+    """H4: 'not found' errors produce a user-friendly not-found message."""
+    result = {"error": "Risk with id 'xyz' not found"}
+    text = ResponseFormatter.format_result_existing(result, "show_risk")
+    assert "not found" in text.lower()
+    assert "xyz" not in text
+
+
+def test_formatter_h4_generic_error_message():
+    """H4: Other internal errors (DB, type errors) produce the safe fallback."""
+    result = {"error": "'NoneType' object is not subscriptable"}
+    text = ResponseFormatter.format_result_existing(result, "create_risk")
+    assert "could not be completed" in text.lower()
+    assert "NoneType" not in text
+    assert "subscriptable" not in text
+
+
+def test_formatter_h4_logs_real_error(caplog: pytest.LogCaptureFixture):
+    """H4: The original internal error is written to the server log."""
+    internal_error = "UNIQUE constraint failed: risks.id"
+    result = {"error": internal_error}
+    with caplog.at_level(logging.WARNING, logger="hermes_assistant.chat.service"):
+        ResponseFormatter.format_result_existing(result, "create_risk")
+    assert internal_error in caplog.text
+
+
 def test_guard_logs_violation(caplog: pytest.LogCaptureFixture) -> None:
     """H1+H2: violation details are written to the server log, not the exception."""
     store = ChatStore(":memory:")
@@ -249,3 +315,67 @@ def test_guard_logs_violation(caplog: pytest.LogCaptureFixture) -> None:
     # The real detail must appear in the server-side log.
     assert "Confidentiality guard blocked" in caplog.text
     assert "alice@example.com" in caplog.text or "Email address" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# M6 — improved language detection (keyword heuristics, not umlaut-only)
+# --------------------------------------------------------------------------- #
+
+
+def test_detect_language_german_without_umlauts():
+    """M6: German common words trigger 'de' even when no umlaut is present."""
+    assert ResponseFormatter.detect_language("Was kannst du?") == "de"
+
+
+def test_detect_language_german_with_umlauts_backward_compat():
+    """M6: Umlaut fast-path still returns 'de' (backward compatible)."""
+    assert ResponseFormatter.detect_language("Grüße aus Berlin") == "de"
+
+
+def test_detect_language_french_hyphenated():
+    """M6: Hyphenated French ('Pouvez-vous?') is detected correctly."""
+    assert ResponseFormatter.detect_language("Pouvez-vous?") == "fr"
+
+
+def test_detect_language_french_sentence():
+    """M6: Full French sentence is detected correctly."""
+    assert ResponseFormatter.detect_language("Pouvez-vous faire cela?") == "fr"
+
+
+def test_detect_language_english_default():
+    """M6: Unknown or English text falls back to 'en'."""
+    assert ResponseFormatter.detect_language("xyzzy frobnicator blorp") == "en"
+
+
+def test_detect_language_empty_string():
+    """M6: Empty input defaults to 'en' (no crash)."""
+    assert ResponseFormatter.detect_language("") == "en"
+
+
+# --------------------------------------------------------------------------- #
+# M7 — confidence threshold driven by config (settings.chat_confidence_threshold)
+# --------------------------------------------------------------------------- #
+
+
+def test_service_respects_config_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M7: ChatService uses settings.chat_confidence_threshold, not a hardcoded value."""
+    import hermes_assistant.chat.service as svc_module
+
+    class _MockSettings:
+        chat_confidence_threshold = 0.95  # Very high — 0.9 router won't reach it
+
+    monkeypatch.setattr(svc_module, "settings", _MockSettings())
+
+    class _NearHighRouter:
+        """Returns 0.9 confidence — high under old hardcoded 0.7, low under 0.95."""
+
+        def classify(self, message, context):  # noqa: ANN001
+            return IntentClassification(
+                intent="create_task", params={"title": "T"}, confidence=0.9
+            )
+
+    store = ChatStore(":memory:")
+    service = ChatService(store, _NearHighRouter(), FakeExecutor(), FakeLLMClient())
+    turn = service.handle_turn("Create task", "proj1")
+    # With threshold 0.95, confidence 0.9 is below threshold → no action persisted.
+    assert turn.action is None

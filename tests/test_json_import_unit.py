@@ -123,17 +123,6 @@ class TestValidateEntity:
         errs = validate_entity("projects", {})
         assert "Missing required field: 'project_id'" in errs
 
-    def test_review_valid_minimal(self):
-        """Review with rubric_id and verdict."""
-        obj = {"rubric_id": "r1", "verdict": "pass"}
-        assert validate_entity("reviews", obj) == []
-
-    def test_review_invalid_verdict(self):
-        """Verdict must be valid enum."""
-        obj = {"rubric_id": "r1", "verdict": "maybe"}
-        errs = validate_entity("reviews", obj)
-        assert any("verdict" in e for e in errs)
-
     def test_entity_not_dict(self):
         """Entity must be a dict."""
         errs = validate_entity("risks", "not a dict")
@@ -237,19 +226,20 @@ class TestImportPayload:
         assert result.skipped == 0
 
     def test_import_with_validation_errors(self):
-        """Invalid items are skipped, valid ones imported."""
+        """H5 atomicity: any invalid item aborts the entire entity-type batch."""
         payload = {
             "risks": [
                 {"title": "Valid Risk"},  # OK
-                {"severity": "high"},  # Missing title
-                {"title": "Another valid"},  # OK
+                {"severity": "high"},  # Missing title — causes batch abort
+                {"title": "Another valid"},  # OK but never written
             ]
         }
         result = import_payload(
             payload, risks_db=":memory:", plans_db=":memory:",
             tasks_db=":memory:"
         )
-        assert result.created == 2
+        # Atomicity: no rows committed when any item fails validation
+        assert result.created == 0
         assert result.skipped == 1
         assert len(result.errors) == 1
 
@@ -372,15 +362,193 @@ class TestImportPayload:
         assert result.skipped == 2
 
 
-@pytest.mark.parametrize("entity_type", ["risks", "plans", "pendenzen", "projects", "reviews"])
+# ---------------------------------------------------------------------------
+# M2 external_ref idempotency tests
+# ---------------------------------------------------------------------------
+
+
+class TestM2ExternalRefIdempotency:
+    """M2: re-importing Copilot pendenzen via external_ref must upsert, not dup."""
+
+    def test_second_import_creates_zero_new_rows(self, tmp_path):
+        """Importing the same 3 pendenzen (each with distinct external_ref) twice
+        must result in 0 new rows on the second pass (all 3 are updated)."""
+        db = str(tmp_path / "tasks.db")
+        payload = {
+            "pendenzen": [
+                {"title": f"Task {i}", "external_ref": f"cop-{i}"}
+                for i in range(3)
+            ]
+        }
+        first = import_payload(
+            payload, risks_db=":memory:", plans_db=":memory:", tasks_db=db
+        )
+        assert first.created == 3
+        assert first.updated == 0
+
+        second = import_payload(
+            payload, risks_db=":memory:", plans_db=":memory:", tasks_db=db
+        )
+        assert second.created == 0, "Re-import must not create duplicate rows"
+        assert second.updated == 3
+
+        # Verify DB row count stays at 3
+        import sqlite3
+        conn = sqlite3.connect(db)
+        count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        conn.close()
+        assert count == 3
+
+    def test_same_external_ref_deduplicates_to_one_row(self, tmp_path):
+        """Import external_ref='cop-123', then import it again → 1 DB row, not 2."""
+        db = str(tmp_path / "tasks.db")
+        payload = {"pendenzen": [{"title": "Original", "external_ref": "cop-123"}]}
+
+        result1 = import_payload(
+            payload, risks_db=":memory:", plans_db=":memory:", tasks_db=db
+        )
+        assert result1.created == 1
+
+        payload2 = {"pendenzen": [{"title": "Updated", "external_ref": "cop-123"}]}
+        result2 = import_payload(
+            payload2, risks_db=":memory:", plans_db=":memory:", tasks_db=db
+        )
+        assert result2.created == 0
+        assert result2.updated == 1
+
+        import sqlite3
+        conn = sqlite3.connect(db)
+        count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        conn.close()
+        assert count == 1, "Must have exactly 1 row, not 2"
+
+    def test_backward_compat_id_fallback_no_external_ref(self, tmp_path):
+        """Payload with explicit 'id' but no 'external_ref' still deduplicates
+        via the legacy id-based path."""
+        db = str(tmp_path / "tasks.db")
+        payload = {"pendenzen": [{"id": "legacy-001", "title": "Legacy task"}]}
+
+        result1 = import_payload(
+            payload, risks_db=":memory:", plans_db=":memory:", tasks_db=db
+        )
+        assert result1.created == 1
+
+        result2 = import_payload(
+            payload, risks_db=":memory:", plans_db=":memory:", tasks_db=db
+        )
+        assert result2.created == 0
+        assert result2.updated == 1
+
+        import sqlite3
+        conn = sqlite3.connect(db)
+        count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        conn.close()
+        assert count == 1, "Legacy id-based fallback must also deduplicate"
+
+
+@pytest.mark.parametrize("entity_type", ["risks", "plans", "pendenzen", "projects"])
 def test_validate_entity_accepts_dict(entity_type):
-    """Validate entity accepts at minimum a valid dict for each type."""
+    """Validate entity accepts at minimum a valid dict for each supported type."""
     minimum_valid = {
         "risks": {"title": "Risk"},
         "plans": {"plan_id": "p1", "items": []},
         "pendenzen": {"title": "Task"},
         "projects": {"project_id": "proj"},
-        "reviews": {"rubric_id": "r1", "verdict": "pass"},
     }
     obj = minimum_valid[entity_type]
     assert isinstance(validate_entity(entity_type, obj), list)
+
+
+# ---------------------------------------------------------------------------
+# H5 atomicity tests
+# ---------------------------------------------------------------------------
+
+
+class TestH5Atomicity:
+    """H5: single-transaction per-entity imports with all-or-nothing semantics."""
+
+    def test_risks_abort_entire_batch_on_validation_failure(self, tmp_path):
+        """If any risk fails validation, zero risks are written to the database."""
+        db = str(tmp_path / "risks.db")
+        risks = [
+            {"title": f"Risk {i}", "severity": "medium", "likelihood": 3}
+            for i in range(10)
+        ]
+        # Risk at index 4 (the 5th item) is invalid: missing title
+        risks[4] = {"severity": "medium", "likelihood": 3}
+
+        result = import_payload(
+            {"risks": risks},
+            risks_db=db,
+            plans_db=":memory:",
+            tasks_db=":memory:",
+        )
+
+        # Exactly one error logged for the single invalid risk
+        assert result.skipped == 1
+        assert len(result.errors) == 1
+        # No rows written — atomicity holds
+        assert result.created == 0
+
+        # Verify at the DB level that nothing was persisted
+        from hermes_assistant.risks.registry import RiskRegistry
+        registry = RiskRegistry(db)
+        try:
+            assert registry.list() == []
+        finally:
+            registry.close_connection()
+
+    def test_risks_all_committed_when_all_valid(self, tmp_path):
+        """When all risks pass validation, all are committed in a single batch."""
+        db = str(tmp_path / "risks.db")
+        risks = [
+            {"title": f"Risk {i}", "severity": "medium", "likelihood": 3}
+            for i in range(5)
+        ]
+        result = import_payload(
+            {"risks": risks},
+            risks_db=db,
+            plans_db=":memory:",
+            tasks_db=":memory:",
+        )
+
+        assert result.created == 5
+        assert result.errors == []
+
+        from hermes_assistant.risks.registry import RiskRegistry
+        registry = RiskRegistry(db)
+        try:
+            assert len(registry.list()) == 5
+        finally:
+            registry.close_connection()
+
+
+# ---------------------------------------------------------------------------
+# H6 reviews-entity removal tests
+# ---------------------------------------------------------------------------
+
+
+class TestH6Reviews:
+    """H6: 'reviews' is no longer a valid import entity type."""
+
+    def test_reviews_not_recognised_by_validate_import_payload(self):
+        """Payload containing only 'reviews' returns a validation error."""
+        errs = validate_import_payload(
+            {"reviews": [{"rubric_id": "r1", "verdict": "pass"}]}
+        )
+        assert any("No recognised entity types" in e for e in errs)
+
+    def test_reviews_mixed_with_unknown_also_rejected(self):
+        """'reviews' alongside other unknown keys is still rejected."""
+        errs = validate_import_payload({"reviews": [], "foo": []})
+        assert any("No recognised entity types" in e for e in errs)
+
+    def test_reviews_alongside_valid_type_is_silently_ignored(self):
+        """A payload with 'risks' and 'reviews' is valid — 'reviews' is unknown
+        so it is ignored by validate_import_payload (unknown keys do not
+        cause errors when at least one recognised type is present)."""
+        errs = validate_import_payload(
+            {"risks": [{"title": "R"}], "reviews": []}
+        )
+        # No error: 'risks' is recognised; 'reviews' is silently ignored
+        assert errs == []

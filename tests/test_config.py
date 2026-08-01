@@ -37,6 +37,19 @@ def test_settings_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.log_level == "DEBUG"
 
 
+def test_settings_chat_confidence_threshold_default() -> None:
+    """M7: chat_confidence_threshold defaults to 0.7."""
+    s = Settings()
+    assert s.chat_confidence_threshold == 0.7
+
+
+def test_settings_chat_confidence_threshold_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M7: chat_confidence_threshold is tunable via environment variable."""
+    monkeypatch.setenv("CHAT_CONFIDENCE_THRESHOLD", "0.5")
+    s = Settings()
+    assert s.chat_confidence_threshold == 0.5
+
+
 def test_roster_entries_are_modelconfig() -> None:
     """Every roster entry is a typed ModelConfig (not a plain dict)."""
     assert all(isinstance(cfg, ModelConfig) for cfg in ROSTER.values())

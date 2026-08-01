@@ -99,12 +99,12 @@ class TestImportJsonEndpoint:
         assert data["skipped"] == 0
 
     def test_import_json_partial_valid(self, client):
-        """Valid items imported, invalid ones skipped."""
+        """H5 atomicity: any invalid item aborts the entire entity-type batch."""
         payload = {
             "risks": [
                 {"title": "Valid Risk"},  # OK
-                {"severity": "high"},  # Missing title
-                {"title": "Another valid"},  # OK
+                {"severity": "high"},  # Missing title — causes batch abort
+                {"title": "Another valid"},  # OK but never written
             ]
         }
         response = client.post(
@@ -114,7 +114,8 @@ class TestImportJsonEndpoint:
         )
         assert response.status_code == 200
         data = response.json()
-        assert data["created"] == 2
+        # Atomicity: zero rows committed when any item fails validation
+        assert data["created"] == 0
         assert data["skipped"] == 1
         assert len(data["errors"]) >= 1
 
@@ -370,6 +371,33 @@ class TestImportJsonEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert len(data["items"]) >= 1
+
+
+class TestH6ReviewsRejection:
+    """H6: 'reviews' entity is not a valid import type; payloads are rejected."""
+
+    def test_reviews_only_payload_returns_422(self, client):
+        """POST with only a 'reviews' key is rejected with HTTP 422."""
+        response = client.post(
+            "/api/import/json",
+            json={"reviews": [{"rubric_id": "r1", "verdict": "pass"}]},
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 422
+        data = response.json()
+        # Detail must mention that no recognised entity types were found
+        detail_str = str(data.get("detail", ""))
+        assert "No recognised entity types" in detail_str
+
+    def test_reviews_only_payload_writes_zero_rows(self, client):
+        """Rejected 'reviews' payload must not write any data."""
+        # Confirm the endpoint rejects before any processing
+        response = client.post(
+            "/api/import/json",
+            json={"reviews": []},
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 422
 
 
 class TestXssDefense:

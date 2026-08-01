@@ -58,4 +58,5 @@ class Task(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updates: list[TaskUpdate] = Field(default_factory=list)
+    external_ref: str | None = None  # Copilot export key; used for import idempotency (M2)
     metadata: dict[str, Any] = Field(default_factory=dict)

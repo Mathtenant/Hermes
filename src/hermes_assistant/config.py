@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     # SQLite database for chat sessions, messages, and actions.  Stored
     # outside the repo under data_dir alongside the other runtime stores.
     chat_db_path: str = str(Path(_DEFAULT_DATA_DIR) / "chat.db")
+    # Minimum confidence score for the intent router to execute an action
+    # instead of falling back to the answer_question handler.  Tune via the
+    # CHAT_CONFIDENCE_THRESHOLD environment variable (float, 0–1).
+    chat_confidence_threshold: float = 0.7
 
     # --- RAG (Phase 1) --------------------------------------------------- #
     # Single Chroma collection for the whole corpus; a per-model collection

@@ -13,8 +13,11 @@ dicts so the same code path works for both.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from hermes_assistant.tasks.pendenzen import Pendenz, PendenzSource
 
@@ -61,6 +64,7 @@ class ActionExecutor:
         try:
             return handler(params, context)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user as text
+            logger.warning("Handler for %r raised: %s", action_type, exc)
             return {"error": str(exc)}
 
     # ------------------------------------------------------------------ #
@@ -159,13 +163,73 @@ class ActionExecutor:
         return {"action": "enqueued", "job_id": job_id, "status": "pending"}
 
     def answer_question(self, params: dict[str, Any], context: Any) -> dict[str, Any]:
-        """Answer a free-form question grounded in project context.
+        """Answer common questions about the project using keyword heuristics.
 
-        The heavy grounded-generation path lives in the service layer (which
-        owns the LLM client); the executor returns a structured placeholder so
-        the action is still auditable.
+        Routes by keyword to return actual project data from the pre-hydrated
+        ChatContext rather than deferring to a data lookup that never happens.
+        The context already carries risks, plan_summary, and open_task_count,
+        mirroring the pattern used in show_plan and review_status.
         """
+        question = params.get("message", params.get("question", "")).lower()
+
+        # Risk-related questions
+        if any(w in question for w in ["risk", "threat", "danger"]):
+            risks: list[dict] = getattr(context, "risks", None) or []
+            if risks:
+                titles = [r.get("title", "?") for r in risks[:3]]
+                return {
+                    "action": "answer",
+                    "answer": (
+                        f"Current risks: {', '.join(titles)}. "
+                        f"Total: {len(risks)} risks tracked."
+                    ),
+                }
+            return {
+                "action": "answer",
+                "answer": "No risks are currently tracked for this project.",
+            }
+
+        # Plan-related questions
+        if any(w in question for w in ["plan", "phase", "timeline", "schedule", "duration"]):
+            plan_summary: str | None = getattr(context, "plan_summary", None)
+            if plan_summary:
+                return {"action": "answer", "answer": f"Plan summary: {plan_summary}"}
+            # Fall back to store query when context has no pre-hydrated summary.
+            plan_ids = self.plans.list_plans()
+            if plan_ids:
+                first = plan_ids[0]
+                if isinstance(first, str):
+                    version = self.plans.get(first)
+                    count = len(version.items) if version is not None else 0
+                else:
+                    count = len(first.get("items", []))
+                return {
+                    "action": "answer",
+                    "answer": f"The project plan has {count} phases/items.",
+                }
+            return {
+                "action": "answer",
+                "answer": "No plan is currently set for this project.",
+            }
+
+        # Task / pendenzen questions
+        if any(w in question for w in ["task", "todo", "pendenz", "action"]):
+            task_count: int = getattr(context, "open_task_count", 0)
+            if task_count > 0:
+                return {
+                    "action": "answer",
+                    "answer": f"You have {task_count} open tasks for this project.",
+                }
+            return {
+                "action": "answer",
+                "answer": "No open tasks for this project.",
+            }
+
+        # Fallback: surface capabilities
         return {
             "action": "answer",
-            "answer": "I'd need to consult the project data to answer that fully.",
+            "answer": (
+                "I can help with risks, plans, and tasks. "
+                "Try asking: 'What risks are we tracking?' or 'How long is the plan?'"
+            ),
         }

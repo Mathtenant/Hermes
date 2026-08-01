@@ -35,13 +35,14 @@ def _now() -> datetime:
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
-    id          TEXT PRIMARY KEY,
-    parent_id   TEXT,
-    status      TEXT NOT NULL DEFAULT 'open',
-    node_kind   TEXT NOT NULL DEFAULT 'task',
-    blob        TEXT NOT NULL,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    id           TEXT PRIMARY KEY,
+    parent_id    TEXT,
+    status       TEXT NOT NULL DEFAULT 'open',
+    node_kind    TEXT NOT NULL DEFAULT 'task',
+    blob         TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    external_ref TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks (parent_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
@@ -66,6 +67,7 @@ class TaskStore:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        self._migrate()
         # RLock serialises all public method calls so that concurrent FastAPI
         # worker threads cannot interleave execute/commit sequences on the same
         # shared connection. RLock (re-entrant) is used because some public
@@ -73,6 +75,23 @@ class TaskStore:
         # and list_by_parent, update calls get, close_task calls update,
         # tree calls list_by_parent).
         self._lock = threading.RLock()
+
+    # ------------------------------------------------------------------ #
+    def _migrate(self) -> None:
+        """Add columns introduced after initial schema creation (idempotent)."""
+        existing_cols = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(tasks)")
+        }
+        if "external_ref" not in existing_cols:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN external_ref TEXT")
+        # Partial unique index: NULL is excluded so rows without external_ref
+        # never conflict with each other.
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external_ref "
+            "ON tasks (external_ref) WHERE external_ref IS NOT NULL"
+        )
+        self._conn.commit()
 
     # ------------------------------------------------------------------ #
     def close(self) -> None:
@@ -100,9 +119,11 @@ class TaskStore:
             now = _now()
             task = task.model_copy(update={"created_at": now, "updated_at": now})
 
+            ext_ref = task.external_ref or None
             self._conn.execute(
-                "INSERT INTO tasks (id, parent_id, status, node_kind, blob, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tasks "
+                "(id, parent_id, status, node_kind, blob, created_at, updated_at, external_ref) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     task.id,
                     task.parent_id,
@@ -111,6 +132,7 @@ class TaskStore:
                     self._task_to_blob(task),
                     now.isoformat(),
                     now.isoformat(),
+                    ext_ref,
                 ),
             )
             # Register this child in its parent's children_ids.
@@ -127,6 +149,18 @@ class TaskStore:
         with self._lock:
             row = self._conn.execute(
                 "SELECT blob FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            return self._row_to_task(row) if row else None
+
+    def find_by_external_ref(self, external_ref: str) -> Task | None:
+        """Find a task by its Copilot export key (idempotency look-up).
+
+        Returns the stored task, or ``None`` if no row has that external_ref.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT blob FROM tasks WHERE external_ref = ?",
+                (external_ref,),
             ).fetchone()
             return self._row_to_task(row) if row else None
 

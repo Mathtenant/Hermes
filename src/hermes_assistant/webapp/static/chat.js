@@ -83,13 +83,14 @@
       : "";
 
     var bodyInner = state.isOpen
-      ? '<div class="chat-messages" style="flex:1;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:0.75rem;">' +
+      ? '<div class="chat-messages" aria-live="polite" aria-atomic="false" aria-label="Chat messages" style="flex:1;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:0.75rem;">' +
         msgs +
         typing +
         "</div>" +
-        '<div style="border-top:1px solid #334155;padding:1rem;display:flex;gap:0.5rem;">' +
-        '<input class="chat-input" placeholder="Ask Hermes..." style="flex:1;padding:0.5rem;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:4px;font-size:0.875rem;" />' +
-        '<button class="chat-send" style="background:#10b981;color:#fff;padding:0.5rem 1rem;border:none;border-radius:4px;cursor:pointer;">Send</button>' +
+        '<div style="border-top:1px solid #334155;padding:1rem;display:flex;gap:0.5rem;align-items:center;">' +
+        '<label for="chat-input" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;">Message</label>' +
+        '<input id="chat-input" class="chat-input" aria-label="Chat message input" placeholder="Ask Hermes..." style="flex:1;padding:0.5rem;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:4px;font-size:0.875rem;" />' +
+        '<button class="chat-send" aria-label="Send message" style="background:#10b981;color:#fff;padding:0.5rem 1rem;border:none;border-radius:4px;cursor:pointer;">Send</button>' +
         "</div>"
       : "";
 

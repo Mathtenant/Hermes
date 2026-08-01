@@ -33,7 +33,7 @@ class TestValidateEntity:
         """Likelihood must be 1-5."""
         obj = {"title": "Risk", "likelihood": 10}
         errs = validate_entity("risks", obj)
-        assert any("likelihood" in e and "1-5" in e for e in errs)
+        assert any("likelihood" in e for e in errs)
 
     def test_risk_invalid_likelihood_type(self):
         """Likelihood must be integer."""

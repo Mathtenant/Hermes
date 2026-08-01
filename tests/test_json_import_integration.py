@@ -370,3 +370,60 @@ class TestImportJsonEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert len(data["items"]) >= 1
+
+
+class TestXssDefense:
+    """Verify that attacker-controlled field values are not echoed back raw."""
+
+    def test_xss_payload_in_severity_does_not_echo(self, client):
+        """Error message for invalid severity must not contain the raw HTML payload.
+
+        A malicious severity value like '<img src=x onerror=alert(1)>' should be
+        rejected with a generic error string, not reflected back verbatim.
+        """
+        xss = "<img src=x onerror=alert(1)>"
+        payload = {"risks": [{"title": "XSS Risk", "severity": xss}]}
+        response = client.post(
+            "/api/import/json",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        # Item is invalid and skipped; overall import returns 200 with skipped=1
+        assert response.status_code == 200
+        data = response.json()
+        assert data["skipped"] == 1
+        # The raw XSS payload must not appear anywhere in the error messages
+        for err in data["errors"]:
+            assert xss not in err, f"Raw XSS payload echoed in error: {err!r}"
+        # Error message should be generic text only
+        assert any("severity" in err.lower() for err in data["errors"])
+
+    def test_xss_payload_in_status_does_not_echo(self, client):
+        """Error message for invalid status must not contain the raw HTML payload."""
+        xss = "<script>alert('xss')</script>"
+        payload = {"risks": [{"title": "XSS Risk", "status": xss}]}
+        response = client.post(
+            "/api/import/json",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["skipped"] == 1
+        for err in data["errors"]:
+            assert xss not in err, f"Raw XSS payload echoed in error: {err!r}"
+
+    def test_xss_payload_in_priority_does_not_echo(self, client):
+        """Error message for invalid priority must not contain the raw HTML payload."""
+        xss = "<img src=x onerror=alert(1)>"
+        payload = {"pendenzen": [{"title": "XSS Task", "priority": xss}]}
+        response = client.post(
+            "/api/import/json",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["skipped"] == 1
+        for err in data["errors"]:
+            assert xss not in err, f"Raw XSS payload echoed in error: {err!r}"

@@ -92,20 +92,20 @@ def validate_entity(entity_type: str, obj: Any) -> list[str]:
         sev = obj.get("severity")
         if sev is not None and sev not in ("low", "medium", "high", "critical"):
             errors.append(
-                f"Invalid severity {sev!r}; must be low/medium/high/critical"
+                "Invalid severity value; must be low/medium/high/critical"
             )
         lh = obj.get("likelihood")
         if lh is not None:
             if not isinstance(lh, int):
                 errors.append("'likelihood' must be an integer")
             elif not (1 <= lh <= 5):
-                errors.append(f"'likelihood' must be 1-5, got {lh}")
+                errors.append("'likelihood' must be between 1 and 5")
         status = obj.get("status")
         if status is not None and status not in (
             "open", "mitigated", "accepted", "closed"
         ):
             errors.append(
-                f"Invalid status {status!r}; must be open/mitigated/accepted/closed"
+                "Invalid status value; must be open/mitigated/accepted/closed"
             )
 
     elif entity_type == "plans":
@@ -128,7 +128,7 @@ def validate_entity(entity_type: str, obj: Any) -> list[str]:
             "low", "medium", "high", "blocker"
         ):
             errors.append(
-                f"Invalid priority {priority!r}; must be low/medium/high/blocker"
+                "Invalid priority value; must be low/medium/high/blocker"
             )
 
     elif entity_type == "reviews":
@@ -137,7 +137,7 @@ def validate_entity(entity_type: str, obj: Any) -> list[str]:
             "pass", "pass_with_comments", "fail"
         ):
             errors.append(
-                f"Invalid verdict {verdict!r}; must be pass/pass_with_comments/fail"
+                "Invalid verdict value; must be pass/pass_with_comments/fail"
             )
 
     return errors

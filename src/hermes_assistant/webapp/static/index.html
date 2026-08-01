@@ -197,7 +197,7 @@
             <div style="background: #f59e0b; color: white; padding: 1rem; border-radius: 0.5rem;">
               <strong>Errors:</strong>
               <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
-                ${result.errors.map(e => `<li>${e}</li>`).join('')}
+                ${result.errors.map(e => `<li>${escapeHtml(e)}</li>`).join('')}
               </ul>
             </div>
           ` : ''}
@@ -210,7 +210,7 @@
       } catch (error) {
         progressDiv.style.display = 'none';
         errorDiv.style.display = 'block';
-        errorDiv.innerHTML = `<strong>Error:</strong> ${error.message}`;
+        errorDiv.innerHTML = `<strong>Error:</strong> ${escapeHtml(error.message)}`;
       }
     }
 

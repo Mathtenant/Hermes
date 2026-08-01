@@ -8,6 +8,7 @@ SQLite's built-in serialisation.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -67,6 +68,12 @@ class RiskRegistry:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        # RLock serialises all public method calls so that concurrent FastAPI
+        # worker threads cannot interleave execute/commit sequences on the same
+        # shared connection. RLock (re-entrant) is used because some public
+        # methods call other public methods internally (e.g. update calls get,
+        # accept/mitigate/close call update, auto_create calls create).
+        self._lock = threading.RLock()
 
     def close_connection(self) -> None:
         """Close the underlying SQLite connection."""
@@ -105,38 +112,40 @@ class RiskRegistry:
         confidential: bool = False,
     ) -> Risk:
         """Insert a new risk and return it."""
-        risk = Risk(
-            title=title,
-            description=description,
-            severity=severity,
-            likelihood=likelihood,
-            owner=owner,
-            confidential=confidential,
-        )
-        self._conn.execute(
-            f"INSERT INTO risks ({_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (
-                risk.id,
-                risk.title,
-                risk.description,
-                risk.severity.value,
-                risk.likelihood,
-                risk.owner,
-                risk.status.value,
-                int(risk.confidential),
-                risk.created_at,
-                risk.updated_at,
-            ),
-        )
-        self._conn.commit()
-        return risk
+        with self._lock:
+            risk = Risk(
+                title=title,
+                description=description,
+                severity=severity,
+                likelihood=likelihood,
+                owner=owner,
+                confidential=confidential,
+            )
+            self._conn.execute(
+                f"INSERT INTO risks ({_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    risk.id,
+                    risk.title,
+                    risk.description,
+                    risk.severity.value,
+                    risk.likelihood,
+                    risk.owner,
+                    risk.status.value,
+                    int(risk.confidential),
+                    risk.created_at,
+                    risk.updated_at,
+                ),
+            )
+            self._conn.commit()
+            return risk
 
     def get(self, risk_id: str) -> Risk | None:
         """Fetch a risk by id; returns None if not found."""
-        row = self._conn.execute(
-            f"SELECT {_COLUMNS} FROM risks WHERE id = ?", (risk_id,)
-        ).fetchone()
-        return self._row_to_risk(row) if row else None
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT {_COLUMNS} FROM risks WHERE id = ?", (risk_id,)
+            ).fetchone()
+            return self._row_to_risk(row) if row else None
 
     def update(self, risk_id: str, **kwargs: object) -> Risk:
         """Update one or more fields of a risk.
@@ -145,41 +154,43 @@ class RiskRegistry:
         Allowed kwargs: title, description, severity, likelihood, owner,
         status, confidential.
         """
-        risk = self.get(risk_id)
-        if risk is None:
-            raise RiskNotFoundError(risk_id)
-        allowed = {
-            "title", "description", "severity", "likelihood",
-            "owner", "status", "confidential",
-        }
-        for k, v in kwargs.items():
-            if k not in allowed:
-                raise ValueError(f"Unknown field: {k!r}")
-            setattr(risk, k, v)
-        risk.updated_at = _now()
-        self._conn.execute(
-            "UPDATE risks SET title=?, description=?, severity=?, likelihood=?, "
-            "owner=?, status=?, confidential=?, updated_at=? WHERE id=?",
-            (
-                risk.title,
-                risk.description,
-                risk.severity.value,
-                risk.likelihood,
-                risk.owner,
-                risk.status.value,
-                int(risk.confidential),
-                risk.updated_at,
-                risk_id,
-            ),
-        )
-        self._conn.commit()
-        return risk
+        with self._lock:
+            risk = self.get(risk_id)
+            if risk is None:
+                raise RiskNotFoundError(risk_id)
+            allowed = {
+                "title", "description", "severity", "likelihood",
+                "owner", "status", "confidential",
+            }
+            for k, v in kwargs.items():
+                if k not in allowed:
+                    raise ValueError(f"Unknown field: {k!r}")
+                setattr(risk, k, v)
+            risk.updated_at = _now()
+            self._conn.execute(
+                "UPDATE risks SET title=?, description=?, severity=?, likelihood=?, "
+                "owner=?, status=?, confidential=?, updated_at=? WHERE id=?",
+                (
+                    risk.title,
+                    risk.description,
+                    risk.severity.value,
+                    risk.likelihood,
+                    risk.owner,
+                    risk.status.value,
+                    int(risk.confidential),
+                    risk.updated_at,
+                    risk_id,
+                ),
+            )
+            self._conn.commit()
+            return risk
 
     def delete(self, risk_id: str) -> bool:
         """Remove a risk; returns True if deleted, False if not found."""
-        cur = self._conn.execute("DELETE FROM risks WHERE id = ?", (risk_id,))
-        self._conn.commit()
-        return cur.rowcount > 0
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM risks WHERE id = ?", (risk_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
 
     # ------------------------------------------------------------------
     # Status transitions
@@ -187,11 +198,13 @@ class RiskRegistry:
 
     def accept(self, risk_id: str) -> Risk:
         """Mark a risk as accepted (owner acknowledges it, no mitigation)."""
-        return self.update(risk_id, status=RiskStatus.accepted)
+        with self._lock:
+            return self.update(risk_id, status=RiskStatus.accepted)
 
     def mitigate(self, risk_id: str) -> Risk:
         """Mark a risk as mitigated (countermeasure applied)."""
-        return self.update(risk_id, status=RiskStatus.mitigated)
+        with self._lock:
+            return self.update(risk_id, status=RiskStatus.mitigated)
 
     def close(self, risk_id: str | None = None) -> Risk | None:
         """Mark a risk as closed, or close the connection if no id is given.
@@ -204,7 +217,8 @@ class RiskRegistry:
         if risk_id is None:
             self.close_connection()
             return None
-        return self.update(risk_id, status=RiskStatus.closed)
+        with self._lock:
+            return self.update(risk_id, status=RiskStatus.closed)
 
     # ------------------------------------------------------------------
     # Query
@@ -225,34 +239,35 @@ class RiskRegistry:
         semantic ordering (low < medium < high < critical) rather than
         lexicographic.
         """
-        where_clauses: list[str] = []
-        params: list[object] = []
-        if status is not None:
-            where_clauses.append("status = ?")
-            params.append(status.value)
-        if severity is not None:
-            where_clauses.append("severity = ?")
-            params.append(severity.value)
-        if owner is not None:
-            where_clauses.append("owner = ?")
-            params.append(owner)
-        where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-        # Severity needs client-side sort; all others delegate to SQLite.
-        if sort_by == "severity":
+        with self._lock:
+            where_clauses: list[str] = []
+            params: list[object] = []
+            if status is not None:
+                where_clauses.append("status = ?")
+                params.append(status.value)
+            if severity is not None:
+                where_clauses.append("severity = ?")
+                params.append(severity.value)
+            if owner is not None:
+                where_clauses.append("owner = ?")
+                params.append(owner)
+            where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+            # Severity needs client-side sort; all others delegate to SQLite.
+            if sort_by == "severity":
+                rows = self._conn.execute(
+                    f"SELECT {_COLUMNS} FROM risks {where}", params
+                ).fetchall()
+                risks = [self._row_to_risk(r) for r in rows]
+                return sorted(
+                    risks,
+                    key=lambda r: _SEVERITY_ORDER[r.severity],
+                    reverse=descending,
+                )
+            order = f"ORDER BY {sort_by} {'DESC' if descending else 'ASC'}"
             rows = self._conn.execute(
-                f"SELECT {_COLUMNS} FROM risks {where}", params
+                f"SELECT {_COLUMNS} FROM risks {where} {order}", params
             ).fetchall()
-            risks = [self._row_to_risk(r) for r in rows]
-            return sorted(
-                risks,
-                key=lambda r: _SEVERITY_ORDER[r.severity],
-                reverse=descending,
-            )
-        order = f"ORDER BY {sort_by} {'DESC' if descending else 'ASC'}"
-        rows = self._conn.execute(
-            f"SELECT {_COLUMNS} FROM risks {where} {order}", params
-        ).fetchall()
-        return [self._row_to_risk(r) for r in rows]
+            return [self._row_to_risk(r) for r in rows]
 
     # ------------------------------------------------------------------
     # Auto-creation
@@ -264,19 +279,20 @@ class RiskRegistry:
         Heuristic: first non-empty line → title; remainder → description;
         severity detected from keywords (critical/high/medium/low).
         """
-        lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
-        title = lines[0][:200] if lines else "Unnamed risk"
-        description = " ".join(lines[1:]) if len(lines) > 1 else ""
-        text_lower = text.lower()
-        if any(w in text_lower for w in ("critical", "blocker", "catastrophic", "severe")):
-            severity = RiskSeverity.critical
-        elif any(w in text_lower for w in ("high", "serious", "major", "significant")):
-            severity = RiskSeverity.high
-        elif any(w in text_lower for w in ("low", "minor", "negligible", "trivial")):
-            severity = RiskSeverity.low
-        else:
-            severity = RiskSeverity.medium
-        return self.create(title, description=description, severity=severity)
+        with self._lock:
+            lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
+            title = lines[0][:200] if lines else "Unnamed risk"
+            description = " ".join(lines[1:]) if len(lines) > 1 else ""
+            text_lower = text.lower()
+            if any(w in text_lower for w in ("critical", "blocker", "catastrophic", "severe")):
+                severity = RiskSeverity.critical
+            elif any(w in text_lower for w in ("high", "serious", "major", "significant")):
+                severity = RiskSeverity.high
+            elif any(w in text_lower for w in ("low", "minor", "negligible", "trivial")):
+                severity = RiskSeverity.low
+            else:
+                severity = RiskSeverity.medium
+            return self.create(title, description=description, severity=severity)
 
     # ------------------------------------------------------------------
     # Confidentiality
@@ -284,8 +300,9 @@ class RiskRegistry:
 
     def export_public(self) -> list[Risk]:
         """Return only non-confidential risks (safe for external sharing)."""
-        rows = self._conn.execute(
-            f"SELECT {_COLUMNS} FROM risks WHERE confidential = 0 "
-            "ORDER BY created_at DESC"
-        ).fetchall()
-        return [self._row_to_risk(r) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {_COLUMNS} FROM risks WHERE confidential = 0 "
+                "ORDER BY created_at DESC"
+            ).fetchall()
+            return [self._row_to_risk(r) for r in rows]

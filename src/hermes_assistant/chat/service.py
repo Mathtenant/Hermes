@@ -19,6 +19,8 @@ unavailable, model not pulled, transport error), the turn degrades to a safe
 
 from __future__ import annotations
 
+import json as _json
+import logging
 from typing import Any
 
 from .executor import ActionExecutor
@@ -31,7 +33,18 @@ from .model import (
 from .router import IntentRouter
 from .store import ChatStore
 
+logger = logging.getLogger(__name__)
+
 _CONFIDENCE_THRESHOLD = 0.7
+
+
+class ConfidentialityGuardError(Exception):
+    """Raised when the confidentiality guard blocks an assistant response.
+
+    No violation details are included here — callers must log at the
+    point of detection (in handle_turn) and surface only a generic
+    message to the client.
+    """
 
 
 class ResponseFormatter:
@@ -214,6 +227,21 @@ class ChatService:
             # degrade to the improved "unknown" fallback (suggestions).
             result = {"action": "conversational"}
             response_text = ResponseFormatter.format_result(result, "unknown", message)
+
+        # H1: Guard BEFORE persistence — validate response before writing to store.
+        # Lazy import avoids the circular dependency:
+        #   server.py → chat_api.py → service.py → (lazy) server.py
+        # All modules are fully initialised by the time handle_turn is called.
+        from hermes_assistant.webapp.server import _validate_safe_json  # noqa: PLC0415
+
+        violations = _validate_safe_json(_json.dumps({"content": response_text}))
+        if violations:
+            logger.warning(
+                "Confidentiality guard blocked assistant response for session %s: %s",
+                session.id,
+                "; ".join(violations),
+            )
+            raise ConfidentialityGuardError("Content validation failed")
 
         # 6. Persist the assistant message.
         assistant_msg = self.store.add_message(

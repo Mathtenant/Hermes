@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from hermes_assistant.chat.model import ChatRole, IntentClassification
-from hermes_assistant.chat.service import ChatService, ResponseFormatter
+from hermes_assistant.chat.service import ChatService, ConfidentialityGuardError, ResponseFormatter
 from hermes_assistant.chat.store import ChatStore
 
 
@@ -191,3 +195,57 @@ def test_service_greeting_not_rephrase_fallback():
     turn = service.handle_turn("Hello", "proj1")
     assert "rephrase" not in turn.message.content.lower()
     assert "Hello" in turn.message.content
+
+
+# --------------------------------------------------------------------------- #
+# H1 — confidentiality guard runs BEFORE persistence
+# --------------------------------------------------------------------------- #
+
+
+class _HighConfidenceRouter:
+    """Always classifies with high confidence so the executor is called."""
+
+    def classify(self, message, context):  # noqa: ANN001
+        return IntentClassification(intent="answer_question", params={}, confidence=0.9)
+
+
+class _PiiLeakExecutor:
+    """Simulates an LLM result that contains PII (email address)."""
+
+    def execute(self, action_type, params, context):  # noqa: ANN001
+        return {"action": "answer", "answer": "Contact alice@example.com for details."}
+
+
+def test_guard_blocks_before_persist() -> None:
+    """H1: guard fires BEFORE persistence; no assistant row written on violation."""
+    store = ChatStore(":memory:")
+    service = ChatService(store, _HighConfidenceRouter(), _PiiLeakExecutor(), FakeLLMClient())
+
+    with pytest.raises(ConfidentialityGuardError):
+        service.handle_turn("Show me contact info", "proj1")
+
+    # Session was created and the user message was persisted, but the
+    # assistant response must NOT have been written to chat_messages.
+    sessions = store.list_sessions("proj1")
+    assert len(sessions) == 1, "session should still exist"
+    messages = store.list_messages(sessions[0].id)
+    assert len(messages) == 1, "only the user message should be persisted"
+    assert messages[0].role == ChatRole.user
+
+
+def test_guard_logs_violation(caplog: pytest.LogCaptureFixture) -> None:
+    """H1+H2: violation details are written to the server log, not the exception."""
+    store = ChatStore(":memory:")
+    service = ChatService(store, _HighConfidenceRouter(), _PiiLeakExecutor(), FakeLLMClient())
+
+    with caplog.at_level(logging.WARNING, logger="hermes_assistant.chat.service"):
+        with pytest.raises(ConfidentialityGuardError) as exc_info:
+            service.handle_turn("Show me contact info", "proj1")
+
+    # The exception carries only a generic message — no violation details.
+    assert "alice" not in str(exc_info.value)
+    assert "example.com" not in str(exc_info.value)
+
+    # The real detail must appear in the server-side log.
+    assert "Confidentiality guard blocked" in caplog.text
+    assert "alice@example.com" in caplog.text or "Email address" in caplog.text

@@ -253,7 +253,10 @@ def test_confidentiality_guard_causes_500() -> None:
         ):
             r = client.get("/api/dashboard")
     assert r.status_code == 500
-    assert "confidentiality" in r.json().get("detail", "").lower()
+    # H2: detail must be generic — violation names must not reach the client.
+    detail = r.json().get("detail", "")
+    assert detail == "Internal error"
+    assert "raw_notes" not in detail
 
 
 # ---------------------------------------------------------------------------

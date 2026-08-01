@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import functools
 import json as _json
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,8 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+
+logger = logging.getLogger(__name__)
 
 from hermes_assistant.config import settings
 from hermes_assistant.dashboard_html import (
@@ -104,10 +107,13 @@ def confidentiality_guard(func):  # type: ignore[no-untyped-def]
         if isinstance(response, dict):
             violations = _validate_safe_json(_json.dumps(response))
             if violations:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Confidentiality guard triggered: {'; '.join(violations)}",
+                # H2: log violation detail server-side only; send generic message to client.
+                logger.warning(
+                    "Confidentiality guard triggered on %s: %s",
+                    func.__name__,
+                    "; ".join(violations),
                 )
+                raise HTTPException(status_code=500, detail="Internal error")
         return response
 
     return wrapper
@@ -167,10 +173,11 @@ async def dashboard(project_id: str | None = Query(default=None)) -> Response:
     json_str = data.model_dump_json()
     violations = _validate_safe_json(json_str)
     if violations:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Confidentiality guard triggered: {'; '.join(violations)}",
+        # H2: log detail server-side; send generic message to client.
+        logger.warning(
+            "Confidentiality guard triggered on dashboard: %s", "; ".join(violations)
         )
+        raise HTTPException(status_code=500, detail="Internal error")
     return Response(content=json_str, media_type="application/json")
 
 
@@ -277,10 +284,11 @@ async def import_json(request: Request) -> Response:
     json_str = result.model_dump_json()
     violations = _validate_safe_json(json_str)
     if violations:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Confidentiality guard triggered: {'; '.join(violations)}",
+        # H2: log detail server-side; send generic message to client.
+        logger.warning(
+            "Confidentiality guard triggered on import: %s", "; ".join(violations)
         )
+        raise HTTPException(status_code=500, detail="Internal error")
     return Response(content=json_str, media_type="application/json")
 
 

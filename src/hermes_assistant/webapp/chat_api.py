@@ -23,13 +23,18 @@ from starlette.concurrency import run_in_threadpool
 
 from hermes_assistant.chat.executor import ActionExecutor
 from hermes_assistant.chat.router import IntentRouter
-from hermes_assistant.chat.service import ChatService
+from hermes_assistant.chat.service import ChatService, ConfidentialityGuardError
 from hermes_assistant.chat.store import ChatStore
 from hermes_assistant.config import settings
 from hermes_assistant.llm.client import OllamaClient
 from hermes_assistant.plans.editor import PlanEditor
 from hermes_assistant.risks.registry import RiskRegistry
 from hermes_assistant.tasks.store import TaskStore
+
+
+import logging as _logging
+
+_log = _logging.getLogger(__name__)
 
 
 def confidentiality_guard(func):  # type: ignore[no-untyped-def]
@@ -39,6 +44,9 @@ def confidentiality_guard(func):  # type: ignore[no-untyped-def]
     validator lazily at request time. This avoids a module-load import cycle:
     ``server`` mounts this router at import, so this module must not import
     ``server`` at the top level.
+
+    H2: violation details are logged server-side only; the client receives a
+    generic "Internal error" message so forbidden field names are not disclosed.
     """
 
     @functools.wraps(func)
@@ -49,10 +57,13 @@ def confidentiality_guard(func):  # type: ignore[no-untyped-def]
 
             violations = _validate_safe_json(_json.dumps(response))
             if violations:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Confidentiality guard triggered: {'; '.join(violations)}",
+                # H2: log detail server-side; return generic message to client.
+                _log.warning(
+                    "Confidentiality guard triggered on %s: %s",
+                    func.__name__,
+                    "; ".join(violations),
                 )
+                raise HTTPException(status_code=500, detail="Internal error")
         return response
 
     return wrapper
@@ -105,9 +116,13 @@ class ChatMessageResponse(BaseModel):
 
 
 @router.post("/message")
-@confidentiality_guard
 async def send_message(req: ChatMessageRequest) -> dict:
-    """Send a message and return the assistant's response."""
+    """Send a message and return the assistant's response.
+
+    The confidentiality guard now runs inside ``ChatService.handle_turn``
+    *before* the assistant message is persisted (H1 fix). The ``@confidentiality_guard``
+    decorator is therefore not needed on this endpoint.
+    """
     message = (req.message or "").strip()
     if not message or len(req.message) > MAX_MESSAGE_CHARS:
         raise HTTPException(
@@ -122,7 +137,11 @@ async def send_message(req: ChatMessageRequest) -> dict:
     def handle():  # noqa: ANN202
         return service.handle_turn(req.message, req.project_id, req.session_id)
 
-    turn = await run_in_threadpool(handle)
+    try:
+        turn = await run_in_threadpool(handle)
+    except ConfidentialityGuardError:
+        # Guard already logged the details in service.handle_turn; surface generic error.
+        raise HTTPException(status_code=500, detail="Internal error")
     return ChatMessageResponse(
         session_id=turn.session_id,
         message=turn.message.model_dump(),

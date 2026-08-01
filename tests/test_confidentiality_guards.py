@@ -112,20 +112,26 @@ async def test_confidentiality_guard_raises_500_on_violation() -> None:
     with pytest.raises(HTTPException) as exc_info:
         await endpoint()
     assert exc_info.value.status_code == 500
-    assert "confidentiality" in exc_info.value.detail.lower()
+    # H2: detail must be generic — forbidden field names must not be disclosed to clients.
+    assert exc_info.value.detail == "Internal error"
 
 
 @pytest.mark.asyncio
-async def test_confidentiality_guard_reports_all_violations() -> None:
+async def test_confidentiality_guard_detail_is_generic_not_violations() -> None:
+    """H2: the HTTP error detail must never expose which fields triggered the guard."""
+
     @confidentiality_guard
     async def endpoint() -> dict[str, str]:
         return {"raw_notes": "x", "internal_budget": "y"}
 
     with pytest.raises(HTTPException) as exc_info:
         await endpoint()
+    assert exc_info.value.status_code == 500
     detail = exc_info.value.detail.lower()
-    assert "raw_notes" in detail
-    assert "internal_" in detail
+    # Violation field names must NOT appear in the client-facing error.
+    assert "raw_notes" not in detail
+    assert "internal_" not in detail
+    assert "internal_budget" not in detail
 
 
 @pytest.mark.asyncio

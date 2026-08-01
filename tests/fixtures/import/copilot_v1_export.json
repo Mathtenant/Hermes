@@ -1,0 +1,97 @@
+{
+  "schema": "hermes.project_state/v1",
+  "meta": {
+    "generated_at": "2026-07-01T08:00:00Z",
+    "source": "m365_copilot",
+    "repo_scope": "sp/hermes-pilot",
+    "generator_note": "Test fixture for C1 adapter"
+  },
+  "project": {
+    "external_ref": "proj/hermes-pilot",
+    "title": "HERMES Pilot",
+    "goal": "Deliver the MVP within Q3.",
+    "phase": "realisierung",
+    "milestones": [
+      {
+        "external_ref": "ms/mvp-release",
+        "title": "MVP Release",
+        "due": "2026-09-30",
+        "status": "open"
+      }
+    ]
+  },
+  "wbs": [
+    {
+      "external_ref": "wp/anforderungsanalyse",
+      "parent_ref": null,
+      "title": "Anforderungsanalyse",
+      "node_kind": "phase",
+      "status": "done",
+      "due": "2026-06-15",
+      "effort_hint_h": 20,
+      "source_hint": "pflichtenheft.docx"
+    },
+    {
+      "external_ref": "wp/backend-api",
+      "parent_ref": "wp/anforderungsanalyse",
+      "title": "Backend API",
+      "node_kind": "deliverable",
+      "status": "in_progress",
+      "due": "2026-08-01",
+      "effort_hint_h": 80,
+      "source_hint": "architecture.md"
+    }
+  ],
+  "pendenzen": [
+    {
+      "external_ref": "pd/security-review",
+      "title": "Security review durchführen",
+      "owner": "Security Team",
+      "raised_by": "PM",
+      "due": "2026-08-15",
+      "status": "open",
+      "source": "review",
+      "source_hint": "kickoff_meeting.docx"
+    },
+    {
+      "external_ref": "pd/entscheid-hosting",
+      "title": "Hosting-Entscheid dokumentieren",
+      "owner": "Architekt",
+      "raised_by": "CTO",
+      "due": "2026-07-31",
+      "status": "open",
+      "source": "decision_log",
+      "source_hint": "decisions.md"
+    }
+  ],
+  "open_assumptions": [
+    {
+      "text": "Cloud budget approved by finance",
+      "since": "2026-06-01"
+    }
+  ],
+  "risks": [
+    {
+      "title": "Vendor API nicht rechtzeitig verfügbar",
+      "impact": "hoch",
+      "likelihood": "mittel"
+    },
+    {
+      "title": "Ressourcenengpass im Team",
+      "impact": "mittel",
+      "likelihood": "tief"
+    },
+    {
+      "title": "Datenverlust bei Migration",
+      "impact": "gering",
+      "likelihood": "hoch"
+    }
+  ],
+  "decisions": [
+    {
+      "title": "PostgreSQL statt MySQL",
+      "at": "2026-06-10",
+      "rationale": "Bessere JSON-Unterstützung"
+    }
+  ]
+}

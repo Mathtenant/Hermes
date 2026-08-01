@@ -249,6 +249,18 @@ async def import_json(request: Request) -> Response:
             status_code=422, detail=f"Invalid JSON: {exc}"
         ) from exc
 
+    # ── Adapt schema (Copilot → native) ──────────────────────────────────
+    from hermes_assistant.webapp.import_adapters import adapt_payload
+
+    try:
+        payload = adapt_payload(payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Schema adaptation failed: {exc}",
+        ) from exc
+    skipped_sections: list[str] = payload.pop("_skipped_sections", [])
+
     # ── Validate structure ────────────────────────────────────────────────
     structure_errors = validate_import_payload(payload)
     if structure_errors:
@@ -256,6 +268,12 @@ async def import_json(request: Request) -> Response:
 
     # ── Execute import ────────────────────────────────────────────────────
     result: ImportResult = import_payload(payload, **_get_import_paths())
+    # Surface adapter-skipped sections (e.g. open_assumptions, decisions) as
+    # informational errors so callers know data was not silently dropped.
+    for sec in skipped_sections:
+        result.errors.append(
+            f"Section {sec!r} is not supported by the importer and was skipped"
+        )
     json_str = result.model_dump_json()
     violations = _validate_safe_json(json_str)
     if violations:

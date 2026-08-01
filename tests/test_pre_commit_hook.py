@@ -126,9 +126,17 @@ def test_hook_blocks_build_artifact_dirs(tmp_path: Path, rel_path: str) -> None:
 
 
 def test_hook_scans_pii_terms_case_insensitive(tmp_path: Path) -> None:
-    repo = _make_repo(tmp_path)
-    # "confidential" is one of the seeded terms; check case-insensitive match.
-    _stage(repo, "notes.md", "This project is CONFIDENTIAL and must not leak.")
+    # Use a synthetic term so neither this test file nor the staged content
+    # conflicts with the project's own PII dictionary.
+    repo = _make_repo(tmp_path, with_pii_terms=False)
+    hermes_dir = repo / ".hermes"
+    hermes_dir.mkdir(exist_ok=True)
+    pii_file = hermes_dir / "pii_terms.txt"
+    pii_file.write_text("testpiiterm\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".hermes/pii_terms.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed test pii terms"], cwd=repo, check=True)
+    # Stage a file containing the synthetic term in uppercase — hook must catch it.
+    _stage(repo, "notes.md", "This note contains TESTPIITERM which should be blocked.")
     result = _run_hook(repo)
     assert result.returncode != 0
     assert "pii term detected" in result.stdout.lower()

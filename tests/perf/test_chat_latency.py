@@ -7,11 +7,14 @@ are stable on modest hardware while still catching gross regressions.
 
 from __future__ import annotations
 
+import concurrent.futures
+import json
 import time
 
 from hermes_assistant.chat.model import IntentClassification
 from hermes_assistant.chat.service import ChatService
 from hermes_assistant.chat.store import ChatStore
+from hermes_assistant.webapp.server import _validate_safe_json
 
 
 class _FastRouter:
@@ -57,3 +60,58 @@ def test_database_query_performance():
     store.list_sessions()
     list_time = time.time() - start
     assert list_time < 0.05, f"Listed sessions in {list_time:.3f}s"
+
+
+def test_concurrent_message_handling_no_deadlock() -> None:
+    """20 parallel handle_turn calls on the same session must all succeed."""
+    store = ChatStore(":memory:")
+    service = ChatService(store, _FastRouter(), _FastExecutor(), None)
+
+    # Pre-create the shared session before spawning threads.
+    session = store.create_session("proj-concurrent")
+    session_id = session.id
+
+    errors: list[Exception] = []
+    results: list[object] = []
+
+    def one_turn(i: int) -> None:
+        try:
+            turn = service.handle_turn(f"Message {i}", "proj-concurrent", session_id)
+            results.append(turn)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(one_turn, i) for i in range(20)]
+        concurrent.futures.wait(futures)
+
+    assert not errors, f"Errors in concurrent turns: {errors!r}"
+    assert len(results) == 20, f"Expected 20 turns, got {len(results)}"
+    # Each turn persists 1 user + 1 assistant message → 40 total.
+    msgs = store.list_messages(session_id)
+    assert len(msgs) == 40, f"Expected 40 messages (20 × 2), got {len(msgs)}"
+
+
+def test_guard_validation_overhead() -> None:
+    """_validate_safe_json runs in under 10 ms for a typical response payload."""
+    payload = json.dumps({
+        "content": "Hello! What are you working on?",
+        "intent": "smalltalk",
+        "session_id": "abc123",
+        "risks": [],
+        "suggestions": ["Create a risk", "List tasks"],
+    })
+
+    # Warm-up: first call may trigger module-level regex compilation.
+    _validate_safe_json(payload)
+
+    times_ms = []
+    for _ in range(100):
+        start = time.perf_counter()
+        _validate_safe_json(payload)
+        times_ms.append((time.perf_counter() - start) * 1000)
+
+    avg_ms = sum(times_ms) / len(times_ms)
+    assert avg_ms < 10.0, (
+        f"Guard validation averaged {avg_ms:.3f} ms (target < 10 ms)"
+    )

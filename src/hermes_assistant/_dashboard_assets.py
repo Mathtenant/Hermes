@@ -56,6 +56,9 @@ footer{text-align:center;font-size:.78rem;color:#aaa;padding:.75rem;border-top:1
 @media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#121212;--fg:#e0e0e0;--border:#333;--card:#1e1e1e;--th:#252525}}
 [data-theme=dark]{--bg:#121212;--fg:#e0e0e0;--border:#333;--card:#1e1e1e;--th:#252525}
 @media print{.filters,#theme-toggle,nav,.wbs-btn{display:none}body{font-size:10.5pt}.topbar{position:static;border:none}table{page-break-inside:auto}tr{page-break-inside:avoid}}
+.panel-body{overflow:hidden;transition:max-height .3s ease;max-height:500px}
+.panel-body.is-collapsed{max-height:0}
+.section-toggle{background:none;border:none;cursor:pointer;font-size:.9rem;color:#999;margin-left:.4rem;vertical-align:middle;line-height:1}
 """
 
 _JS = r"""'use strict';
@@ -106,5 +109,28 @@ window.onafterprint=function(){Array.from(document.querySelectorAll('#wbs detail
 try{var _t=localStorage.getItem('hermes-theme');if(_t)document.documentElement.setAttribute('data-theme',_t);}catch(e){}
 document.querySelectorAll('th button[data-sort-col]').forEach(function(b){b.addEventListener('click',function(){sortTable(b.closest('th'));});});
 var _tog=document.getElementById('theme-toggle');if(_tog)_tog.addEventListener('click',toggleTheme);
+// Q2 — collapse panels via event delegation on [data-collapse-target].
+document.addEventListener('click',function(e){
+  var btn=e.target.closest&&e.target.closest('[data-collapse-target]');
+  if(!btn)return;
+  var targetId=btn.dataset.collapseTarget;
+  var panel=document.getElementById(targetId);
+  if(!panel)return;
+  var collapsed=panel.classList.toggle('is-collapsed');
+  btn.textContent=collapsed?'+':'−';
+  btn.setAttribute('aria-expanded',String(!collapsed));
+  try{sessionStorage.setItem('panel-collapsed-'+targetId,String(collapsed));}catch(ex){}
+});
+// Restore panel collapse state from sessionStorage.
+(function(){
+  var btns=document.querySelectorAll('[data-collapse-target]');
+  for(var i=0;i<btns.length;i++){
+    var b=btns[i];var tid=b.dataset.collapseTarget;
+    if(sessionStorage.getItem('panel-collapsed-'+tid)==='true'){
+      var p=document.getElementById(tid);
+      if(p){p.classList.add('is-collapsed');b.textContent='+';b.setAttribute('aria-expanded','false');}
+    }
+  }
+})();
 })();
 """

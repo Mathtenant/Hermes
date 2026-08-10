@@ -108,10 +108,16 @@
       "</div>";
 
     var collapsedClass = state.isOpen ? "" : " is-collapsed";
+    // When collapsed, omit the fixed height so the container shrinks to the
+    // header bar. When expanded the explicit height gives the chat area its
+    // full 500 px canvas.
+    var containerHeight = state.isOpen ? "height:500px;" : "";
     root.innerHTML =
       '<div id="chat-widget" class="panel' +
       collapsedClass +
-      '" style="position:fixed;bottom:20px;right:20px;width:400px;height:500px;border:1px solid #334155;border-radius:8px;background:#1e293b;display:flex;flex-direction:column;z-index:900;box-shadow:0 4px 12px rgba(0,0,0,0.3);">' +
+      '" style="position:fixed;bottom:20px;right:20px;width:400px;' +
+      containerHeight +
+      'border:1px solid #334155;border-radius:8px;background:#1e293b;display:flex;flex-direction:column;z-index:900;box-shadow:0 4px 12px rgba(0,0,0,0.3);">' +
       '<div style="background:#0f172a;padding:1rem;border-bottom:1px solid #334155;display:flex;justify-content:space-between;align-items:center;">' +
       '<h3 style="margin:0;color:#e2e8f0;font-size:1rem;">Hermes Chat</h3>' +
       '<button class="chat-toggle" data-collapse-target="chat-widget-body" aria-expanded="' +

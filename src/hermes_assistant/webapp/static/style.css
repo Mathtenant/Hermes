@@ -436,6 +436,13 @@ body {
   max-height: 0;
 }
 
+/* Q2: also handle is-collapsed placed directly on the body element */
+.panel-body.is-collapsed {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease;
+}
+
 [id$="-body"] {
   overflow: hidden;
   transition: max-height 0.18s ease;

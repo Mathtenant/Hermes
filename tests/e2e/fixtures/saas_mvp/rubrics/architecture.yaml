@@ -1,0 +1,73 @@
+# Rubric: SaaS MVP Architecture Review (Day 5)
+#
+# Used at Checkpoint 1 to gate the backend build phase.
+# Flags security gaps that must be resolved before Phase 2 begins.
+rubric_id: saas-mvp-architecture
+version: "1"
+deliverable_type: ArchitectureReview
+description: >
+  Architecture quality rubric for the SaaS MVP Launch project.
+  Checks that security, scalability, and data-handling concerns are addressed
+  before implementation begins.
+
+criteria:
+  - id: encryption_at_rest
+    dimension: risk_coverage
+    text: >
+      All PII and sensitive data fields are protected by encryption at rest.
+      Missing encryption is a blocker; partial coverage is a major finding.
+    check_type: binary
+    severity_if_failed: blocker
+    evidence_required: true
+
+  - id: auth_mechanism_defined
+    dimension: completeness
+    text: >
+      An authentication mechanism (e.g. OAuth 2.0, JWT, session tokens) is
+      explicitly specified. Absence of an auth strategy is a blocker.
+    check_type: binary
+    severity_if_failed: blocker
+    evidence_required: true
+
+  - id: api_versioning_strategy
+    dimension: correctness
+    text: >
+      The API design document specifies a versioning strategy (e.g. /v1/ prefix)
+      to allow future non-breaking updates.
+    check_type: binary
+    severity_if_failed: major
+    evidence_required: true
+
+  - id: scalability_targets_stated
+    dimension: clarity
+    text: >
+      Target load (RPS, concurrent users, data volume) is stated so the
+      architecture can be validated against requirements.
+    check_type: graded
+    severity_if_failed: major
+    evidence_required: true
+
+  - id: third_party_risk_inventory
+    dimension: risk_coverage
+    text: >
+      All third-party integrations are listed with their known failure modes
+      and fallback strategies.
+    check_type: graded
+    severity_if_failed: minor
+    evidence_required: false
+
+anti_patterns:
+  - id: missing_encryption
+    text: >
+      Architecture document omits encryption for PII or financial data fields.
+    example_fail: "User table stores email, password_hash, credit_card in plaintext columns."
+    example_pass: "All PII columns encrypted with AES-256; KMS key rotation every 90 days."
+    severity: blocker
+
+  - id: undefined_auth
+    text: >
+      No authentication strategy is specified; the plan relies on 'TBD' or leaves
+      the auth concern for later phases.
+    example_fail: "Auth: TBD — will figure out in sprint 3."
+    example_pass: "Auth: JWT with RS256 signing; refresh tokens expire in 24 h."
+    severity: blocker

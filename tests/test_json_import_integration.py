@@ -455,3 +455,19 @@ class TestXssDefense:
         assert data["skipped"] == 1
         for err in data["errors"]:
             assert xss not in err, f"Raw XSS payload echoed in error: {err!r}"
+
+
+class TestH2NullOptionalFields:
+    """H2: importing a risk with an explicit-null optional field must not 500."""
+
+    def test_owner_null_returns_200_skipped(self, client):
+        """POST {"risks":[{"title":"t","owner":null}]} → HTTP 200, skipped=1."""
+        response = client.post(
+            "/api/import/json",
+            json={"risks": [{"title": "t", "owner": None}]},
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["skipped"] == 1
+        assert data["created"] == 0

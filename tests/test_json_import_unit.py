@@ -446,6 +446,56 @@ class TestM2ExternalRefIdempotency:
         assert count == 1, "Legacy id-based fallback must also deduplicate"
 
 
+class TestH2NullOptionalFields:
+    """H2: explicit-null optional fields must be skipped gracefully, not 500."""
+
+    def test_risk_owner_explicit_null_is_skipped_not_crash(self):
+        """{"risks":[{"title":"t","owner":null}]} → skipped=1, no exception."""
+        result = import_payload(
+            {"risks": [{"title": "t", "owner": None}]},
+            risks_db=":memory:",
+            plans_db=":memory:",
+            tasks_db=":memory:",
+        )
+        assert result.skipped == 1
+        assert result.created == 0
+        assert len(result.errors) == 1
+
+    def test_risk_null_severity_is_skipped_not_crash(self):
+        """A null enum field (severity) is skipped, not a 500."""
+        result = import_payload(
+            {"risks": [{"title": "t", "severity": None}]},
+            risks_db=":memory:",
+            plans_db=":memory:",
+            tasks_db=":memory:",
+        )
+        assert result.skipped == 1
+        assert result.created == 0
+
+    def test_valid_risk_alongside_null_field_still_atomic(self):
+        """A null-field item aborts the batch (H5 atomicity) but never crashes."""
+        result = import_payload(
+            {"risks": [{"title": "ok"}, {"title": "bad", "owner": None}]},
+            risks_db=":memory:",
+            plans_db=":memory:",
+            tasks_db=":memory:",
+        )
+        # One item skipped; atomicity means the valid item is not committed.
+        assert result.skipped == 1
+        assert result.created == 0
+
+    def test_absent_owner_still_creates(self):
+        """Regression guard: an *absent* owner key still uses the default."""
+        result = import_payload(
+            {"risks": [{"title": "t"}]},
+            risks_db=":memory:",
+            plans_db=":memory:",
+            tasks_db=":memory:",
+        )
+        assert result.created == 1
+        assert result.skipped == 0
+
+
 @pytest.mark.parametrize("entity_type", ["risks", "plans", "pendenzen", "projects"])
 def test_validate_entity_accepts_dict(entity_type):
     """Validate entity accepts at minimum a valid dict for each supported type."""

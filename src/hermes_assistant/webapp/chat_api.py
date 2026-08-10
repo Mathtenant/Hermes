@@ -53,9 +53,18 @@ def confidentiality_guard(func):  # type: ignore[no-untyped-def]
     async def wrapper(*args, **kwargs):  # type: ignore[no-untyped-def]
         response = await func(*args, **kwargs)
         if isinstance(response, dict):
-            from hermes_assistant.webapp.server import _validate_safe_json
+            from hermes_assistant.webapp.server import (
+                _redact_user_authored,
+                _validate_safe_json,
+            )
 
-            violations = _validate_safe_json(_json.dumps(response))
+            # H1: exclude user-authored message content (their own email/path)
+            # from the PII scan so GET /api/chat/sessions/{id} does not 500 on
+            # a message the user themselves typed.
+            violations = _validate_safe_json(
+                _json.dumps(response),
+                _json.dumps(_redact_user_authored(response)),
+            )
             if violations:
                 # H2: log detail server-side; return generic message to client.
                 _log.warning(

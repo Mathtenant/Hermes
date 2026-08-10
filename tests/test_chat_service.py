@@ -235,6 +235,58 @@ def test_guard_blocks_before_persist() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# H1 — user-authored PII is exempt from the confidentiality guard
+# --------------------------------------------------------------------------- #
+
+
+def test_guard_exempts_user_authored_email() -> None:
+    """H1: a user-role message containing an email must NOT be flagged.
+
+    This is the unit-level root-cause check behind the GET-session 500: the
+    guard's value scan (email/path) must skip user-authored message content."""
+    from hermes_assistant.webapp.server import (
+        _redact_user_authored,
+        _validate_safe_json,
+    )
+    import json as _json
+
+    payload = {
+        "session": {"id": "s1", "project_id": "p1"},
+        "messages": [
+            {"role": "user", "content": "contact me at john@example.com"},
+            {"role": "assistant", "content": "Noted."},
+        ],
+    }
+    violations = _validate_safe_json(
+        _json.dumps(payload),
+        _json.dumps(_redact_user_authored(payload)),
+    )
+    assert violations == []
+
+
+def test_guard_still_flags_assistant_email() -> None:
+    """H1: the exemption is scoped to user content — an assistant message that
+    leaks an email is still blocked."""
+    from hermes_assistant.webapp.server import (
+        _redact_user_authored,
+        _validate_safe_json,
+    )
+    import json as _json
+
+    payload = {
+        "messages": [
+            {"role": "user", "content": "who do I contact?"},
+            {"role": "assistant", "content": "Email leak@internal.example.com."},
+        ],
+    }
+    violations = _validate_safe_json(
+        _json.dumps(payload),
+        _json.dumps(_redact_user_authored(payload)),
+    )
+    assert any("Email" in v for v in violations)
+
+
+# --------------------------------------------------------------------------- #
 # H3 — safe fallback for unhandled result shapes
 # --------------------------------------------------------------------------- #
 

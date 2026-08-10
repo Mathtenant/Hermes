@@ -7,6 +7,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response
@@ -58,7 +59,30 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def _validate_safe_json(json_str: str) -> list[str]:
+def _redact_user_authored(obj: Any) -> Any:
+    """Return a copy of *obj* with user-authored message content blanked.
+
+    User-role chat messages contain text the user typed themselves — their own
+    email address, a filesystem path they mentioned, etc. That is not a
+    confidentiality *leak* from the store or the model, so it must be excluded
+    from the email/path PII scan (H1). Field-name and internal_*/confidential_*
+    checks still run against the full, unredacted payload.
+
+    The walk is structural: any dict with ``role == "user"`` and a ``content``
+    key has that content blanked; all other values are preserved.
+    """
+    if isinstance(obj, dict):
+        if obj.get("role") == "user" and "content" in obj:
+            redacted = {k: _redact_user_authored(v) for k, v in obj.items()}
+            redacted["content"] = ""
+            return redacted
+        return {k: _redact_user_authored(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact_user_authored(v) for v in obj]
+    return obj
+
+
+def _validate_safe_json(json_str: str, pii_json_str: str | None = None) -> list[str]:
     """Return a list of confidentiality violations found in the serialised JSON.
 
     An empty list means the payload is clean and safe to send to clients.
@@ -67,9 +91,16 @@ def _validate_safe_json(json_str: str) -> list[str]:
     - Field names matching internal_* or confidential_* patterns
     - Absolute filesystem paths in values
     - Email addresses in values
+
+    ``pii_json_str`` (H1): when provided, the value-based PII scans (absolute
+    filesystem paths and email addresses) run against this string instead of
+    ``json_str``. Callers pass a copy with user-authored message content
+    removed so a user's own email/path in a chat message does not trip the
+    guard. Field-name checks always run against the full ``json_str``.
     """
     violations: list[str] = []
     lower = json_str.lower()
+    pii_source = json_str if pii_json_str is None else pii_json_str
 
     # Exact forbidden field names from the shared allowlist
     for field in _FORBIDDEN_FIELDS:
@@ -82,12 +113,12 @@ def _validate_safe_json(json_str: str) -> list[str]:
             "Field matching internal_* or confidential_* pattern found in API response"
         )
 
-    # Absolute filesystem paths
-    if _FS_RE.search(json_str):
+    # Absolute filesystem paths (user-authored content excluded via pii_source)
+    if _FS_RE.search(pii_source):
         violations.append("Absolute filesystem path found in API response")
 
-    # Email addresses
-    if _EMAIL_RE.search(json_str):
+    # Email addresses (user-authored content excluded via pii_source)
+    if _EMAIL_RE.search(pii_source):
         violations.append("Email address found in API response")
 
     return violations
@@ -105,7 +136,10 @@ def confidentiality_guard(func):  # type: ignore[no-untyped-def]
     async def wrapper(*args, **kwargs):  # type: ignore[no-untyped-def]
         response = await func(*args, **kwargs)
         if isinstance(response, dict):
-            violations = _validate_safe_json(_json.dumps(response))
+            violations = _validate_safe_json(
+                _json.dumps(response),
+                _json.dumps(_redact_user_authored(response)),
+            )
             if violations:
                 # H2: log violation detail server-side only; send generic message to client.
                 logger.warning(

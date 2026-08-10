@@ -224,24 +224,47 @@ def _import_risks(
                 had_errors = True
                 continue
 
-            risk_id = str(raw.get("id") or "") or _gen_id()
-            existing = registry.get(risk_id)
-            now = _now()
-            sev = RiskSeverity(raw.get("severity", "medium"))
-            lh = int(raw.get("likelihood", 3))
-            status = RiskStatus(raw.get("status", "open"))
-            risk = Risk(
-                id=risk_id,
-                title=raw["title"],
-                description=raw.get("description", ""),
-                severity=sev,
-                likelihood=lh,
-                owner=raw.get("owner", ""),
-                status=status,
-                confidential=bool(raw.get("confidential", False)),
-                created_at=existing.created_at if existing else now,
-                updated_at=now,
-            )
+            # H2: Construct the Risk defensively. An explicitly-null optional
+            # field (e.g. ``"owner": null``) makes ``raw.get("owner", "")``
+            # return ``None`` — defaults only apply to *absent* keys — and a
+            # null severity/status/likelihood likewise breaks enum/int coercion.
+            # Any such failure must be skipped like a validation error, never
+            # propagate as a bare 500. Constructing inside the loop keeps the
+            # atomic per-item handling intact: a construction failure sets
+            # ``had_errors`` and aborts the whole entity-type batch (H5).
+            try:
+                risk_id = str(raw.get("id") or "") or _gen_id()
+                existing = registry.get(risk_id)
+                now = _now()
+                sev = RiskSeverity(raw.get("severity", "medium"))
+                lh = int(raw.get("likelihood", 3))
+                status = RiskStatus(raw.get("status", "open"))
+                risk = Risk(
+                    id=risk_id,
+                    title=raw["title"],
+                    description=raw.get("description", ""),
+                    severity=sev,
+                    likelihood=lh,
+                    owner=raw.get("owner", ""),
+                    status=status,
+                    confidential=bool(raw.get("confidential", False)),
+                    created_at=existing.created_at if existing else now,
+                    updated_at=now,
+                )
+            except Exception as exc:  # noqa: BLE001 - report, do not 500
+                result.items.append(
+                    ImportItemResult(
+                        index=idx,
+                        entity_type="risks",
+                        action="skipped",
+                        error=f"Invalid risk: {exc}",
+                    )
+                )
+                result.skipped += 1
+                result.errors.append(f"risks[{i}]: {exc}")
+                had_errors = True
+                continue
+
             pending.append((idx, "updated" if existing else "created", risk))
 
         # Atomicity: any validation failure aborts the entire entity-type batch.

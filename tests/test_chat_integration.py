@@ -390,3 +390,42 @@ def test_copilot_prompt_file_served(client):
     response = client.get("/static/prompts/copilot_state_export.txt")
     assert response.status_code == 200
     assert "JSON" in response.text or "Aufgabe" in response.text
+
+
+# --------------------------------------------------------------------------- #
+# H1 — user-authored email in a chat message must not 500 the session read
+# --------------------------------------------------------------------------- #
+
+
+def test_h1_user_email_in_message_does_not_break_get_session(client):
+    """H1: a user who types their own email must still be able to read the
+    session back. Previously the confidentiality guard matched the user's own
+    email in GET /api/chat/sessions/{id} and returned 500 forever."""
+    post = client.post(
+        "/api/chat/message",
+        json={"message": "contact me at john@example.com", "project_id": "proj1"},
+    )
+    assert post.status_code == 200
+    session_id = post.json()["session_id"]
+
+    response = client.get(f"/api/chat/sessions/{session_id}")
+    assert response.status_code == 200, response.text
+
+    # The user's message (with the email) is round-tripped unmodified.
+    messages = response.json()["messages"]
+    user_msgs = [m for m in messages if m["role"] == "user"]
+    assert user_msgs
+    assert "john@example.com" in user_msgs[0]["content"]
+
+
+def test_h1_user_filesystem_path_in_message_does_not_break_get_session(client):
+    """H1: a filesystem path the user typed must not trip the guard on read."""
+    post = client.post(
+        "/api/chat/message",
+        json={"message": "my logs are in /Users/john/logs", "project_id": "proj1"},
+    )
+    assert post.status_code == 200
+    session_id = post.json()["session_id"]
+
+    response = client.get(f"/api/chat/sessions/{session_id}")
+    assert response.status_code == 200, response.text

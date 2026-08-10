@@ -16,7 +16,7 @@ from hermes_assistant.risks.model import Risk, RiskSeverity, RiskStatus
 
 _COLUMNS = (
     "id, title, description, severity, likelihood, owner, "
-    "status, confidential, created_at, updated_at"
+    "status, confidential, created_at, updated_at, accepted_at"
 )
 
 _SCHEMA = """
@@ -30,11 +30,30 @@ CREATE TABLE IF NOT EXISTS risks (
     status       TEXT NOT NULL DEFAULT 'open',
     confidential INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL,
-    updated_at   TEXT NOT NULL
+    updated_at   TEXT NOT NULL,
+    accepted_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_risks_status   ON risks (status);
 CREATE INDEX IF NOT EXISTS idx_risks_severity ON risks (severity);
 """
+
+# Legal lifecycle transitions. Keys are the *current* status; values are the
+# set of statuses an update() call may legally move a risk into (a status
+# always includes itself, i.e. a same-status update/no-op is always legal).
+# ``closed`` is terminal: once closed, a risk cannot be resurrected into any
+# other state — create a new risk instead if the issue recurs.
+_LEGAL_TRANSITIONS: dict[RiskStatus, frozenset[RiskStatus]] = {
+    RiskStatus.open: frozenset(
+        {RiskStatus.open, RiskStatus.mitigated, RiskStatus.accepted, RiskStatus.closed}
+    ),
+    RiskStatus.mitigated: frozenset(
+        {RiskStatus.mitigated, RiskStatus.open, RiskStatus.accepted, RiskStatus.closed}
+    ),
+    RiskStatus.accepted: frozenset(
+        {RiskStatus.accepted, RiskStatus.open, RiskStatus.mitigated, RiskStatus.closed}
+    ),
+    RiskStatus.closed: frozenset({RiskStatus.closed}),
+}
 
 _SEVERITY_ORDER = {
     RiskSeverity.low: 1,
@@ -67,6 +86,7 @@ class RiskRegistry:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
         # RLock serialises all public method calls so that concurrent FastAPI
         # worker threads cannot interleave execute/commit sequences on the same
@@ -78,6 +98,18 @@ class RiskRegistry:
     def close_connection(self) -> None:
         """Close the underlying SQLite connection."""
         self._conn.close()
+
+    def _migrate(self) -> None:
+        """Guarded ALTER TABLE migration for pre-existing databases.
+
+        Adds ``accepted_at`` for databases created before this column existed.
+        A re-run (column already present) is a no-op rather than an error.
+        """
+        try:
+            self._conn.execute("ALTER TABLE risks ADD COLUMN accepted_at TEXT")
+        except sqlite3.OperationalError:
+            # Column already exists — expected on every normal startup.
+            pass
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -95,6 +127,7 @@ class RiskRegistry:
             confidential=bool(row["confidential"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            accepted_at=row["accepted_at"] if "accepted_at" in row.keys() else None,
         )
 
     # ------------------------------------------------------------------
@@ -122,7 +155,7 @@ class RiskRegistry:
                 confidential=confidential,
             )
             self._conn.execute(
-                f"INSERT INTO risks ({_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                f"INSERT INTO risks ({_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     risk.id,
                     risk.title,
@@ -134,6 +167,7 @@ class RiskRegistry:
                     int(risk.confidential),
                     risk.created_at,
                     risk.updated_at,
+                    risk.accepted_at,
                 ),
             )
             self._conn.commit()
@@ -151,8 +185,11 @@ class RiskRegistry:
         """Update one or more fields of a risk.
 
         Raises ``RiskNotFoundError`` if the id does not exist.
+        Raises ``ValueError`` if an unknown field is given, or if ``status``
+        names an illegal lifecycle transition (e.g. ``closed`` -> ``open`` —
+        closed is terminal; see ``_LEGAL_TRANSITIONS``).
         Allowed kwargs: title, description, severity, likelihood, owner,
-        status, confidential.
+        status, confidential, accepted_at.
         """
         with self._lock:
             risk = self.get(risk_id)
@@ -160,8 +197,16 @@ class RiskRegistry:
                 raise RiskNotFoundError(risk_id)
             allowed = {
                 "title", "description", "severity", "likelihood",
-                "owner", "status", "confidential",
+                "owner", "status", "confidential", "accepted_at",
             }
+            if "status" in kwargs:
+                new_status = RiskStatus(kwargs["status"])
+                legal = _LEGAL_TRANSITIONS[risk.status]
+                if new_status not in legal:
+                    raise ValueError(
+                        f"Illegal risk status transition: {risk.status.value!r} "
+                        f"-> {new_status.value!r}"
+                    )
             for k, v in kwargs.items():
                 if k not in allowed:
                     raise ValueError(f"Unknown field: {k!r}")
@@ -169,7 +214,7 @@ class RiskRegistry:
             risk.updated_at = _now()
             self._conn.execute(
                 "UPDATE risks SET title=?, description=?, severity=?, likelihood=?, "
-                "owner=?, status=?, confidential=?, updated_at=? WHERE id=?",
+                "owner=?, status=?, confidential=?, updated_at=?, accepted_at=? WHERE id=?",
                 (
                     risk.title,
                     risk.description,
@@ -179,6 +224,7 @@ class RiskRegistry:
                     risk.status.value,
                     int(risk.confidential),
                     risk.updated_at,
+                    risk.accepted_at,
                     risk_id,
                 ),
             )
@@ -199,7 +245,7 @@ class RiskRegistry:
     def accept(self, risk_id: str) -> Risk:
         """Mark a risk as accepted (owner acknowledges it, no mitigation)."""
         with self._lock:
-            return self.update(risk_id, status=RiskStatus.accepted)
+            return self.update(risk_id, status=RiskStatus.accepted, accepted_at=_now())
 
     def mitigate(self, risk_id: str) -> Risk:
         """Mark a risk as mitigated (countermeasure applied)."""

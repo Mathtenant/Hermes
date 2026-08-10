@@ -119,4 +119,5 @@ addopts = "-v --tb=short"
 markers = [
     "integration: requires a live Ollama service (skipped by default offline)",
     "e2e: requires Playwright and a live web server (skipped by default)",
+    "sanity: fast smoke tests exercising endpoints/stores with no live services (<60s total)",
 ]

@@ -546,3 +546,100 @@ def test_export_public_excludes_confidential(tmp_path: Path) -> None:
     public = reg.export_public()
     assert len(public) == 2
     assert all(not r.confidential for r in public)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3a — coverage-gap edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_mitigate_missing_raises(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    with pytest.raises(RiskNotFoundError):
+        reg.mitigate("nosuchrisk")
+
+
+def test_accept_missing_raises(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    with pytest.raises(RiskNotFoundError):
+        reg.accept("nosuchrisk")
+
+
+def test_close_missing_id_raises(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    with pytest.raises(RiskNotFoundError):
+        reg.close("nosuchrisk")
+
+
+def test_update_unknown_field_raises_value_error(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    r = reg.create("Scope creep")
+    with pytest.raises(ValueError):
+        reg.update(r.id, not_a_real_field="x")
+
+
+def test_update_no_kwargs_is_noop_but_bumps_updated_at(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    r = reg.create("Scope creep")
+    updated = reg.update(r.id)
+    assert updated.title == r.title
+    assert updated.updated_at >= r.updated_at
+
+
+def test_auto_create_detects_low_keyword(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    r = reg.auto_create("Minor cosmetic issue\nA trivial UI glitch, low priority.")
+    assert r.severity is RiskSeverity.low
+
+
+def test_auto_create_detects_high_keyword(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    r = reg.auto_create("Serious data quality issue\nThis is a major concern.")
+    assert r.severity is RiskSeverity.high
+
+
+def test_auto_create_empty_text_gets_placeholder_title(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    r = reg.auto_create("   \n  \n")
+    assert r.title == "Unnamed risk"
+
+
+def test_auto_create_single_line_has_empty_description(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    r = reg.auto_create("Just a title, no body")
+    assert r.description == ""
+
+
+def test_auto_create_title_truncated_to_200_chars(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    long_title = "x" * 500
+    r = reg.auto_create(long_title)
+    assert len(r.title) == 200
+
+
+def test_list_filter_by_owner_and_status_combined(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    r1 = reg.create("Risk 1", owner="Alice")
+    reg.create("Risk 2", owner="Alice")
+    reg.mitigate(r1.id)
+    results = reg.list(owner="Alice", status=RiskStatus.mitigated)
+    assert len(results) == 1
+    assert results[0].id == r1.id
+
+
+def test_list_sort_by_severity_ascending(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    reg.create("Low risk", severity=RiskSeverity.low)
+    reg.create("Critical risk", severity=RiskSeverity.critical)
+    reg.create("Medium risk", severity=RiskSeverity.medium)
+    results = reg.list(sort_by="severity", descending=False)
+    assert [r.severity for r in results] == [
+        RiskSeverity.low,
+        RiskSeverity.medium,
+        RiskSeverity.critical,
+    ]
+
+
+def test_list_returns_empty_on_empty_registry(tmp_path: Path) -> None:
+    reg = _reg(tmp_path)
+    assert reg.list() == []

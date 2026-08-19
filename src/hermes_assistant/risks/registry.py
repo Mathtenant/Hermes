@@ -16,7 +16,7 @@ from hermes_assistant.risks.model import Risk, RiskSeverity, RiskStatus
 
 _COLUMNS = (
     "id, title, description, severity, likelihood, owner, "
-    "status, confidential, created_at, updated_at, accepted_at"
+    "status, confidential, created_at, updated_at, accepted_at, external_ref"
 )
 
 _SCHEMA = """
@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS risks (
     confidential INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL,
-    accepted_at  TEXT
+    accepted_at  TEXT,
+    external_ref TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_risks_status   ON risks (status);
 CREATE INDEX IF NOT EXISTS idx_risks_severity ON risks (severity);
@@ -110,6 +111,15 @@ class RiskRegistry:
         except sqlite3.OperationalError:
             # Column already exists — expected on every normal startup.
             pass
+        try:
+            self._conn.execute("ALTER TABLE risks ADD COLUMN external_ref TEXT")
+        except sqlite3.OperationalError:
+            # Column already exists — expected on every normal startup.
+            pass
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_risks_external_ref "
+            "ON risks (external_ref) WHERE external_ref IS NOT NULL"
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -128,6 +138,7 @@ class RiskRegistry:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             accepted_at=row["accepted_at"] if "accepted_at" in row.keys() else None,
+            external_ref=row["external_ref"] if "external_ref" in row.keys() else None,
         )
 
     # ------------------------------------------------------------------
@@ -143,6 +154,7 @@ class RiskRegistry:
         likelihood: int = 3,
         owner: str = "",
         confidential: bool = False,
+        external_ref: str | None = None,
     ) -> Risk:
         """Insert a new risk and return it."""
         with self._lock:
@@ -153,9 +165,10 @@ class RiskRegistry:
                 likelihood=likelihood,
                 owner=owner,
                 confidential=confidential,
+                external_ref=external_ref,
             )
             self._conn.execute(
-                f"INSERT INTO risks ({_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                f"INSERT INTO risks ({_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     risk.id,
                     risk.title,
@@ -168,6 +181,7 @@ class RiskRegistry:
                     risk.created_at,
                     risk.updated_at,
                     risk.accepted_at,
+                    risk.external_ref,
                 ),
             )
             self._conn.commit()
@@ -178,6 +192,15 @@ class RiskRegistry:
         with self._lock:
             row = self._conn.execute(
                 f"SELECT {_COLUMNS} FROM risks WHERE id = ?", (risk_id,)
+            ).fetchone()
+            return self._row_to_risk(row) if row else None
+
+    def get_by_external_ref(self, external_ref: str) -> Risk | None:
+        """Fetch a risk by its Copilot external_ref; None if not found."""
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT {_COLUMNS} FROM risks WHERE external_ref = ?",
+                (external_ref,),
             ).fetchone()
             return self._row_to_risk(row) if row else None
 

@@ -114,6 +114,28 @@ def test_closed_risk_stays_closed_after_failed_transition(tmp_path: Path) -> Non
     reg.close_connection()
 
 
+@pytest.mark.parametrize("from_status,to_status", [
+    (RiskStatus.closed, RiskStatus.open),
+    (RiskStatus.closed, RiskStatus.mitigated),
+    (RiskStatus.closed, RiskStatus.accepted),
+])
+def test_lifecycle_illegal_transitions_raise(tmp_path, from_status, to_status) -> None:
+    """Verify that closed is terminal and rejects all transitions."""
+    registry = RiskRegistry(str(tmp_path / "risks.db"))
+    risk = registry.create("test-risk")
+
+    # Drive to 'closed' state via legal transitions
+    if from_status != RiskStatus.open:
+        registry.update(risk.id, status=RiskStatus.mitigated)
+        registry.update(risk.id, status=RiskStatus.accepted)
+        registry.update(risk.id, status=RiskStatus.closed)
+
+    # Attempt illegal transition — should raise ValueError
+    with pytest.raises(ValueError, match="Illegal.*transition"):
+        registry.update(risk.id, status=to_status)
+    registry.close_connection()
+
+
 def test_accept_sets_accepted_at(tmp_path: Path) -> None:
     reg = _reg(tmp_path)
     r = reg.create("Deferred risk")

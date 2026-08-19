@@ -578,6 +578,43 @@ class TestH5Atomicity:
 # ---------------------------------------------------------------------------
 
 
+class TestM2RiskExternalRefIdempotency:
+    """M2: re-importing Copilot risks via external_ref must upsert, not dup."""
+
+    def test_m2_import_idempotency_external_ref(self, tmp_path):
+        """Re-import same risks by external_ref → 0 new rows, 2 updated."""
+        db = str(tmp_path / "risks.db")
+        payload = {"risks": [
+            {"title": "Risk A", "external_ref": "cop-123", "severity": "high"},
+            {"title": "Risk B", "external_ref": "cop-456", "severity": "high"},
+        ]}
+        first = import_payload(
+            payload,
+            risks_db=db,
+            plans_db=":memory:",
+            tasks_db=":memory:"
+        )
+        assert first.created == 2 and first.updated == 0
+
+        # Update one risk and re-import
+        payload["risks"][0]["title"] = "Risk A (updated)"
+        second = import_payload(
+            payload,
+            risks_db=db,
+            plans_db=":memory:",
+            tasks_db=":memory:"
+        )
+        assert second.created == 0, "Re-import must not create duplicate rows"
+        assert second.updated == 2
+
+        # Verify DB state
+        import sqlite3
+        conn = sqlite3.connect(db)
+        count = conn.execute("SELECT COUNT(*) FROM risks").fetchone()[0]
+        assert count == 2
+        conn.close()
+
+
 class TestH6Reviews:
     """H6: 'reviews' is no longer a valid import entity type."""
 

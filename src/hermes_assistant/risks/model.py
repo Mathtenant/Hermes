@@ -44,6 +44,7 @@ class Risk(BaseModel):
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
     accepted_at: str | None = None
+    external_ref: str | None = None  # idempotency key for Copilot re-imports (M2)
 
     # Derived read-only helpers
     @property

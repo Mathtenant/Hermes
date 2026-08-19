@@ -198,7 +198,7 @@ def _import_risks(
 
     _RISK_COLS = (
         "id, title, description, severity, likelihood, owner, "
-        "status, confidential, created_at, updated_at"
+        "status, confidential, created_at, updated_at, accepted_at, external_ref"
     )
 
     registry = RiskRegistry(db_path)
@@ -233,8 +233,16 @@ def _import_risks(
             # atomic per-item handling intact: a construction failure sets
             # ``had_errors`` and aborts the whole entity-type batch (H5).
             try:
-                risk_id = str(raw.get("id") or "") or _gen_id()
-                existing = registry.get(risk_id)
+                # M2: prefer external_ref (Copilot dedup key); fall back to id
+                # (legacy path) so pre-M2 payloads keep working unchanged.
+                external_ref = str(raw.get("external_ref") or "").strip() or None
+                existing = None
+                if external_ref:
+                    existing = registry.get_by_external_ref(external_ref)
+                if existing is None:
+                    raw_id = str(raw.get("id") or "") or ""
+                    existing = registry.get(raw_id) if raw_id else None
+                risk_id = existing.id if existing else (str(raw.get("id") or "") or _gen_id())
                 now = _now()
                 sev = RiskSeverity(raw.get("severity", "medium"))
                 lh = int(raw.get("likelihood", 3))
@@ -250,6 +258,7 @@ def _import_risks(
                     confidential=bool(raw.get("confidential", False)),
                     created_at=existing.created_at if existing else now,
                     updated_at=now,
+                    external_ref=external_ref,
                 )
             except Exception as exc:  # noqa: BLE001 - report, do not 500
                 result.items.append(
@@ -279,7 +288,7 @@ def _import_risks(
                 for idx, action, risk in pending:
                     registry._conn.execute(
                         f"INSERT OR REPLACE INTO risks ({_RISK_COLS}) VALUES"
-                        " (?,?,?,?,?,?,?,?,?,?)",
+                        " (?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             risk.id,
                             risk.title,
@@ -291,6 +300,8 @@ def _import_risks(
                             int(risk.confidential),
                             risk.created_at,
                             risk.updated_at,
+                            risk.accepted_at,
+                            risk.external_ref,
                         ),
                     )
                     result.items.append(

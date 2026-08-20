@@ -208,11 +208,21 @@ class ChatService:
         router: IntentRouter,
         executor: ActionExecutor,
         llm_client: Any,
+        risk_registry: Any = None,
+        plan_editor: Any = None,
+        task_store: Any = None,
     ) -> None:
         self.store = store
         self.router = router
         self.executor = executor
         self.llm_client = llm_client
+        # Phase 6 M10: optional stores used to hydrate ChatContext with real
+        # project state. All three are optional and backward compatible —
+        # when omitted, handle_turn falls back to an empty context exactly
+        # as before.
+        self.risk_registry = risk_registry
+        self.plan_editor = plan_editor
+        self.task_store = task_store
 
     # ------------------------------------------------------------------ #
     def handle_turn(
@@ -237,9 +247,29 @@ class ChatService:
             {"tokens": len(message.split())},
         )
 
-        # 3. Assemble project context (kept minimal here; the API layer is
-        #    responsible for hydrating risks/plan/tasks when wired to stores).
-        context = ChatContext(project_id=project_id)
+        # 3. Assemble project context. When risk_registry/task_store are
+        #    injected (Phase 6 M10), hydrate real project state so
+        #    classification/suggestions/answers are grounded in current
+        #    data. Any store failure degrades to an empty context rather
+        #    than failing the turn.
+        risks: list[dict[str, Any]] = []
+        open_task_count = 0
+        if self.risk_registry is not None:
+            try:
+                risks = [r.model_dump(mode="json") for r in self.risk_registry.export_public()]
+            except Exception:  # noqa: BLE001 - store failures must not 500 the turn
+                risks = []
+        if self.task_store is not None:
+            try:
+                open_task_count = self.task_store.count_open()
+            except Exception:  # noqa: BLE001 - store failures must not 500 the turn
+                open_task_count = 0
+
+        context = ChatContext(
+            project_id=project_id,
+            risks=risks,
+            open_task_count=open_task_count,
+        )
 
         # 4. Classify intent (degrade gracefully on any router failure).
         classification = self._classify(message, context)

@@ -164,6 +164,19 @@ class TaskStore:
             ).fetchone()
             return self._row_to_task(row) if row else None
 
+    def count_open(self) -> int:
+        """Return the number of tasks currently in ``open`` status.
+
+        Uses the indexed ``status`` column, so this stays cheap even as the
+        tree grows. Used by :class:`ChatService` (Phase 6 M10) to hydrate
+        chat context without loading the full tree.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'open'"
+            ).fetchone()
+            return int(row[0]) if row else 0
+
     def list_by_parent(self, parent_id: str | None) -> list[Task]:
         """Return all direct children of ``parent_id`` (or roots if ``None``)."""
         with self._lock:

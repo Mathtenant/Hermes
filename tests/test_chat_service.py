@@ -409,6 +409,64 @@ def test_detect_language_empty_string():
 # --------------------------------------------------------------------------- #
 
 
+def test_service_hydrates_context_from_stores() -> None:
+    """M10: ChatContext is hydrated with real risk/task data when the
+    risk_registry and task_store are injected into ChatService."""
+    from hermes_assistant.risks.model import RiskSeverity
+    from hermes_assistant.risks.registry import RiskRegistry
+    from hermes_assistant.tasks.model import Task
+    from hermes_assistant.tasks.store import TaskStore
+
+    store = ChatStore(":memory:")
+    registry = RiskRegistry(":memory:")
+    task_store = TaskStore(":memory:")
+
+    registry.create("High Risk", severity=RiskSeverity.high, likelihood=5)
+    task_store.create(Task(id="", title="Task 1", status="open"))
+
+    captured: dict = {}
+
+    class CapturingExecutor:
+        def execute(self, action_type, params, context):  # noqa: ANN001
+            captured["risks"] = context.risks
+            captured["open_task_count"] = context.open_task_count
+            return {"action": "answer", "answer": "OK"}
+
+    service = ChatService(
+        store,
+        _HighConfidenceRouter(),
+        CapturingExecutor(),
+        FakeLLMClient(),
+        risk_registry=registry,
+        task_store=task_store,
+    )
+
+    turn = service.handle_turn("What are my risks?", "p1")
+    assert turn.session_id
+    assert len(captured["risks"]) == 1
+    assert captured["risks"][0]["title"] == "High Risk"
+    assert captured["open_task_count"] == 1
+
+
+def test_service_context_empty_without_stores() -> None:
+    """M10: backward compatibility — omitting the stores keeps context empty,
+    exactly as before this change."""
+    captured: dict = {}
+
+    class CapturingExecutor:
+        def execute(self, action_type, params, context):  # noqa: ANN001
+            captured["risks"] = context.risks
+            captured["open_task_count"] = context.open_task_count
+            return {"action": "answer", "answer": "OK"}
+
+    store = ChatStore(":memory:")
+    service = ChatService(store, _HighConfidenceRouter(), CapturingExecutor(), FakeLLMClient())
+    turn = service.handle_turn("What are my risks?", "p1")
+    assert turn.session_id
+    assert captured["risks"] == []
+    assert captured["open_task_count"] == 0
+
+
 def test_service_respects_config_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     """M7: ChatService uses settings.chat_confidence_threshold, not a hardcoded value."""
     import hermes_assistant.chat.service as svc_module

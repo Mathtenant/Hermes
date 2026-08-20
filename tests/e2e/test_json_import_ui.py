@@ -3,6 +3,20 @@ import json
 import pytest
 from pathlib import Path
 
+import socket
+
+
+def _server_up(host: str = "localhost", port: int = 8000) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex((host, port)) == 0
+
+
+@pytest.fixture(autouse=True)
+def _require_server():
+    if not _server_up():
+        pytest.skip("No server on localhost:8000 for JSON import UI E2E tests")
+
 
 @pytest.mark.e2e
 class TestJsonImportUI:

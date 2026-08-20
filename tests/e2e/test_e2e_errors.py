@@ -99,7 +99,7 @@ def test_chat_degrades_gracefully_without_ollama(page: Page):
     page.locator(".chat-send").click()
     # Either a normal assistant bubble, or the widget's own error affordance —
     # either way the UI must resolve within a few seconds, not hang forever.
-    page.wait_for_selector(".chat-messages div, text=Error", timeout=8000)
+    page.wait_for_selector(".chat-messages > div", timeout=8000)
 
 
 def test_chat_error_message_has_no_stack_trace(page: Page):

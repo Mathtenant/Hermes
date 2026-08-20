@@ -3,13 +3,16 @@
 S1 is a genuine pass/fail test of the WAL + busy_timeout + RLock concurrency
 model already in place and is expected to PASS.
 
-S2 and S3 are marked ``xfail``: they encode the invariant we *want* to hold
-(no cross-connection plan-version collision; closed risks stay closed on
-re-import) and currently fail because neither guarantee is implemented yet.
-They are deliberately not weakened — the assertions are the desired
-behaviour, not the observed one — and are left as a canary: if a future
-change adds cross-connection locking or import-time lifecycle enforcement,
-these tests will start passing (XPASS) and should be un-xfailed.
+S2 is marked ``xfail``: it encodes an invariant we *want* to hold (no
+cross-connection plan-version collision) and currently fails because that
+guarantee is not implemented yet. It is deliberately not weakened — the
+assertion is the desired behaviour, not the observed one — and is left as a
+canary: if a future change adds cross-connection locking, this test will
+start passing (XPASS) and should be un-xfailed.
+
+S3 (closed risks stay closed on re-import / D5) is no longer ``xfail``:
+``_import_risks`` now enforces the terminal-closed invariant on the import
+path, so this test is a genuine pass/fail regression guard.
 """
 
 from __future__ import annotations
@@ -208,7 +211,6 @@ def test_s2_batched_plan_import_collides_with_live_update(
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.xfail(reason=XFAIL_REASON, strict=False)
 def test_s3_closed_risk_resurrection_via_reimport(tmp_path: Path) -> None:
     """A closed risk re-imported with ``status: "open"`` must stay closed.
 

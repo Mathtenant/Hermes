@@ -246,7 +246,13 @@ def _import_risks(
                 now = _now()
                 sev = RiskSeverity(raw.get("severity", "medium"))
                 lh = int(raw.get("likelihood", 3))
-                status = RiskStatus(raw.get("status", "open"))
+                # D5: a closed risk is terminal. Re-importing a risk that was
+                # already closed must not resurrect it, regardless of what
+                # status the incoming payload carries.
+                if existing is not None and existing.status == RiskStatus.closed:
+                    status = existing.status
+                else:
+                    status = RiskStatus(raw.get("status", "open"))
                 risk = Risk(
                     id=risk_id,
                     title=raw["title"],

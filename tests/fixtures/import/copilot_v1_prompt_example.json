@@ -1,0 +1,38 @@
+{
+  "schema": "hermes.project_state/v1",
+  "meta": { "generated_at": "2026-08-22T10:00:00Z", "source": "m365_copilot",
+            "repo_scope": "Webshop-Relaunch" },
+  "project": {
+    "external_ref": "proj/webshop-relaunch", "title": "Webshop-Relaunch",
+    "goal": "Ablösung des Legacy-Shops durch eine neue Plattform bis Q4.",
+    "phase": "realisierung",
+    "milestones": [ { "external_ref": "ms/go-live", "title": "Go-Live",
+                      "due": "2026-11-30", "status": "open" } ]
+  },
+  "wbs": [
+    { "external_ref": "wp/anforderungsanalyse", "parent_ref": null,
+      "title": "Anforderungsanalyse", "node_kind": "phase", "status": "done" },
+    { "external_ref": "wp/implementierung-checkout", "parent_ref": null,
+      "title": "Implementierung Checkout", "node_kind": "phase", "status": "in_progress" },
+    { "external_ref": "wp/abnahme-und-go-live", "parent_ref": null,
+      "title": "Abnahme und Go-Live", "node_kind": "phase", "status": "open" }
+  ],
+  "risks": [
+    { "title": "Zahlungsanbieter-Integration verzögert sich",
+      "impact": "hoch", "likelihood": "mittel" },
+    { "title": "Unklare Migrationsdaten aus Altsystem",
+      "impact": "gering", "likelihood": "hoch" }
+  ],
+  "pendenzen": [
+    { "external_ref": "pd/dsgvo-check-checkout", "title": "DSGVO-Check Checkout",
+      "owner": "Legal", "source": "review", "status": "open" },
+    { "external_ref": "pd/lasttest-planen", "title": "Lasttest planen",
+      "owner": "DevOps", "source": "meeting", "status": "open" },
+    { "external_ref": "pd/texte-agb-finalisieren", "title": "Texte AGB finalisieren",
+      "owner": "PM", "source": "manual", "status": "open" }
+  ],
+  "open_assumptions": [ { "text": "Altsystem bleibt bis Go-Live stabil",
+                         "since": "2026-08-01" } ],
+  "decisions": [ { "title": "Payment-Provider: Stripe", "at": "2026-07-15",
+                   "rationale": "Beste API-Dokumentation" } ]
+}

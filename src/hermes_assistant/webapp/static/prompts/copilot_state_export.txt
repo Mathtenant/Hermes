@@ -1,65 +1,138 @@
 # Aufgabe
-Du hast Zugriff auf das Projekt-Repository. Erstelle eine **maschinenlesbare Zustandsaufnahme**
-des Projekts als JSON. Dieses JSON wird von einem lokalen Assistenzsystem eingelesen — es wird
-**nicht von Menschen gelesen** und **nicht ausgeführt**.
+Du hast Zugriff auf das Projekt-Repository. Erstelle eine maschinenlesbare
+Zustandsaufnahme des Projekts als JSON. Dieses JSON wird von einem lokalen
+Assistenzsystem (Hermes) eingelesen — es wird NICHT von Menschen gelesen und
+NICHT ausgeführt. Deine einzige Aufgabe ist es, gültiges JSON nach dem unten
+definierten Schema hermes.project_state/v1 auszugeben.
 
 ## Scope
-Projekt: **{{PROJECT_TITLE}}**
-Quellen: **{{REPO_SCOPE}}** (nur diese; keine anderen Projekte, keine privaten Mails)
-Stichtag: **{{AS_OF_DATE}}**
+Projekt: {{PROJECT_TITLE}}
+Quellen: {{REPO_SCOPE}} (nur diese Quellen; keine anderen Projekte, keine
+privaten Mails, keine Screenshots, keine Bilder)
+Stichtag: {{AS_OF_DATE}}
 
 ## Ausgabe-Regeln (strikt)
-1. Gib **ausschliesslich** ein JSON-Objekt aus. Keine Einleitung, keine Erklärung, kein Kommentar.
-2. Halte dich **exakt** an das untenstehende Schema. Erfinde keine zusätzlichen Felder.
-3. **Wenn eine Information nicht belegbar im Repo steht: lass das Feld weg.**
-   Rate niemals Termine, Verantwortliche oder Status. Ein fehlendes Feld ist korrekt — ein
-   erfundenes ist ein Fehler.
-4. Verwende für jedes Element ein `external_ref` nach diesen **deterministischen** Regeln
-   (damit wiederholte Exporte dieselben Refs erzeugen):
-   - Präfix: `proj/` Projekt · `ms/` Meilenstein · `wp/` WBS-Knoten · `pd/` Pendenz
-   - Danach der **Titel** in Kleinbuchstaben, Umlaute ausgeschrieben (ä→ae, ö→oe, ü→ue, ß→ss),
-     nur `a–z 0–9 -`, Leerzeichen → `-`, max. 60 Zeichen.
-   - Beispiel: „Begehung Serverraum" → `wp/begehung-serverraum`
-   - **Wichtig:** Leite den Ref immer aus dem Titel ab, nie aus Position oder Reihenfolge.
-5. Erlaubte Werte (alles andere ist ungültig):
-   - `node_kind`: `phase` | `deliverable` | `task` | `subtask` | `action`
-   - `status`: `todo` | `in_progress` | `blocked` | `done` | `at_risk` | `open`
-   - `phase`: `init` | `konzept` | `realisierung` | `einfuehrung` | `abschluss`
-   - `impact`, `likelihood`: `tief` | `mittel` | `hoch`
-6. Datumsformat immer `YYYY-MM-DD`.
-7. Gib bei jedem Element, das aus einem Dokument stammt, `source_hint` mit dem Dateinamen an
-   (nur Dateiname, kein vollständiger Pfad, keine Zitate aus dem Inhalt).
-8. Obergrenzen: max. 500 WBS-Knoten, 300 Pendenzen, je 100 Annahmen/Risiken/Entscheide.
-   Bei mehr: die wichtigsten auswählen und in `meta.generator_note` vermerken.
+1. Gib AUSSCHLIESSLICH ein einzelnes JSON-Objekt aus. Keine Einleitung, keine
+   Erklärung, kein Kommentar, keine Markdown-Code-Fences, kein Text davor oder
+   danach. Das erste Zeichen deiner Antwort ist "{", das letzte ist "}".
+2. Halte dich EXAKT an das Schema. Erfinde keine zusätzlichen Felder und
+   benenne keine Felder um.
+3. Wenn eine Information nicht belegbar im Repo steht: lass das Feld weg.
+   Rate niemals Termine, Verantwortliche oder Status. Ein fehlendes optionales
+   Feld ist korrekt — ein erfundener Wert ist ein Fehler.
+4. Verwende für jedes Element ein external_ref nach diesen DETERMINISTISCHEN
+   Regeln (damit wiederholte Exporte identische Refs erzeugen und der Import
+   keine Duplikate anlegt):
+   - Präfix: proj/ Projekt · ms/ Meilenstein · wp/ WBS-Knoten · pd/ Pendenz
+   - Danach der Titel in Kleinbuchstaben, Umlaute ausgeschrieben
+     (ä→ae, ö→oe, ü→ue, ß→ss), nur a–z 0–9 -, Leerzeichen → -, max. 60 Zeichen.
+   - Beispiel: „Begehung Serverraum" → wp/begehung-serverraum
+   - Leite den Ref IMMER aus dem Titel ab, nie aus Position oder Reihenfolge.
+5. Erlaubte Enum-Werte (jeder andere Wert ist ungültig):
+   - node_kind: phase | deliverable | task | subtask | action
+   - wbs.status: open | in_progress | done | blocked      ← NUR diese vier
+   - project.phase: init | konzept | realisierung | einfuehrung | abschluss
+   - risks.likelihood: tief | mittel | hoch
+   - risks.impact: gering | mittel | hoch                  ← "gering", NICHT "tief"
+   - pendenzen.source: meeting | review | decision_log | manual
+   - pendenzen.status: open | in_progress | done | blocked
+6. Datumsformat immer YYYY-MM-DD.
+7. Gib bei jedem Element, das aus einem Dokument stammt, source_hint mit dem
+   Dateinamen an (nur Dateiname, kein Pfad, keine Zitate aus dem Inhalt).
+8. Obergrenzen: max. 500 WBS-Knoten, 300 Pendenzen, je 100 Annahmen / Risiken /
+   Entscheide. Bei mehr: die wichtigsten auswählen und in meta.generator_note
+   vermerken.
 
 ## Schema
-```json
 {
   "schema": "hermes.project_state/v1",
   "meta": { "generated_at": "<ISO-8601>", "source": "m365_copilot",
             "repo_scope": "{{REPO_SCOPE}}", "generator_note": "<optional>" },
   "project": {
     "external_ref": "proj/<slug>", "title": "<string>", "goal": "<1-3 Sätze>",
-    "phase": "<enum>",
+    "phase": "init|konzept|realisierung|einfuehrung|abschluss",
     "milestones": [ { "external_ref": "ms/<slug>", "title": "<string>",
-                      "due": "YYYY-MM-DD", "status": "<enum>" } ]
+                      "due": "YYYY-MM-DD", "status": "open|in_progress|done|blocked" } ]
   },
-  "wbs": [ { "external_ref": "wp/<slug>", "parent_ref": "wp/<slug>|null",
-             "title": "<string>", "node_kind": "<enum>", "status": "<enum>",
+  "wbs": [ { "external_ref": "wp/<slug>", "parent_ref": "wp/<slug> oder null",
+             "title": "<string>", "node_kind": "phase|deliverable|task|subtask|action",
+             "status": "open|in_progress|done|blocked",
              "due": "YYYY-MM-DD", "effort_hint_h": <number>,
              "depends_on_refs": ["wp/<slug>"], "source_hint": "<Dateiname>" } ],
-  "pendenzen": [ { "external_ref": "pd/<slug>", "title": "<string>", "owner": "<Rolle oder Name>",
-                   "raised_by": "<string>", "due": "YYYY-MM-DD", "status": "<enum>",
-                   "source": "meeting|review|decision_log|manual", "source_hint": "<Dateiname>" } ],
+  "risks": [ { "title": "<string>", "impact": "gering|mittel|hoch",
+               "likelihood": "tief|mittel|hoch" } ],
+  "pendenzen": [ { "external_ref": "pd/<slug>", "title": "<string>",
+                   "owner": "<Rolle oder Name>", "raised_by": "<string>",
+                   "due": "YYYY-MM-DD", "status": "open|in_progress|done|blocked",
+                   "source": "meeting|review|decision_log|manual",
+                   "source_hint": "<Dateiname>" } ],
   "open_assumptions": [ { "text": "<string>", "since": "YYYY-MM-DD" } ],
-  "risks": [ { "title": "<string>", "impact": "<enum>", "likelihood": "<enum>" } ],
   "decisions": [ { "title": "<string>", "at": "YYYY-MM-DD", "rationale": "<string>" } ]
 }
-```
 
-## Qualitätsprüfung vor der Ausgabe
-- Ist jedes `parent_ref` auch als `external_ref` in `wbs` vorhanden? (sonst weglassen)
-- Enthält `depends_on_refs` nur existierende Refs? (sonst weglassen)
-- Gibt es Zyklen in `parent_ref` oder `depends_on_refs`? (dann auflösen)
-- Sind alle Enum-Werte aus der erlaubten Liste?
-- Ist die Ausgabe **valides JSON** und **nur** JSON?
+Hinweis zu open_assumptions und decisions: Diese Abschnitte werden vom Import
+bewusst NICHT gespeichert, aber als übersprungene Abschnitte protokolliert. Du
+darfst sie befüllen; sie gehen nicht verloren, werden aber nicht importiert.
+
+## Vollständiges Beispiel (kleiner, gültiger Export — validiere deine Struktur dagegen)
+{
+  "schema": "hermes.project_state/v1",
+  "meta": { "generated_at": "2026-08-22T10:00:00Z", "source": "m365_copilot",
+            "repo_scope": "Webshop-Relaunch" },
+  "project": {
+    "external_ref": "proj/webshop-relaunch", "title": "Webshop-Relaunch",
+    "goal": "Ablösung des Legacy-Shops durch eine neue Plattform bis Q4.",
+    "phase": "realisierung",
+    "milestones": [ { "external_ref": "ms/go-live", "title": "Go-Live",
+                      "due": "2026-11-30", "status": "open" } ]
+  },
+  "wbs": [
+    { "external_ref": "wp/anforderungsanalyse", "parent_ref": null,
+      "title": "Anforderungsanalyse", "node_kind": "phase", "status": "done" },
+    { "external_ref": "wp/implementierung-checkout", "parent_ref": null,
+      "title": "Implementierung Checkout", "node_kind": "phase", "status": "in_progress" },
+    { "external_ref": "wp/abnahme-und-go-live", "parent_ref": null,
+      "title": "Abnahme und Go-Live", "node_kind": "phase", "status": "open" }
+  ],
+  "risks": [
+    { "title": "Zahlungsanbieter-Integration verzögert sich",
+      "impact": "hoch", "likelihood": "mittel" },
+    { "title": "Unklare Migrationsdaten aus Altsystem",
+      "impact": "gering", "likelihood": "hoch" }
+  ],
+  "pendenzen": [
+    { "external_ref": "pd/dsgvo-check-checkout", "title": "DSGVO-Check Checkout",
+      "owner": "Legal", "source": "review", "status": "open" },
+    { "external_ref": "pd/lasttest-planen", "title": "Lasttest planen",
+      "owner": "DevOps", "source": "meeting", "status": "open" },
+    { "external_ref": "pd/texte-agb-finalisieren", "title": "Texte AGB finalisieren",
+      "owner": "PM", "source": "manual", "status": "open" }
+  ],
+  "open_assumptions": [ { "text": "Altsystem bleibt bis Go-Live stabil",
+                         "since": "2026-08-01" } ],
+  "decisions": [ { "title": "Payment-Provider: Stripe", "at": "2026-07-15",
+                   "rationale": "Beste API-Dokumentation" } ]
+}
+
+## Validierungs-Checkliste (vor der Ausgabe abarbeiten)
+[ ] Ausgabe ist EIN JSON-Objekt, beginnt mit { und endet mit } — kein Fließtext.
+[ ] "schema" ist exakt "hermes.project_state/v1".
+[ ] "project.external_ref" beginnt mit "proj/" und ist aus dem Titel abgeleitet.
+[ ] Jeder wbs.status / pendenzen.status ist einer von open|in_progress|done|blocked.
+[ ] Jeder risks.impact ist gering|mittel|hoch (NICHT "tief" für Auswirkung).
+[ ] Jeder risks.likelihood ist tief|mittel|hoch.
+[ ] Jede pendenzen.source ist meeting|review|decision_log|manual.
+[ ] Jedes parent_ref existiert auch als external_ref in wbs (sonst weglassen).
+[ ] depends_on_refs enthält nur existierende Refs (sonst weglassen).
+[ ] Keine Zyklen in parent_ref oder depends_on_refs.
+[ ] Alle Daten im Format YYYY-MM-DD.
+[ ] Jedes external_ref ist eindeutig und deterministisch aus dem Titel gebildet.
+
+## Häufige Fehler (unbedingt vermeiden)
+- KEIN roher Notion-/Confluence-Export und KEINE Screenshots — nur dieses Schema.
+- KEINE Markdown-Code-Fences (``` ) um das JSON.
+- KEINE erklärenden Sätze vor oder nach dem JSON.
+- KEINE erfundenen Termine oder Verantwortlichen — im Zweifel Feld weglassen.
+- KEIN "tief" als Risiko-Auswirkung (impact) — dort heisst "gering" die
+  niedrigste Stufe. "tief" ist nur bei likelihood erlaubt.
+- KEINE Status-Werte wie "todo" oder "at_risk" — nur open|in_progress|done|blocked.

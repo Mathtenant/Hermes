@@ -117,13 +117,26 @@
         .replace(/>/g, '&gt;');
     }
 
+    function showImportToast(msg) {
+      if (!document.getElementById('import-toast')) {
+        const toast = document.createElement('div');
+        toast.id = 'import-toast';
+        toast.style.cssText = 'position:fixed; bottom:1rem; left:50%; transform:translateX(-50%); background:#334155; color:#e2e8f0; padding:0.75rem 1.5rem; border-radius:0.375rem; z-index:1100; font-size:0.875rem;';
+        document.body.appendChild(toast);
+      }
+      const toast = document.getElementById('import-toast');
+      toast.textContent = msg;
+      toast.style.display = 'block';
+      setTimeout(() => { toast.style.display = 'none'; }, 3000);
+    }
+
     async function copyPromptToClipboard() {
       try {
         await navigator.clipboard.writeText(copilotPrompt);
-        alert('Prompt copied to clipboard! Paste it into M365 Copilot.');
+        showImportToast('Copied! Paste into Copilot');
       } catch (e) {
         console.error('Copy failed:', e);
-        alert('Copy failed — select the prompt text and copy manually.');
+        showImportToast('Copy failed — select and copy manually');
       }
     }
 
@@ -293,14 +306,14 @@
                 Copilot will generate a JSON export of your project. Come back here with the result for Step 2.
               </p>
               <pre data-testid="copilot-prompt-text" style="background: #0f172a; padding: 1rem; border-radius: 0.375rem; border: 1px solid #334155; font-family: monospace; font-size: 0.8125rem; max-height: 280px; overflow-y: auto; white-space: pre-wrap; color: #e2e8f0; margin-bottom: 1rem;">${escapeHtml(copilotPrompt || 'Loading prompt…')}</pre>
-              <button onclick="copyPromptToClipboard()" data-testid="copy-prompt-btn" style="background: #10b981; color: white; padding: 0.75rem 1rem; border: none; border-radius: 0.375rem; cursor: pointer; font-weight: 600; margin-bottom: 1rem; display: block; width: 100%;">
-                Copy Prompt to Clipboard
-              </button>
               <p style="color: #64748b; font-size: 0.875rem; margin-bottom: 1.5rem;">
-                How to use: 1) Copy prompt above &rarr; 2) Open M365 Copilot &rarr; 3) Paste &amp; send &rarr;
+                How to use: 1) Copy prompt below &rarr; 2) Open M365 Copilot &rarr; 3) Paste &amp; send &rarr;
                 4) Save Copilot's JSON response &rarr; 5) Return here and click "Next".
               </p>
-              <div style="display: flex; gap: 1rem;">
+              <div style="display: flex; align-items: center; gap: 1rem;">
+                <button onclick="copyPromptToClipboard()" data-testid="copy-prompt-btn" title="Copy the prompt to paste into Copilot to export your project" style="background:#334155; color:#e2e8f0; padding:0.5rem 0.75rem; font-size:0.8125rem; border:1px solid #475569; border-radius:0.375rem; cursor:pointer; margin-right:auto;">
+                  Copy Copilot Prompt
+                </button>
                 <button onclick="importStep=2;renderModal()" data-testid="import-next-btn" style="flex: 1; background: #3b82f6; color: white; padding: 0.75rem; border: none; border-radius: 0.375rem; cursor: pointer; font-weight: 600;">
                   Next: Import JSON &rarr;
                 </button>

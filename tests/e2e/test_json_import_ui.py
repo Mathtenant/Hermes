@@ -18,6 +18,19 @@ def _require_server():
         pytest.skip("No server on localhost:8000 for JSON import UI E2E tests")
 
 
+@pytest.fixture
+def browser_context_args(browser_context_args):
+    """Grant clipboard permissions so navigator.clipboard.writeText succeeds.
+
+    Playwright's default context denies clipboard access, which would make
+    copyPromptToClipboard() always hit its catch branch in headless tests.
+    """
+    return {
+        **browser_context_args,
+        "permissions": ["clipboard-read", "clipboard-write"],
+    }
+
+
 @pytest.mark.e2e
 class TestJsonImportUI:
     """Test JSON import modal in web dashboard."""
@@ -308,6 +321,21 @@ class TestJsonImportUI:
         error = page.locator('[data-testid="import-error"]')
         error.wait_for(timeout=5000)
         assert error.is_visible()
+
+    def test_copy_copilot_prompt_shows_toast(self, page):
+        """Copy Copilot Prompt button copies full prompt and shows a toast (not alert)."""
+        page.goto("http://localhost:8000")
+        import_btn = page.locator('button:has-text("Import JSON")')
+        import_btn.click()
+        page.wait_for_selector('[data-testid="copy-prompt-btn"]')
+
+        prompt_text = page.locator('[data-testid="copilot-prompt-text"]').text_content()
+        assert prompt_text.startswith("# Aufgabe")
+
+        page.click('[data-testid="copy-prompt-btn"]')
+        page.wait_for_selector("#import-toast", state="visible")
+        toast_text = page.locator("#import-toast").text_content()
+        assert "Copied" in toast_text
 
     def test_import_multiple_times(self, page):
         """Can import multiple times without reloading."""

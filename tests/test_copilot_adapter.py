@@ -369,6 +369,76 @@ class TestEdgeCases:
 # ---------------------------------------------------------------------------
 
 
+_PROMPT_EXAMPLE_FIXTURE_PATH = (
+    Path(__file__).resolve().parent / "fixtures" / "import" / "copilot_v1_prompt_example.json"
+)
+
+
+@pytest.fixture(scope="module")
+def copilot_prompt_example_payload() -> dict:
+    """Load the webshop-relaunch example JSON embedded in the corrected prompt."""
+    return json.loads(_PROMPT_EXAMPLE_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+class TestPromptExampleFixture:
+    """Test cases for the corrected, schema-aligned Copilot prompt."""
+
+    def test_prompt_example_roundtrips(self, copilot_prompt_example_payload):
+        """The example JSON embedded in the prompt file must import cleanly."""
+        adapted = adapt_payload(copilot_prompt_example_payload)
+        adapted.pop("_skipped_sections", None)
+        errors = validate_import_payload(adapted)
+        assert errors == [], f"Validation errors: {errors}"
+
+        result = import_payload(
+            adapted, risks_db=":memory:", plans_db=":memory:", tasks_db=":memory:"
+        )
+        # 1 project + 1 plan (3 wbs items flattened) + 2 risks + 3 pendenzen = 7
+        assert result.created == 7, f"Expected 7 created, got {result.created}"
+        assert result.updated == 0
+        assert result.skipped == 0
+        assert result.errors == []
+
+    def test_risk_impact_gering_maps_to_low(self):
+        """impact:'gering' must map to severity:'low', not be dropped or defaulted."""
+        payload = {
+            "schema": SCHEMA_VERSION,
+            "risks": [{"title": "Test", "impact": "gering", "likelihood": "mittel"}],
+        }
+        adapted = adapt_payload(payload)
+        assert adapted["risks"][0]["severity"] == "low"
+
+    def test_prompt_file_no_forbidden_tokens(self):
+        """The enum definitions in the prompt must not list retired/invalid values.
+
+        Note: the prompt's own "common mistakes" section intentionally *names*
+        "todo"/"at_risk"/"tief" as forbidden examples, so a whole-file
+        substring ban would false-positive on that documentation. Instead we
+        check the actual enum-definition lines (``wbs.status:`` and
+        ``risks.impact:``), which is what would actually break the importer.
+        """
+        prompt_text = _PROMPT_PATH.read_text(encoding="utf-8")
+        assert SCHEMA_VERSION in prompt_text
+
+        status_enum_line = next(
+            line for line in prompt_text.splitlines() if "wbs.status:" in line
+        )
+        assert "todo" not in status_enum_line, "Forbidden: wbs.status must not allow 'todo'"
+        assert "at_risk" not in status_enum_line, (
+            "Forbidden: wbs.status must not allow 'at_risk'"
+        )
+
+        impact_enum_line = next(
+            line for line in prompt_text.splitlines() if "risks.impact:" in line
+        )
+        # Trailing "<-" comments annotate the line with counter-examples
+        # (e.g. "NICHT tief") — strip those before checking the enum values.
+        impact_enum_values = impact_enum_line.split("←")[0]
+        assert "tief" not in impact_enum_values, (
+            "Forbidden: risks.impact must not allow 'tief' (lowest impact is 'gering')"
+        )
+
+
 class TestEndpointIntegration:
     def test_copilot_payload_via_endpoint_returns_200(self, copilot_v1_payload, client):
         """POST /api/import/json with Copilot v1 payload must return 200."""

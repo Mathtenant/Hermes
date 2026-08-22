@@ -1,5 +1,5 @@
 /* HERMES Dashboard — Main application (Vue 3, requires screens.js loaded first) */
-/* global Vue, ProjectListScreen, ProjectDetailScreen, PendenzenScreen, ReviewsScreen, WbsNodeItem, WbsTab */
+/* global Vue, ProjectListScreen, ProjectDetailScreen, PendenzenScreen, ReviewsScreen, RisksScreen, WbsNodeItem, WbsTab */
 'use strict';
 
 const {
@@ -220,6 +220,7 @@ function onKeydown(e) {
     case '2': goTo('detail'); break;
     case '3': goTo('pendenzen'); break;
     case '4': goTo('reviews'); break;
+    case '5': goTo('risks'); break;
     case 'r': refresh(); break;
     case 'd': toggleTheme(); break;
     case 'i': openImport(); break;
@@ -239,6 +240,7 @@ const App = {
     ProjectDetailScreen,
     PendenzenScreen,
     ReviewsScreen,
+    RisksScreen,
   },
   setup() {
     // Show toast whenever an API error occurs
@@ -264,6 +266,7 @@ const App = {
       { key: 'detail',   label: 'Project Detail', shortcut: '2', icon: '◫' },
       { key: 'pendenzen', label: 'Pendenzen', shortcut: '3', icon: '⚑' },
       { key: 'reviews',  label: 'Reviews', shortcut: '4', icon: '✓' },
+      { key: 'risks',    label: 'Risks',   shortcut: '5', icon: '⚠' },
     ];
 
     const shortcuts = [
@@ -271,6 +274,7 @@ const App = {
       ['2', 'Project detail'],
       ['3', 'Pendenzen'],
       ['4', 'Reviews'],
+      ['5', 'Risks'],
       ['r', 'Refresh data'],
       ['i', 'Import JSON'],
       ['d', 'Toggle dark / light theme'],
@@ -368,6 +372,12 @@ const App = {
           :error="state.error"
         />
         <reviews-screen
+          v-else-if="state.screen === 'reviews'"
+          :data="state.data"
+          :loading="state.loading"
+          :error="state.error"
+        />
+        <risks-screen
           v-else
           :data="state.data"
           :loading="state.loading"

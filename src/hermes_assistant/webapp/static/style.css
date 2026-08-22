@@ -164,6 +164,12 @@ body {
 .verdict-partial { color: var(--c-partial); font-weight: 600; }
 .verdict-fail    { color: var(--c-fail);    font-weight: 600; }
 
+/* ── Risk status colours (open=red, mitigated=amber, accepted=blue, closed=grey) */
+.risk-open     { color: var(--c-fail);    font-weight: 600; }
+.risk-mitigated{ color: var(--c-partial); font-weight: 600; }
+.risk-accepted { color: var(--c-primary); font-weight: 600; }
+.risk-closed   { color: var(--c-text-muted); }
+
 /* ── Priority dots ──────────────────────────────────────────────────────── */
 .prio-dot {
   display: inline-block;

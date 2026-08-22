@@ -342,6 +342,89 @@ const PendenzenScreen = {
   `,
 };
 
+// ── RisksScreen ───────────────────────────────────────────────────────────
+const RisksScreen = {
+  props: ['data', 'loading', 'error'],
+  setup(props) {
+    const filterStatus = ref('');
+    const sortKey = ref('score');
+    const sortDir = ref(-1);
+
+    const filtered = computed(() => {
+      let rows = props.data?.risks ?? [];
+      if (filterStatus.value) rows = rows.filter(r => r.status === filterStatus.value);
+      return [...rows].sort((a, b) => {
+        const av = typeof a[sortKey.value] === 'number' ? a[sortKey.value] : String(a[sortKey.value] ?? '');
+        const bv = typeof b[sortKey.value] === 'number' ? b[sortKey.value] : String(b[sortKey.value] ?? '');
+        if (typeof av === 'number' && typeof bv === 'number') return sortDir.value * (av - bv);
+        return sortDir.value * String(av).localeCompare(String(bv));
+      });
+    });
+
+    function toggleSort(key) {
+      if (sortKey.value === key) sortDir.value *= -1;
+      else { sortKey.value = key; sortDir.value = -1; }
+    }
+
+    function sortIcon(key) {
+      return sortKey.value === key ? (sortDir.value === 1 ? ' ↑' : ' ↓') : '';
+    }
+
+    function statusClass(s) {
+      const map = { open: 'risk-open', mitigated: 'risk-mitigated', accepted: 'risk-accepted', closed: 'risk-closed' };
+      return map[s] ?? '';
+    }
+
+    return { filterStatus, filtered, toggleSort, sortIcon, statusClass };
+  },
+  template: `
+    <div>
+      <h2 class="text-xl font-bold mb-4">Risks</h2>
+      <div v-if="loading" class="flex items-center gap-2 py-8 text-gray-400">
+        <span class="spinner"></span> Loading&hellip;
+      </div>
+      <div v-else-if="error" class="text-red-500 p-4 card">{{ error }}</div>
+      <div v-else>
+        <div class="filter-bar">
+          <select class="filter-select" v-model="filterStatus">
+            <option value="">All statuses</option>
+            <option value="open">Open</option>
+            <option value="mitigated">Mitigated</option>
+            <option value="accepted">Accepted</option>
+            <option value="closed">Closed</option>
+          </select>
+          <span class="text-sm text-gray-400">{{ filtered.length }} risks</span>
+        </div>
+        <div v-if="!filtered.length" class="text-gray-400 p-4">No risks recorded.</div>
+        <div v-else class="card overflow-x-auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th @click="toggleSort('title')">Title{{ sortIcon('title') }}</th>
+                <th @click="toggleSort('severity')">Severity{{ sortIcon('severity') }}</th>
+                <th @click="toggleSort('likelihood')" class="text-right">Likelihood{{ sortIcon('likelihood') }}</th>
+                <th @click="toggleSort('score')" class="text-right">Score{{ sortIcon('score') }}</th>
+                <th @click="toggleSort('status')">Status{{ sortIcon('status') }}</th>
+                <th @click="toggleSort('updated_at')">Updated{{ sortIcon('updated_at') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in filtered" :key="r.id">
+                <td class="max-w-xs truncate" :title="r.title">{{ r.title }}</td>
+                <td>{{ r.severity }}</td>
+                <td class="text-right tabular-nums">{{ r.likelihood }}</td>
+                <td class="text-right tabular-nums font-semibold">{{ r.score }}</td>
+                <td><span :class="statusClass(r.status)">{{ r.status }}</span></td>
+                <td class="font-mono text-xs">{{ r.updated_at.substring(0, 10) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `,
+};
+
 // ── ReviewsScreen ──────────────────────────────────────────────────────────
 const ReviewsScreen = {
   props: ['data', 'loading', 'error'],

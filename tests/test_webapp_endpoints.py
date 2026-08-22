@@ -7,8 +7,9 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_assistant.dashboard_html import DashboardData, load_dashboard_data
+from hermes_assistant.dashboard_html import DashboardData, RiskRow, load_dashboard_data
 from hermes_assistant.jobqueue.jobs import JobStore
+from hermes_assistant.risks.registry import RiskRegistry
 from hermes_assistant.tasks.model import Task
 from hermes_assistant.tasks.pendenzen import Pendenz, PendenzSource
 from hermes_assistant.tasks.store import TaskStore
@@ -45,7 +46,16 @@ def job_store() -> JobStore:
 
 
 @pytest.fixture()
-def mock_load(task_store: TaskStore, job_store: JobStore, tmp_path: Path):
+def risk_registry() -> RiskRegistry:
+    """In-memory RiskRegistry with one public risk and one confidential risk."""
+    reg = RiskRegistry(":memory:")
+    reg.create("Data breach", severity="high", likelihood=4)
+    reg.create("Secret risk", confidential=True, owner="admin@example.com")
+    return reg
+
+
+@pytest.fixture()
+def mock_load(task_store: TaskStore, job_store: JobStore, risk_registry: RiskRegistry, tmp_path: Path):
     """Patch server's load_dashboard_data with pre-built DashboardData objects.
 
     The DashboardData objects are built in the test thread here, so they never
@@ -59,6 +69,7 @@ def mock_load(task_store: TaskStore, job_store: JobStore, tmp_path: Path):
             scope,
             task_store=task_store,
             job_store=job_store,
+            risk_registry=risk_registry,
             projects_root=tmp_path,
         )
 
@@ -134,7 +145,7 @@ def test_dashboard_content_type_json(mock_load: None) -> None:
 
 def test_dashboard_has_required_fields(mock_load: None) -> None:
     body = client.get("/api/dashboard").json()
-    for field in ("generated_at", "timeline", "kanban", "pendenzen", "wbs", "reviews", "projects"):
+    for field in ("generated_at", "timeline", "kanban", "pendenzen", "wbs", "reviews", "projects", "risks"):
         assert field in body, f"Missing field: {field}"
 
 
@@ -288,3 +299,58 @@ def test_dashboard_data_extra_forbid() -> None:
 
     with pytest.raises(ValidationError):
         DashboardData(generated_at=_NOW_STR, raw_notes="LEAK")  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
+# Risk Registry — dashboard risks field
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_risks_field_present(mock_load: None) -> None:
+    body = client.get("/api/dashboard").json()
+    assert "risks" in body
+    assert isinstance(body["risks"], list)
+
+
+def test_dashboard_risks_contains_public_risk(mock_load: None) -> None:
+    body = client.get("/api/dashboard").json()
+    titles = [r["title"] for r in body["risks"]]
+    assert "Data breach" in titles
+
+
+def test_dashboard_risks_excludes_confidential(mock_load: None) -> None:
+    body = client.get("/api/dashboard").json()
+    titles = [r["title"] for r in body["risks"]]
+    assert "Secret risk" not in titles
+
+
+def test_dashboard_risks_score_computed(mock_load: None) -> None:
+    body = client.get("/api/dashboard").json()
+    risk = next(r for r in body["risks"] if r["title"] == "Data breach")
+    # high=3, likelihood=4 → score=12
+    assert risk["score"] == 12
+
+
+def test_dashboard_risks_row_fields(mock_load: None) -> None:
+    body = client.get("/api/dashboard").json()
+    risk = body["risks"][0]
+    for field in ("id", "title", "severity", "likelihood", "status", "score", "updated_at"):
+        assert field in risk, f"Missing RiskRow field: {field}"
+
+
+def test_risk_row_extra_forbid() -> None:
+    """RiskRow must reject extra fields (extra='forbid')."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        RiskRow(
+            id="x", title="t", severity="low", likelihood=1,
+            status="open", score=1, updated_at="2026-01-01T00:00:00Z",
+            raw_notes="LEAK",  # type: ignore[call-arg]
+        )
+
+
+def test_dashboard_risks_no_owner_email(mock_load: None) -> None:
+    """Owner email from confidential risk must not appear in the response."""
+    text = client.get("/api/dashboard").text
+    assert "admin@example.com" not in text

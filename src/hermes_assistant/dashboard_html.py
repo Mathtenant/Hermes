@@ -110,6 +110,20 @@ class ReviewSummaryRow(BaseModel):
     deliverable: str
 
 
+_SEVERITY_WEIGHT: dict[str, int] = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+
+
+class RiskRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    title: str
+    severity: str
+    likelihood: int
+    status: str
+    score: int
+    updated_at: str
+
+
 class ProjectSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: str
@@ -128,6 +142,7 @@ class DashboardData(BaseModel):
     wbs: list[WBSNode] = Field(default_factory=list)
     pendenzen: list[PendenzRow] = Field(default_factory=list)
     reviews: list[ReviewSummaryRow] = Field(default_factory=list)
+    risks: list[RiskRow] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +230,7 @@ def load_dashboard_data(
     *,
     task_store: Any | None = None,
     job_store: Any | None = None,
+    risk_registry: Any | None = None,
     projects_root: Path | None = None,
     now: datetime | None = None,
 ) -> DashboardData:
@@ -301,6 +317,28 @@ def load_dashboard_data(
                 pass
     timeline.sort(key=lambda e: (e.date, e.label))
 
+    # Risks from registry (confidential risks excluded via export_public())
+    risks: list[RiskRow] = []
+    try:
+        from hermes_assistant.risks.registry import RiskRegistry as _RiskRegistry
+        _rr: Any = (
+            risk_registry if risk_registry is not None
+            else _RiskRegistry(Path(settings.data_dir) / "risks.db")
+        )
+        for r in _rr.export_public():
+            sev_w = _SEVERITY_WEIGHT.get(r.severity.value, 2)
+            risks.append(RiskRow(
+                id=r.id,
+                title=r.title,
+                severity=r.severity.value,
+                likelihood=r.likelihood,
+                status=r.status.value,
+                score=sev_w * r.likelihood,
+                updated_at=r.updated_at,
+            ))
+    except Exception:  # noqa: BLE001
+        pass
+
     # Reviews from job store
     reviews: list[ReviewSummaryRow] = []
     try:
@@ -332,7 +370,7 @@ def load_dashboard_data(
         generated_at=_now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         scope=scope, range_start=range_start, range_end=range_end,
         projects=projects, timeline=timeline, kanban=kanban, wbs=wbs,
-        pendenzen=pend_rows, reviews=reviews,
+        pendenzen=pend_rows, reviews=reviews, risks=risks,
     )
 
 

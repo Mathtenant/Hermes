@@ -146,3 +146,33 @@ async def test_confidentiality_guard_ignores_non_dict_responses() -> None:
 
     result = await endpoint()
     assert result == "raw_notes"
+
+
+# ---------------------------------------------------------------------------
+# Risk Registry — owner email must not leak via dashboard
+# ---------------------------------------------------------------------------
+
+
+def test_risk_owner_email_excluded_from_dashboard_response() -> None:
+    """A risk with an owner email must not expose that email in the dashboard response.
+
+    RiskRow omits 'owner', so export_public() results stripped to safe fields
+    must pass _validate_safe_json without an email violation.
+    """
+    from hermes_assistant.dashboard_html import DashboardData, RiskRow
+
+    row = RiskRow(
+        id="abc123",
+        title="Budget overrun",
+        severity="high",
+        likelihood=3,
+        status="open",
+        score=9,
+        updated_at="2026-01-01T00:00:00Z",
+    )
+    data = DashboardData(generated_at="2026-01-01T00:00:00Z", risks=[row])
+    json_str = data.model_dump_json()
+    # No email should appear in the serialised payload
+    assert "@" not in json_str
+    violations = _validate_safe_json(json_str)
+    assert not any("email" in v.lower() for v in violations)

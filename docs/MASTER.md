@@ -898,9 +898,11 @@ SQLite task/job stores + schedule.json files
 | `screens.js` | Screen components for all 4 views |
 | `app.js` | Root app, global state, keyboard shortcuts, polling |
 
-**Screens:** (1) **Projects** — sortable table, click to drill in. (2) **Project Detail** — Timeline (colour-coded by status), Kanban (To Do / Blocked / Done), WBS (collapsible tree with status icons). (3) **Pendenzen** — filterable by source/priority/status, sorted by priority rank. (4) **Reviews** — completed review jobs, verdict colour coding (green pass / amber pass_with_comments / red fail), click for detail modal.
+**Screens:** (1) **Projects** — sortable table, click to drill in. (2) **Project Detail** — Timeline (colour-coded by status), Kanban (To Do / Blocked / Done), WBS (collapsible tree with status icons). (3) **Pendenzen** — filterable by source/priority/status, sorted by priority rank. (4) **Reviews** — completed review jobs, verdict colour coding (green pass / amber pass_with_comments / red fail), click for detail modal. (5) **Risks** *(F1)* — non-confidential risks from `RiskRegistry.export_public()`, sortable by score (severity×likelihood), status colour-coded (open=red, mitigated=amber, accepted=blue, closed=grey), empty state "No risks recorded".
 
-**Keyboard shortcuts:** `1`–`4` switch screens · `r` refresh · `d` toggle dark/light · `?` help · `Esc` close modal. Theme persisted in `localStorage`.
+**`/api/dashboard` — DashboardData fields:** `generated_at`, `scope`, `range_start`, `range_end`, `projects`, `timeline`, `kanban`, `wbs`, `pendenzen`, `reviews`, `risks`. The `risks` array carries only safe fields per `RiskRow` (`id`, `title`, `severity`, `likelihood`, `status`, `score`, `updated_at`) — confidential risks and the `owner` field are excluded.
+
+**Keyboard shortcuts:** `1`–`5` switch screens · `r` refresh · `d` toggle dark/light · `?` help · `Esc` close modal. Theme persisted in `localStorage`.
 
 **Security:** same-origin only (no CORS); CSP headers on every response (`default-src 'none'`, only `'self'` and HTTPS CDN for scripts/styles); `_validate_safe_json()` on every API response (forbidden fields `raw_notes`, `evidence_quote`, `rationale`, `assumptions`, etc. → HTTP 500); Pydantic `extra="forbid"` on all view models; no authentication (trusted LAN assumption; Phase 5 adds SSO); localhost bind by default.
 
@@ -1929,7 +1931,7 @@ failures"), so the suite never reports fully green.
   old retained, most recent line readable).
 
 ## Phase 7 execution checklist
-- [x] F5 first (green CI baseline) · [ ] F1 · [ ] F2 · [ ] F3 · [ ] F4
+- [x] F5 first (green CI baseline) · [x] F1 · [ ] F2 · [ ] F3 · [ ] F4
 - [ ] Each: `ruff check . && mypy src && pytest -q` green, confidentiality guard covers
       new responses, RLock on new store writes, no cloud calls, co-author commit line.
 - [ ] Update Part 2 (new screen/endpoint), Part 3.3 (F2 fields), Part 6 (F5 rotation)

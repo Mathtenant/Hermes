@@ -1583,7 +1583,7 @@ pytest tests/ -q --tb=short --ignore=tests/e2e/
 ```
 
 ## Production hardening (staging → production)
-1. `DEBUG=false`. 2. nginx/caddy in front of uvicorn (TLS). 3. Bind uvicorn to `127.0.0.1` only (never `0.0.0.0` unless behind a reverse proxy). 4. `HERMES_DATA_DIR` on a backed-up volume. 5. Log rotation for `llm_trace.jsonl`. 6. Run `pytest tests/e2e/` with Playwright installed. 7. `OLLAMA_HOST=127.0.0.1` (already default).
+1. `DEBUG=false`. 2. nginx/caddy in front of uvicorn (TLS). 3. Bind uvicorn to `127.0.0.1` only (never `0.0.0.0` unless behind a reverse proxy). 4. `HERMES_DATA_DIR` on a backed-up volume. 5. Log rotation for `llm_trace.jsonl` — implemented: size-based rotation via `HERMES_TRACE_MAX_MB` (default 50 MB), keeps up to 5 numbered backups (`.1`–`.5`), thread-safe (`threading.Lock` + atomic `os.rename`). 6. Run `pytest tests/e2e/` with Playwright installed. 7. `OLLAMA_HOST=127.0.0.1` (already default).
 
 ---
 
@@ -1706,12 +1706,234 @@ hermes-assistant/
 
 | Plan | Status | Files | Effort | Dependencies |
 |-------|--------|-------|--------|--------------|
-| PLAN 1: Risk external_ref M2 | Ready | 4 files | 3–4 hrs | None |
+| PLAN 1: Risk external_ref M2 | **Done** (`registry.py` has `external_ref` + `get_by_external_ref`) | 4 files | 3–4 hrs | None |
 | PLAN 2: Fix phantom API in this doc's examples | Done inline | — | 30 min | None |
-| PLAN 3: Lifecycle regression tests | Ready | 1 file | 1 hr | None |
-| PLAN 4: M10 hydration | Document-only | Phase 6 | Deferred | PLAN 1 first |
+| PLAN 3: Lifecycle regression tests | **Done** (D5, commit `0d58be2`) | 1 file | 1 hr | None |
+| PLAN 4: M10 hydration | **Done** (`chat/service.py` injects stores, commit `663a6c7`) | Phase 6 | — | PLAN 1 first |
 
-**Execution order:** PLAN 1, 2, 3 in parallel → then Phase 1–4 test suites.
+**Execution order:** PLAN 1, 2, 3 in parallel → then Phase 1–4 test suites. **(all complete)**
+
+Also landed since this table was drafted: **H1** user-authored-content guard exclusion
+(`_redact_user_authored` in `chat_api.py`) and **H2** null-optional import coercion
+(`raw.get(...) or ""` + per-item try/except in `import_json.py`). The Part 8 backlog
+above is therefore **cleared**; the next work is **Part 8B — Phase 7 Feature Backlog** below.
+
+---
+
+# Part 8B — Phase 7 Feature Backlog (coder-ready)
+
+> Designed 2026-08-22 against the as-built code (not the older Part 8 plans, which
+> are now complete). Five high-impact, mostly self-contained features. Each is
+> pickable independently unless a dependency is noted. Convention reminders:
+> `ruff check . && mypy src && pytest -q` green before done; new invariant files are
+> `test_invariants_*.py`; no cloud calls; confidentiality guard covers any new API
+> response; store methods that touch SQLite acquire `self._lock` (RLock, Layer 5b).
+
+| Feature | Impact | Files | Effort | Dependencies |
+|---------|--------|-------|--------|--------------|
+| F1: Risk Registry dashboard screen | High (visible gap) | ~5 | 6–8 hrs | None |
+| F2: Copilot import v2 — WBS tree + milestones/dates → scheduler | High (data-loss fix) | ~5 | 8–12 hrs | None (F5 helps) |
+| F3: Streaming chat responses (SSE) | High (perceived latency) | ~4 | 6–8 hrs | None |
+| F4: M10 full — RAG-backed suggestions | Medium | ~4 | 8–10 hrs | F1 useful, not required |
+| F5: Ops hardening — trace rotation + fix holiday tests | Medium (reliability) | ~4 | 3–5 hrs | None |
+
+**Recommended order:** F5 (unblocks green CI) → F1 → F2 → F3 → F4. F1/F3/F5 are
+parallelisable across coders.
+
+## F1 — Risk Registry dashboard screen
+
+**User story:** *As a project lead, I open the dashboard and see a Risks screen
+listing every risk (title, severity, likelihood, status, score) so I can review the
+register without using chat or the CLI.*
+
+**Why:** The Risk Registry is a first-class store with lifecycle
+(`open→mitigated→accepted→closed`), version history, and `export_public()`, but the
+dashboard has **no** risk view — `DashboardData` (`dashboard_html.py:119`) has no
+`risks` field and `screens.js` has only Projects / ProjectDetail / Pendenzen /
+Reviews. Chat can *create* risks a user then cannot *see* in the UI.
+
+**Acceptance criteria:**
+- `GET /api/dashboard` (and `?project_id=X`) returns a `risks: []` array built from
+  `RiskRegistry.export_public()` (confidential risks excluded — reuse the existing
+  filter, never `list()` raw).
+- Each risk row carries only non-confidential fields: `id`, `title`, `severity`,
+  `likelihood`, `status`, computed `score` (severity×likelihood), `updated_at`.
+  **No** `raw_notes`/`rationale`/owner-email — must pass `_validate_safe_json`.
+- New Risks screen reachable via nav + keyboard shortcut `5`; sortable by score;
+  status shown with colour coding (open=red, mitigated=amber, accepted=blue,
+  closed=grey), mirroring the Reviews verdict colours.
+- Empty state renders "No risks recorded" (no crash on zero risks).
+- Screen respects the active `project_id` drill-in.
+
+**Files:**
+- `src/hermes_assistant/dashboard_html.py` — add `RiskRow(BaseModel)` (extra="forbid"),
+  add `risks: list[RiskRow]` to `DashboardData`, populate in `load_dashboard_data()`
+  from a `RiskRegistry(settings...risks_db)` call filtered by `export_public()`.
+- `src/hermes_assistant/webapp/server.py` — no route change needed (dashboard endpoint
+  already returns `DashboardData`); confirm `_validate_safe_json` still passes.
+- `src/hermes_assistant/webapp/static/screens.js` — new `RisksScreen` component.
+- `src/hermes_assistant/webapp/static/app.js` — register screen, add `5` shortcut + nav.
+- `src/hermes_assistant/webapp/static/style.css` — status colour tokens (reuse verdict vars).
+
+**Testing:** `tests/test_webapp_endpoints.py` — dashboard returns risks, confidential
+excluded, score computed, `extra="forbid"` rejects unknown field; a
+`test_confidentiality_guards.py` case asserting a risk with an email owner does **not**
+leak. E2E (optional, `e2e/`): nav to Risks, rows render, sort by score.
+
+## F2 — Copilot import v2: preserve WBS hierarchy + milestones/dates → scheduler
+
+**User story:** *As a project lead, when I import a Copilot export the WBS tree,
+milestone dates, and effort hints survive, so `hermes schedule`/`ics` can produce a
+real calendar instead of losing 40% of the export.*
+
+**Why:** `_adapt_project_state_v1` **flattens** the tree and silently drops
+`parent_ref`, `depends_on_refs`, `due`, `effort_hint_h`, `project.milestones`,
+`project.goal`, `project.phase` (documented in Part 3.3 "Fields the prompt emits but
+the adapter ignores"). The scheduler (`scheduling/derive.py`, `ics.py`) and the
+`DeadlineView` already exist but are **never fed by imports** — the biggest
+value-per-hour gap in the product. This is the "v2 roadmap" from Part 3.7.
+
+**Acceptance criteria:**
+- Adapter preserves `parent_ref` and `depends_on_refs` on plan items instead of
+  discarding them (map to the plan-item parent/dependency fields; add them if absent).
+- `due` and `effort_hint_h` per node are carried through to plan items.
+- `project.milestones[]` import as milestone-kind rows (not dropped); `project.goal`
+  and `project.phase` persist on the project record.
+- Round-trip: the Helios realistic fixture
+  (`copilot_v1_helios_realistic_export.json`) imports with its 25-node tree
+  **hierarchy intact** (parent chains reconstructable) and milestone dates present.
+- Backward compatible: existing flat native imports and the v1 worked example still
+  yield the documented row counts (7 rows for the small example). No enum contract
+  change → the Copilot prompt file needs **no** edit (fields already emitted).
+- Update Part 3.3 to move these fields out of the "ignored" list; update the
+  `test_prompt_example_roundtrips` expectation only if counts change.
+
+**Files:**
+- `src/hermes_assistant/webapp/import_adapters.py` — extend `_adapt_project_state_v1`:
+  stop flattening, carry `parent_ref`/`depends_on_refs`/`due`/`effort_hint_h`, emit
+  milestones, persist goal/phase.
+- `src/hermes_assistant/webapp/import_json.py` — accept the new plan-item fields;
+  ensure atomicity unchanged.
+- `src/hermes_assistant/plans/model.py` / `plans/editor.py` — add optional
+  `parent_id`, `depends_on`, `due`, `effort_h` fields to the plan item model if not
+  present (keep existing versions valid — optional with defaults).
+- `tests/test_copilot_adapter.py` + `tests/test_json_import_unit.py` — hierarchy
+  preserved, dates carried, milestones imported, v1 example still 7 rows.
+- `docs/MASTER.md` Part 3.3 — update the ignored-fields paragraph.
+
+**Notes / gotchas:** keep it on **v1** (additive, adapter was already receiving these
+fields) — do *not* mint `hermes.project_state/v2` unless the enum contract changes.
+Watch idempotency: re-import must still upsert by `external_ref` (S10 replay test must
+stay green). Cycles in `parent_ref`/`depends_on_refs` are already excluded by the
+prompt checklist; still guard against them in the adapter (drop the offending edge,
+don't crash).
+
+## F3 — Streaming chat responses (Server-Sent Events)
+
+**User story:** *As a user, the assistant's reply streams token-by-token so a 15
+tok/s local model feels responsive instead of a 10-second dead wait.*
+
+**Why:** `chat_api.py` has no `StreamingResponse`; production latency is "dominated by
+ROUTER inference (~15 tok/s)" (Part 2.2). Streaming is the single biggest perceived-
+latency win and was explicitly listed as a follow-up. Classification/execution stay
+synchronous; only the final **formatted answer** streams.
+
+**Acceptance criteria:**
+- New `POST /api/chat/message/stream` returns `text/event-stream`; emits `data:` chunks
+  as the answer is produced, then a terminal `event: done` carrying the persisted
+  `message_id` + suggestions.
+- The turn is still classified → executed → persisted exactly once (persist the full
+  assembled text after streaming completes; never persist partial content).
+- Confidentiality guard runs on the **assembled** response before the `done` event; a
+  violation ends the stream with `event: error` (generic message, no detail).
+- Falls back cleanly: if the ROUTER/answer model is unavailable, stream the safe
+  `answer_question` fallback (mirror the existing degradation path).
+- Non-streaming `POST /api/chat/message` remains unchanged (back-compat).
+- Frontend `chat.js` consumes the SSE stream, appends tokens to the assistant bubble,
+  shows the typing indicator until first token, renders suggestions on `done`.
+
+**Files:**
+- `src/hermes_assistant/chat/service.py` — add a generator variant (e.g.
+  `stream_turn()`) yielding text chunks; reuse `_classify`/execute/format; persist once.
+- `src/hermes_assistant/llm/client.py` — expose a streaming chat (Ollama supports
+  `stream=True`); keep the existing blocking `chat()`.
+- `src/hermes_assistant/webapp/chat_api.py` — new SSE route via
+  `fastapi.responses.StreamingResponse`.
+- `src/hermes_assistant/webapp/static/chat.js` — `EventSource`/`fetch`-reader client.
+
+**Testing:** `tests/test_chat_service.py` — `stream_turn` yields chunks then persists
+one message; guard blocks a leaking assembled response; degradation streams fallback.
+Integration (`test_chat_integration.py`) — SSE route returns `text/event-stream`,
+terminal `done` carries `message_id`. Use a fake streaming LLM client (extend the
+existing duck-typed `LLMClient` fake); **no live Ollama** in tests.
+
+## F4 — M10 full: RAG-backed suggestions over past plans/risks
+
+**User story:** *As a user, after a chat turn I get 1–3 concrete next-step suggestions
+drawn from semantically-similar past plans/risks, not just static intent buttons.*
+
+**Why:** M10 hydration landed (context now carries `risks`/`plan_summary`/
+`open_task_count`), but the *generation* half — semantic retrieval over prior
+project state — is still stubbed (`suggestions/store.py` at 66%, `SuggestionStore.score`
+is a placeholder). This turns the suggestion bar from canned strings into grounded
+recommendations. Fully local (bge-m3 via the existing RAG store).
+
+**Acceptance criteria:**
+- After a turn, `_build_suggestions()` retrieves top-k similar historical
+  risks/plan-items (via the existing Chroma/`bge-m3` retriever) scoped to the
+  `project_id`, ranks them, and returns ≤3 suggestions with a real relevance score.
+- Degrades to the current static suggestions when Chroma/embeddings are unavailable
+  (no hard dependency on RAG being installed — mirrors `cli.py` optional-dep pattern).
+- Suggestions never leak confidential content (titles only; guard-checked).
+- Deterministic in tests (inject a fake retriever; no live embeddings).
+
+**Files:**
+- `src/hermes_assistant/chat/service.py` — wire a retriever into `_build_suggestions()`.
+- `src/hermes_assistant/suggestions/store.py` — real `score()` /
+  ranking; persist generated suggestions for audit.
+- `src/hermes_assistant/rag/retrieve.py` — add a scoped `similar_to(text, project_id)`
+  helper if none exists.
+- `tests/test_chat_service.py` / new `test_suggestions.py` — grounded suggestions with a
+  fake retriever; graceful fallback when RAG absent; confidentiality filter.
+
+**Dependency:** F1 makes the payoff visible (risks in UI), but F4 does not require it.
+
+## F5 — Ops hardening: trace rotation + fix holiday tests
+
+**User story:** *As an operator, `llm_trace.jsonl` can't grow unbounded and the test
+suite is fully green so CI is trustworthy.*
+
+**Why:** Two standing ops items: (a) `data/traces/llm_trace.jsonl` has no rotation
+(Part 6 "Production hardening" lists it as a manual TODO) — an append-only JSONL will
+grow without bound on a long-running box; (b) three `test_scheduling.py::test_zurich_*`
+tests fail on `workalendar` holiday-data drift (Part 5.3 "known pre-existing
+failures"), so the suite never reports fully green.
+
+**Acceptance criteria:**
+- LLM tracing rotates by size (default 50 MB, configurable via a new
+  `HERMES_TRACE_MAX_MB` setting) keeping N rotated files; rotation is atomic and
+  thread-safe (tracing is called from worker threads).
+- No trace content changes; existing `test_tracing.py` stays green.
+- The three `test_zurich_*` tests pass deterministically — either pin/patch the
+  `workalendar` version and correct the expected holiday dates, or replace the live
+  `workalendar` lookup in tests with a fixed fixture calendar. Document the choice.
+- `pytest -m "not e2e and not integration"` reports **0 failures** (down from the 3
+  tracked scheduling failures).
+
+**Files:**
+- `src/hermes_assistant/llm/tracing.py` — size-based rotating writer.
+- `src/hermes_assistant/config.py` — `trace_max_mb` setting (env `HERMES_TRACE_MAX_MB`).
+- `src/hermes_assistant/scheduling/derive.py` or `tests/test_scheduling.py` — fix the
+  Zürich holiday assertions (fixture calendar preferred for determinism).
+- `tests/test_tracing.py` — add a rotation test (write past the cap → new file created,
+  old retained, most recent line readable).
+
+## Phase 7 execution checklist
+- [x] F5 first (green CI baseline) · [ ] F1 · [ ] F2 · [ ] F3 · [ ] F4
+- [ ] Each: `ruff check . && mypy src && pytest -q` green, confidentiality guard covers
+      new responses, RLock on new store writes, no cloud calls, co-author commit line.
+- [ ] Update Part 2 (new screen/endpoint), Part 3.3 (F2 fields), Part 6 (F5 rotation)
+      in this file as each ships — do not create new `.md` files.
 
 ## PLAN 1 — Risk external_ref idempotency (M2 for risks)
 

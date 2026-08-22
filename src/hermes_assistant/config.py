@@ -6,6 +6,7 @@ from pathlib import Path
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 def _compute_default_data_dir() -> str:
     """Return a platform-specific data directory outside the repository.
 
@@ -64,6 +65,12 @@ class Settings(BaseSettings):
     vectorstore_path: str = "./data/vectorstore"
     projects_path: str = "./data/projects"
     traces_path: str = "./data/traces/llm_trace.jsonl"
+    # Maximum size of llm_trace.jsonl before rotating to a numbered backup.
+    # Set HERMES_TRACE_MAX_MB=0 to disable (no rotation). Keep up to 5 backups.
+    trace_max_mb: int = Field(
+        default=50,
+        validation_alias=AliasChoices("HERMES_TRACE_MAX_MB", "trace_max_mb"),
+    )
     ollama_num_thread: int = 10
     log_level: str = "INFO"
 

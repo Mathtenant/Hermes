@@ -1,12 +1,13 @@
 """Traceability tests: every call produces a complete JSONL record."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import requests
 from pydantic import BaseModel
 
 from hermes_assistant.llm.client import OllamaClient
-from hermes_assistant.llm.tracing import JsonlTracer
+from hermes_assistant.llm.tracing import JsonlTracer, TraceRecord
 
 from .conftest import make_response
 
@@ -131,3 +132,64 @@ def test_health_available(tracer: JsonlTracer) -> None:
         status = client.health()
     assert status["available"] is True
     assert status["models"] == ["qwen3:4b"]
+
+
+def _make_record(n: int = 0) -> TraceRecord:
+    """Return a minimal TraceRecord suitable for rotation tests."""
+    return TraceRecord(
+        call_type="chat",
+        model="qwen3:4b",
+        mode="instruct",
+        prompt_hash=f"deadbeef{n:08x}",
+        latency_ms=1.0,
+        success=True,
+    )
+
+
+def test_rotation_creates_backup_file(tmp_path: Path) -> None:
+    """Writing past the size cap rotates active file to .1 and starts fresh.
+
+    Strategy: ``max_mb=0.0001`` sets the cap to ~100 bytes.  A single
+    TraceRecord JSON line is ~250 bytes, so the second write to an already-
+    populated file always exceeds the cap and triggers rotation.
+    """
+    trace_file = tmp_path / "trace.jsonl"
+    # ~100-byte cap → any second write to a non-empty file triggers rotation.
+    tracer = JsonlTracer(trace_file, max_mb=0.0001)
+
+    rec1 = _make_record(1)
+    rec2 = _make_record(2)
+    rec3 = _make_record(3)
+
+    tracer.record(rec1)  # first write: file doesn't exist yet → no rotation
+    tracer.record(rec2)  # second write: file has content → rotate → .1 created
+    tracer.record(rec3)  # third write: again exceeds cap → .1 → .2, active → .1
+
+    rotated_1 = Path(f"{trace_file}.1")
+    rotated_2 = Path(f"{trace_file}.2")
+
+    # Both backup files must exist.
+    assert rotated_1.exists(), ".1 backup not created after second rotation"
+    assert rotated_2.exists(), ".2 backup not created after third rotation"
+
+    # Active file contains only the most recent record.
+    active_lines = [
+        ln for ln in trace_file.read_text(encoding="utf-8").splitlines() if ln
+    ]
+    assert len(active_lines) == 1
+    active_rec = TraceRecord.model_validate_json(active_lines[0])
+    assert active_rec.prompt_hash == rec3.prompt_hash
+
+    # .1 contains rec2 (the second-most-recent rotation).
+    r1_lines = [
+        ln for ln in rotated_1.read_text(encoding="utf-8").splitlines() if ln
+    ]
+    assert len(r1_lines) == 1
+    assert TraceRecord.model_validate_json(r1_lines[0]).prompt_hash == rec2.prompt_hash
+
+    # .2 contains the original first record.
+    r2_lines = [
+        ln for ln in rotated_2.read_text(encoding="utf-8").splitlines() if ln
+    ]
+    assert len(r2_lines) == 1
+    assert TraceRecord.model_validate_json(r2_lines[0]).prompt_hash == rec1.prompt_hash

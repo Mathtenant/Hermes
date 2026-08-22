@@ -1931,7 +1931,7 @@ failures"), so the suite never reports fully green.
   old retained, most recent line readable).
 
 ## Phase 7 execution checklist
-- [x] F5 first (green CI baseline) · [x] F1 · [ ] F2 · [ ] F3 · [ ] F4
+- [x] F5 first (green CI baseline) · [x] F1 · [ ] F2 · [x] F3 · [ ] F4
 - [ ] Each: `ruff check . && mypy src && pytest -q` green, confidentiality guard covers
       new responses, RLock on new store writes, no cloud calls, co-author commit line.
 - [ ] Update Part 2 (new screen/endpoint), Part 3.3 (F2 fields), Part 6 (F5 rotation)

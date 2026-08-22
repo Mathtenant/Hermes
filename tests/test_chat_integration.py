@@ -429,3 +429,129 @@ def test_h1_user_filesystem_path_in_message_does_not_break_get_session(client):
 
     response = client.get(f"/api/chat/sessions/{session_id}")
     assert response.status_code == 200, response.text
+
+
+# --------------------------------------------------------------------------- #
+# F3 — SSE streaming endpoint integration tests
+# --------------------------------------------------------------------------- #
+
+
+def _parse_sse(body: str) -> tuple[list[str], dict | None, dict | None]:
+    """Parse raw SSE body into (chunks, done_payload, error_payload)."""
+    import json
+
+    chunks: list[str] = []
+    done_payload: dict | None = None
+    error_payload: dict | None = None
+    current_event = "data"
+
+    for line in body.split("\n"):
+        if line.startswith("event:"):
+            current_event = line[6:].strip()
+        elif line.startswith("data:"):
+            raw = line[5:].strip()
+            if current_event == "data":
+                try:
+                    chunks.append(json.loads(raw))
+                except Exception:
+                    pass
+            elif current_event == "done":
+                try:
+                    done_payload = json.loads(raw)
+                except Exception:
+                    pass
+            elif current_event == "error":
+                try:
+                    error_payload = json.loads(raw)
+                except Exception:
+                    pass
+        elif line.strip() == "":
+            current_event = "data"
+
+    return chunks, done_payload, error_payload
+
+
+def test_stream_message_returns_event_stream_content_type(client):
+    """F3: SSE endpoint must return text/event-stream content-type."""
+    response = client.post(
+        "/api/chat/message/stream",
+        json={"message": "Hello", "project_id": "proj1"},
+    )
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+
+
+def test_stream_message_emits_done_event(client):
+    """F3: terminal done event carries message_id and session_id."""
+    response = client.post(
+        "/api/chat/message/stream",
+        json={"message": "Hello", "project_id": "proj1"},
+    )
+    assert response.status_code == 200
+    _, done, _ = _parse_sse(response.text)
+    assert done is not None, "expected event: done in SSE body"
+    assert done.get("message_id"), "done event must carry message_id"
+    assert done.get("session_id"), "done event must carry session_id"
+
+
+def test_stream_message_emits_text_chunks(client):
+    """F3: data events carry text chunks that reassemble to a non-empty reply."""
+    response = client.post(
+        "/api/chat/message/stream",
+        json={"message": "Hello", "project_id": "proj1"},
+    )
+    chunks, _, _ = _parse_sse(response.text)
+    assert chunks, "expected at least one data chunk"
+    assert "".join(chunks).strip()
+
+
+def test_stream_message_done_suggestions_is_list(client):
+    """F3: done event includes suggestions list."""
+    response = client.post(
+        "/api/chat/message/stream",
+        json={"message": "Hello", "project_id": "proj1"},
+    )
+    _, done, _ = _parse_sse(response.text)
+    assert isinstance(done.get("suggestions"), list)
+
+
+def test_stream_message_persists_session(client):
+    """F3: turn is persisted; session readable after stream completes."""
+    response = client.post(
+        "/api/chat/message/stream",
+        json={"message": "Hello", "project_id": "proj1"},
+    )
+    _, done, _ = _parse_sse(response.text)
+    session_id = done["session_id"]
+    session_resp = client.get(f"/api/chat/sessions/{session_id}")
+    assert session_resp.status_code == 200
+    messages = session_resp.json()["messages"]
+    assert len(messages) >= 2
+
+
+def test_stream_message_empty_fails(client):
+    """F3: validation mirrors the non-streaming endpoint."""
+    response = client.post(
+        "/api/chat/message/stream",
+        json={"message": "", "project_id": "proj1"},
+    )
+    assert response.status_code == 422
+
+
+def test_stream_message_missing_project_id_fails(client):
+    """F3: project_id required, same as non-streaming endpoint."""
+    response = client.post(
+        "/api/chat/message/stream", json={"message": "Test"}
+    )
+    assert response.status_code == 422
+
+
+def test_stream_message_nonstreaming_unchanged(client):
+    """F3: the original POST /api/chat/message continues to work unchanged."""
+    response = client.post(
+        "/api/chat/message", json={"message": "Hello", "project_id": "proj1"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "session_id" in data
+    assert data["message"]["role"] == "assistant"

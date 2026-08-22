@@ -167,9 +167,16 @@
     if (!text || !text.trim()) return;
     state.messages.push({ role: "user", content: text });
     state.isLoading = true;
+    // Placeholder assistant bubble updated token-by-token during streaming.
+    var assistantIdx = state.messages.length;
+    state.messages.push({ role: "assistant", content: "" });
     render(root);
 
-    fetch("/api/chat/message", {
+    var accum = "";
+    var sseBuffer = "";
+    var currentEvent = "data";
+
+    fetch("/api/chat/message/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -180,21 +187,54 @@
     })
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
-        return r.json();
-      })
-      .then(function (data) {
-        state.session = data.session_id;
-        state.messages.push({
-          role: "assistant",
-          content: data.message.content,
-          suggestions: data.suggestions || [],
-        });
+        var reader = r.body.getReader();
+        var decoder = new TextDecoder();
+
+        function pump() {
+          return reader.read().then(function (result) {
+            if (result.done) return;
+            sseBuffer += decoder.decode(result.value, { stream: true });
+            var lines = sseBuffer.split("\n");
+            // Keep the last (possibly incomplete) line in the buffer.
+            sseBuffer = lines.pop();
+
+            for (var i = 0; i < lines.length; i++) {
+              var line = lines[i];
+              if (line.indexOf("event:") === 0) {
+                currentEvent = line.slice(6).trim();
+              } else if (line.indexOf("data:") === 0) {
+                var raw = line.slice(5).trim();
+                if (currentEvent === "data") {
+                  try {
+                    var chunk = JSON.parse(raw);
+                    accum += chunk;
+                    // Drop the typing indicator on the first token.
+                    if (state.isLoading) state.isLoading = false;
+                    state.messages[assistantIdx].content = accum;
+                    render(root);
+                  } catch (e) { /* skip malformed chunk */ }
+                } else if (currentEvent === "done") {
+                  try {
+                    var done = JSON.parse(raw);
+                    if (done.session_id) state.session = done.session_id;
+                    state.messages[assistantIdx].suggestions = done.suggestions || [];
+                  } catch (e) { /* ignore */ }
+                } else if (currentEvent === "error") {
+                  state.messages[assistantIdx].content = "Error: Internal error";
+                }
+              } else if (line.trim() === "") {
+                currentEvent = "data"; // Reset event type on blank separator line.
+              }
+            }
+
+            return pump();
+          });
+        }
+
+        return pump();
       })
       .catch(function (err) {
-        state.messages.push({
-          role: "assistant",
-          content: "Error: " + err.message,
-        });
+        state.messages[assistantIdx].content = "Error: " + err.message;
       })
       .then(function () {
         state.isLoading = false;

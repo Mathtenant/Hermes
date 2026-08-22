@@ -28,7 +28,9 @@ class FakeExecutor:
 
 
 class FakeLLMClient:
-    pass
+    def chat_stream(self, model, messages, **kwargs):  # noqa: ANN001
+        yield "Hello"
+        yield " world"
 
 
 def _service(store: ChatStore) -> ChatService:
@@ -489,3 +491,104 @@ def test_service_respects_config_threshold(monkeypatch: pytest.MonkeyPatch) -> N
     turn = service.handle_turn("Create task", "proj1")
     # With threshold 0.95, confidence 0.9 is below threshold → no action persisted.
     assert turn.action is None
+
+
+# --------------------------------------------------------------------------- #
+# F3 — stream_turn: SSE streaming generator
+# --------------------------------------------------------------------------- #
+
+
+def _collect_stream(service: ChatService, message: str, project_id: str, session_id=None):  # noqa: ANN001
+    """Helper: collect stream_turn() items into (chunks, terminal_dict)."""
+    items = list(service.stream_turn(message, project_id, session_id))
+    chunks = [i for i in items if isinstance(i, str)]
+    terminal = next((i for i in items if isinstance(i, dict)), None)
+    return chunks, terminal
+
+
+def test_stream_turn_yields_text_chunks():
+    store = ChatStore(":memory:")
+    chunks, _ = _collect_stream(_service(store), "Hello", "proj1")
+    assert len(chunks) >= 1
+    assembled = "".join(chunks)
+    assert len(assembled) > 0
+
+
+def test_stream_turn_done_event_carries_message_id():
+    store = ChatStore(":memory:")
+    _, terminal = _collect_stream(_service(store), "Hello", "proj1")
+    assert terminal is not None
+    assert terminal.get("done") is True
+    assert terminal.get("message_id")
+    assert terminal.get("session_id")
+
+
+def test_stream_turn_persists_exactly_one_assistant_message():
+    store = ChatStore(":memory:")
+    service = _service(store)
+    chunks, terminal = _collect_stream(service, "Hello", "proj1")
+    messages = store.list_messages(terminal["session_id"])
+    # user + assistant = 2 messages; no partial rows
+    assert len(messages) == 2
+    assert messages[0].role == ChatRole.user
+    assert messages[1].role == ChatRole.assistant
+    assert messages[1].content == "".join(chunks)
+
+
+def test_stream_turn_persists_full_assembled_text():
+    """The persisted content must equal the joined chunks — never partial."""
+    store = ChatStore(":memory:")
+    service = _service(store)
+    chunks, terminal = _collect_stream(service, "Create a task called X", "proj1")
+    messages = store.list_messages(terminal["session_id"])
+    assistant_msgs = [m for m in messages if m.role == ChatRole.assistant]
+    assert len(assistant_msgs) == 1
+    assert assistant_msgs[0].content == "".join(chunks)
+
+
+def test_stream_turn_guard_blocks_pii_response():
+    """F3: confidentiality guard on assembled text yields error sentinel, no persist."""
+    store = ChatStore(":memory:")
+    service = ChatService(
+        store, _HighConfidenceRouter(), _PiiLeakExecutor(), FakeLLMClient()
+    )
+    items = list(service.stream_turn("Show contact info", "proj1"))
+    terminal = next((i for i in items if isinstance(i, dict)), None)
+    assert terminal is not None
+    assert terminal.get("error") is True
+    # No assistant message should be persisted after a guard violation.
+    sessions = store.list_sessions("proj1")
+    messages = store.list_messages(sessions[0].id)
+    assistant_msgs = [m for m in messages if m.role == ChatRole.assistant]
+    assert len(assistant_msgs) == 0
+
+
+def test_stream_turn_reuses_existing_session():
+    store = ChatStore(":memory:")
+    service = _service(store)
+    _, done1 = _collect_stream(service, "First", "proj1")
+    _, done2 = _collect_stream(service, "Second", "proj1", session_id=done1["session_id"])
+    assert done2["session_id"] == done1["session_id"]
+    messages = store.list_messages(done1["session_id"])
+    assert len(messages) == 4  # user+assistant x2
+
+
+def test_stream_turn_degradation_fallback():
+    """F3: when the router fails (degradation), stream still yields chunks and done."""
+
+    class _FailingRouter:
+        def classify(self, message, context):  # noqa: ANN001
+            raise RuntimeError("LLM unavailable")
+
+    store = ChatStore(":memory:")
+    service = ChatService(store, _FailingRouter(), FakeExecutor(), FakeLLMClient())
+    chunks, terminal = _collect_stream(service, "What is the plan?", "proj1")
+    assert chunks  # degradation path still yields text
+    assert terminal is not None
+    assert terminal.get("done") is True
+
+
+def test_stream_turn_suggestions_in_done_event():
+    store = ChatStore(":memory:")
+    _, terminal = _collect_stream(_service(store), "Hello", "proj1")
+    assert isinstance(terminal.get("suggestions"), list)

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import re
+from collections.abc import Iterator
 from typing import Any
 
 from hermes_assistant.config import settings
@@ -346,6 +347,140 @@ class ChatService:
             action=action,
             suggestions=suggestions,
         )
+
+    # ------------------------------------------------------------------ #
+    def stream_turn(
+        self,
+        message: str,
+        project_id: str,
+        session_id: str | None = None,
+    ) -> Iterator[str | dict]:
+        """Stream one chat turn as SSE-ready chunks, persisting once at the end.
+
+        Yields:
+            str — a text chunk to send as a ``data:`` SSE event.
+            dict with ``"done": True`` — terminal success carrying
+                ``message_id``, ``session_id``, and ``suggestions``.
+            dict with ``"error": True`` — confidentiality guard blocked the
+                assembled response; client should discard received chunks.
+
+        The classify/execute/format pipeline runs synchronously (same as
+        :meth:`handle_turn`). Only the formatted answer is yielded word-by-word
+        for perceived responsiveness. The guard runs on the fully assembled text;
+        on violation an error sentinel is yielded and nothing is persisted.
+        """
+        # 1. Load or create session.
+        session = None
+        if session_id:
+            session = self.store.get_session(session_id)
+        if session is None:
+            session = self.store.create_session(project_id)
+
+        # 2. Persist the user message.
+        user_msg = self.store.add_message(
+            session.id,
+            ChatRole.user,
+            message,
+            {"tokens": len(message.split())},
+        )
+
+        # 3. Assemble project context.
+        risks: list[dict[str, Any]] = []
+        open_task_count = 0
+        if self.risk_registry is not None:
+            try:
+                risks = [r.model_dump(mode="json") for r in self.risk_registry.export_public()]
+            except Exception:  # noqa: BLE001
+                risks = []
+        if self.task_store is not None:
+            try:
+                open_task_count = self.task_store.count_open()
+            except Exception:  # noqa: BLE001
+                open_task_count = 0
+
+        context = ChatContext(
+            project_id=project_id,
+            risks=risks,
+            open_task_count=open_task_count,
+        )
+
+        # 4. Classify intent (degrade gracefully on any router failure).
+        classification = self._classify(message, context)
+
+        # 5. Execute the action or handle conversational intent.
+        high_confidence = classification.confidence >= settings.chat_confidence_threshold
+        conversational = classification.intent in ResponseFormatter._CONVERSATIONAL
+        if conversational:
+            result: dict[str, Any] = {"action": "conversational"}
+            response_text = ResponseFormatter.format_result(
+                result, classification.intent, message
+            )
+        elif high_confidence:
+            result = self.executor.execute(
+                classification.intent, classification.params, context
+            )
+            response_text = ResponseFormatter.format_result(
+                result, classification.intent, message
+            )
+        else:
+            result = {"action": "conversational"}
+            response_text = ResponseFormatter.format_result(result, "unknown", message)
+
+        # 6. Yield text word-by-word for perceived responsiveness, buffering
+        #    the assembled text for the guard check.
+        words = response_text.split()
+        assembled_parts: list[str] = []
+        for i, word in enumerate(words):
+            chunk = word if i == 0 else " " + word
+            assembled_parts.append(chunk)
+            yield chunk
+
+        assembled = "".join(assembled_parts)
+
+        # 7. Confidentiality guard on fully assembled response.
+        from hermes_assistant.webapp.server import _validate_safe_json  # noqa: PLC0415
+
+        violations = _validate_safe_json(_json.dumps({"content": assembled}))
+        if violations:
+            logger.warning(
+                "Confidentiality guard blocked streaming response for session %s: %s",
+                session.id,
+                "; ".join(violations),
+            )
+            yield {"error": True, "message": "Internal error"}
+            return
+
+        # 8. Persist the assistant message once (never partial content).
+        assistant_msg = self.store.add_message(
+            session.id,
+            ChatRole.assistant,
+            assembled,
+            {
+                "intent": classification.intent,
+                "confidence": classification.confidence,
+            },
+        )
+
+        # 9. Persist the action (skip conversational intents).
+        if not conversational and high_confidence:
+            self.store.add_action(
+                session.id,
+                user_msg.id,
+                classification.intent,
+                classification.params,
+                result,
+            )
+
+        # 10. Touch session and compute suggestions.
+        self.store.touch_session(session.id)
+        suggestions = self._build_suggestions(context, classification)
+
+        yield {
+            "done": True,
+            "message_id": assistant_msg.id,
+            "session_id": session.id,
+            "suggestions": suggestions,
+        }
 
     # ------------------------------------------------------------------ #
     def _classify(self, message: str, context: ChatContext) -> IntentClassification:

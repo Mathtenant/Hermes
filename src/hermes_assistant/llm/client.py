@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Iterator
 from typing import Any, TypeVar
 from urllib.parse import urlparse
 
@@ -256,6 +257,86 @@ class OllamaClient:
         )
         content: str = data["message"]["content"]
         return content
+
+    def chat_stream(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        *,
+        num_ctx: int = 8192,
+        temperature: float = 0.2,
+        num_gpu: int | None = None,
+    ) -> Iterator[str]:
+        """Stream chat completion token by token via Ollama's NDJSON stream.
+
+        Uses ``stream=True`` in the Ollama API. Yields each non-empty content
+        fragment as it arrives. A single trace record is emitted after the
+        stream ends. The existing blocking :meth:`chat` method is unchanged.
+
+        Args:
+            model: Model ID (e.g. 'qwen3:4b').
+            messages: List of {role, content} dicts.
+            num_ctx: Context window size.
+            temperature: Sampling temperature.
+            num_gpu: GPU layers to offload (0=CPU-only, 1+=GPU). ``None``
+                uses Ollama's default.
+
+        Yields:
+            Text fragments as they arrive from Ollama.
+
+        Raises:
+            OllamaConnectionError: If Ollama is not reachable.
+            OllamaResponseError: If Ollama returns a non-2xx status.
+            OllamaTimeoutError: If the request times out.
+        """
+        options: dict[str, Any] = {
+            "num_ctx": num_ctx,
+            "temperature": temperature,
+            "num_thread": self.num_thread,
+        }
+        if num_gpu is not None:
+            options["num_gpu"] = num_gpu
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "options": options,
+        }
+        url = f"{self.host}/api/chat"
+        prompt_hash = hash_prompt(messages)
+        start = time.perf_counter()
+        try:
+            response = requests.post(url, json=payload, timeout=300, stream=True)
+            response.raise_for_status()
+        except requests.exceptions.ConnectTimeout as exc:
+            raise OllamaTimeoutError(f"Timed out connecting to {url}") from exc
+        except requests.exceptions.ReadTimeout as exc:
+            raise OllamaTimeoutError(f"Timed out reading from {url}") from exc
+        except requests.exceptions.Timeout as exc:
+            raise OllamaTimeoutError(f"Request to {url} timed out") from exc
+        except requests.exceptions.ConnectionError as exc:
+            raise OllamaConnectionError(f"Cannot reach Ollama at {url}") from exc
+        except requests.exceptions.HTTPError as exc:
+            raise OllamaResponseError(f"Ollama returned an error: {exc}") from exc
+        try:
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                data: dict[str, Any] = json.loads(line)
+                chunk: str = data.get("message", {}).get("content", "")
+                if chunk:
+                    yield chunk
+                if data.get("done"):
+                    break
+        finally:
+            latency_ms = (time.perf_counter() - start) * 1000
+            self._trace(
+                call_type="chat_stream",
+                model=model,
+                mode="stream",
+                prompt_hash=prompt_hash,
+                latency_ms=latency_ms,
+            )
 
     def structured(
         self,

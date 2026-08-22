@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import functools
 import json as _json
+import logging as _logging
+from collections.abc import Iterator
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -30,9 +33,6 @@ from hermes_assistant.llm.client import OllamaClient
 from hermes_assistant.plans.editor import PlanEditor
 from hermes_assistant.risks.registry import RiskRegistry
 from hermes_assistant.tasks.store import TaskStore
-
-
-import logging as _logging
 
 _log = _logging.getLogger(__name__)
 
@@ -157,6 +157,45 @@ async def send_message(req: ChatMessageRequest) -> dict:
         action=turn.action.model_dump() if turn.action else None,
         suggestions=turn.suggestions,
     ).model_dump()
+
+
+@router.post("/message/stream")
+async def stream_message(req: ChatMessageRequest) -> StreamingResponse:
+    """Stream an assistant reply token-by-token via Server-Sent Events.
+
+    Emits ``data:`` chunks as the answer is produced, then a terminal
+    ``event: done`` with the persisted ``message_id``, ``session_id``, and
+    ``suggestions``. A confidentiality guard violation ends the stream with
+    ``event: error`` (generic message only — no leaked detail).
+
+    The non-streaming ``POST /api/chat/message`` is unchanged (back-compat).
+    """
+    message = (req.message or "").strip()
+    if not message or len(req.message) > MAX_MESSAGE_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Message must be 1-{MAX_MESSAGE_CHARS} chars",
+        )
+    if not req.project_id:
+        raise HTTPException(status_code=422, detail="project_id required")
+
+    service = get_chat_service()
+
+    def generate() -> Iterator[str]:
+        for item in service.stream_turn(req.message, req.project_id, req.session_id):
+            if isinstance(item, str):
+                yield f"data: {_json.dumps(item)}\n\n"
+            elif isinstance(item, dict) and item.get("done"):
+                done_payload = {
+                    "message_id": item["message_id"],
+                    "session_id": item.get("session_id", ""),
+                    "suggestions": item.get("suggestions", []),
+                }
+                yield f"event: done\ndata: {_json.dumps(done_payload)}\n\n"
+            elif isinstance(item, dict) and item.get("error"):
+                yield f"event: error\ndata: {_json.dumps({'detail': 'Internal error'})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.get("/sessions")

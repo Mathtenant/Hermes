@@ -1,5 +1,12 @@
-/* HERMES Dashboard — Shared sub-components (loaded before screens.js) */
+/* HERMES Dashboard — Shared sub-components (loaded before screens.js).
+ *
+ * Each dashboard script runs in an IIFE and publishes its components on
+ * `window`. Classic <script> tags share one global lexical scope, so
+ * top-level `const { ref } = Vue` in more than one file would throw
+ * "Identifier 'ref' has already been declared" and abort the whole app.
+ */
 /* global Vue */
+(function (global) {
 'use strict';
 
 const { ref } = Vue;
@@ -21,9 +28,9 @@ const WbsNodeItem = {
           :aria-label="isExpanded(node.id) ? 'Collapse' : 'Expand'"
         >{{ isExpanded(node.id) ? '▾' : '▸' }}</button>
         <span v-else style="width:20px;display:inline-block"></span>
-        <span class="text-xs" :title="node.status">{{ statusIcon(node.status) }}</span>
+        <span class="wbs-status" :class="node.status" :title="node.status">{{ statusIcon(node.status) }}</span>
         <span class="wbs-num">{{ node.wbs_number }}</span>
-        <span class="flex-1 text-sm">{{ node.title }}</span>
+        <span class="flex-1 truncate" :title="node.title">{{ node.title }}</span>
         <span class="text-gray-400 text-xs shrink-0">{{ node.kind }}</span>
         <span v-if="node.owner" class="text-gray-400 text-xs ml-2 shrink-0">{{ node.owner }}</span>
       </div>
@@ -79,15 +86,15 @@ const WbsTab = {
   },
   template: `
     <div>
-      <div class="flex gap-2 mb-3">
-        <button class="text-xs text-blue-500 hover:underline" @click="setAll(true)">Expand all</button>
+      <div class="filter-bar">
+        <button class="btn-link" @click="setAll(true)">Expand all</button>
         <span class="text-gray-300">/</span>
-        <button class="text-xs text-blue-500 hover:underline" @click="setAll(false)">Collapse all</button>
+        <button class="btn-link" @click="setAll(false)">Collapse all</button>
+        <span class="result-count">{{ nodes?.length ?? 0 }} root nodes</span>
       </div>
-      <div v-if="!nodes?.length" class="text-gray-400 py-4">
-        No tasks. Use
-        <code class="bg-gray-100 dark:bg-gray-700 px-1 rounded">hermes task-add</code>
-        to create tasks.
+      <div v-if="!nodes?.length" class="empty-state">
+        <div class="empty-state-title">No tasks</div>
+        <p class="text-sm">Use <code>hermes task-add</code> to create tasks.</p>
       </div>
       <div class="wbs-tree" v-else>
         <wbs-node-item
@@ -102,3 +109,7 @@ const WbsTab = {
     </div>
   `,
 };
+
+global.WbsNodeItem = WbsNodeItem;
+global.WbsTab = WbsTab;
+}(window));

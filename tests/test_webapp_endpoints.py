@@ -1,12 +1,14 @@
 """Tests for Phase 4 FastAPI webapp endpoints (Phase 4.7)."""
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from hermes_assistant import __version__
 from hermes_assistant.dashboard_html import DashboardData, RiskRow, load_dashboard_data
 from hermes_assistant.jobqueue.jobs import JobStore
 from hermes_assistant.risks.registry import RiskRegistry
@@ -100,6 +102,27 @@ def test_health_has_timestamp() -> None:
     r = client.get("/api/health")
     ts = r.json().get("timestamp", "")
     assert "T" in ts and "Z" in ts
+
+
+def test_health_reports_version() -> None:
+    """/api/health carries the running version — the dashboard renders it."""
+    r = client.get("/api/health")
+    assert r.json()["version"] == __version__
+
+
+def test_version_matches_pyproject() -> None:
+    """``__version__`` is the single source of truth the UI displays.
+
+    pyproject.toml carries its own copy for packaging; this guards against the
+    two drifting so the dashboard can never show a stale version.
+    """
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject.open("rb") as fh:
+        declared = tomllib.load(fh)["project"]["version"]
+    assert declared == __version__, (
+        f"pyproject.toml version {declared!r} != "
+        f"hermes_assistant.__version__ {__version__!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

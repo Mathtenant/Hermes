@@ -1,362 +1,60 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="HERMES Local Assistant — Project Dashboard">
   <title>HERMES Dashboard</title>
+
+  <link rel="stylesheet" href="/static/style.css">
+
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { 
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0f172a;
-      color: #e2e8f0;
-      line-height: 1.5;
-    }
-    @media (prefers-color-scheme: light) {
-      body { background: #f8fafc; color: #1e293b; }
-    }
-    #app { min-height: 100vh; }
-    .loading {
+    /* Shown until Vue mounts over #app. */
+    .boot {
       display: flex;
       align-items: center;
       justify-content: center;
+      gap: 0.625rem;
       height: 100vh;
-      font-size: 18px;
-      color: #94a3b8;
+      color: var(--c-text-muted);
+      font-size: 0.875rem;
     }
   </style>
+
+  <script>
+    // Apply the stored theme before first paint so the page never flashes
+    // the wrong background. app.js re-applies it on mount.
+    (function () {
+      try {
+        var stored = localStorage.getItem('hermes-theme');
+        if (!stored) {
+          stored = window.matchMedia
+            && window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', stored);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    })();
+  </script>
 </head>
 <body>
   <div id="app">
-    <div class="loading">Loading HERMES Dashboard&hellip;</div>
+    <div class="boot"><span class="spinner"></span> Loading HERMES Dashboard&hellip;</div>
   </div>
-  
-  <!-- Vue 3 (Global Build - No Build Step Required) -->
-  <script>
-    // Inline Vue 3 minimal build for local development
-    // Using simple data binding without full reactive system for performance
-    window.Vue = {
-      createApp(config) {
-        return {
-          mount(selector) {
-            const el = document.querySelector(selector);
-            config.setup?.();
-            if (config.template) {
-              el.innerHTML = config.template;
-            }
-            return this;
-          }
-        };
-      }
-    };
-  </script>
 
-  <!-- Tailwind CSS Inline (Essential Classes) -->
-  <style>
-    /* Core Tailwind Classes for Dashboard */
-    .container { max-width: 1280px; margin: 0 auto; padding: 0 1rem; }
-    .grid { display: grid; }
-    .grid-cols-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
-    .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .gap-4 { gap: 1rem; }
-    .p-4 { padding: 1rem; }
-    .p-6 { padding: 1.5rem; }
-    .rounded { border-radius: 0.375rem; }
-    .border { border: 1px solid #334155; }
-    .bg-slate-900 { background: #0f172a; }
-    .bg-slate-800 { background: #1e293b; }
-    .text-white { color: white; }
-    .text-sm { font-size: 0.875rem; }
-    .text-lg { font-size: 1.125rem; }
-    .font-bold { font-weight: 700; }
-    .flex { display: flex; }
-    .flex-col { flex-direction: column; }
-    .items-center { align-items: center; }
-    .justify-center { justify-content: center; }
-    .space-y-2 > * + * { margin-top: 0.5rem; }
-    .space-y-4 > * + * { margin-top: 1rem; }
-    .hover\:bg-slate-700:hover { background: #334155; }
-    .cursor-pointer { cursor: pointer; }
-    .transition { transition: all 150ms ease-in-out; }
-    .min-h-screen { min-height: 100vh; }
-    .max-w-7xl { max-width: 80rem; }
-  </style>
-
-  <!-- HERMES Custom Styles -->
-  <link rel="stylesheet" href="/static/style.css">
-
-  <!-- Chat assistant widget (Phase 5) -->
+  <!-- Chat assistant widget (Phase 5) — framework-free, mounts itself. -->
   <div id="chat-app"></div>
+
+  <!-- Vue 3 (full build: includes the runtime template compiler the screen
+       components need). Vendored locally so the dashboard runs offline. -->
+  <script src="/static/vendor/vue.global.prod.js"></script>
+
+  <!-- Load order matters: components.js → screens.js → app.js (which mounts). -->
+  <script src="/static/components.js"></script>
+  <script src="/static/screens.js"></script>
+  <script src="/static/app.js"></script>
   <script src="/static/chat.js"></script>
-
-  <!-- Import Modal & Dashboard Scripts -->
-  <script>
-    let showImportModal = false;
-    let importProgress = { current: 0, total: 0, errors: [] };
-    // Two-step import (Q3): step 1 delivers the Copilot prompt, step 2 imports JSON.
-    let importStep = 1;
-    let copilotPrompt = "";
-
-    async function loadCopilotPrompt() {
-      try {
-        const response = await fetch('/static/prompts/copilot_state_export.txt');
-        if (response.ok) {
-          copilotPrompt = await response.text();
-        }
-      } catch (e) {
-        console.warn('Could not load Copilot prompt', e);
-      }
-    }
-
-    function escapeHtml(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-    }
-
-    function showImportToast(msg) {
-      if (!document.getElementById('import-toast')) {
-        const toast = document.createElement('div');
-        toast.id = 'import-toast';
-        toast.style.cssText = 'position:fixed; bottom:1rem; left:50%; transform:translateX(-50%); background:#334155; color:#e2e8f0; padding:0.75rem 1.5rem; border-radius:0.375rem; z-index:1100; font-size:0.875rem;';
-        document.body.appendChild(toast);
-      }
-      const toast = document.getElementById('import-toast');
-      toast.textContent = msg;
-      toast.style.display = 'block';
-      setTimeout(() => { toast.style.display = 'none'; }, 3000);
-    }
-
-    async function copyPromptToClipboard() {
-      try {
-        await navigator.clipboard.writeText(copilotPrompt);
-        showImportToast('Copied! Paste into Copilot');
-      } catch (e) {
-        console.error('Copy failed:', e);
-        showImportToast('Copy failed — select and copy manually');
-      }
-    }
-
-    function openImportModal() {
-      showImportModal = true;
-      importStep = 1;
-      renderModal();
-    }
-
-    async function loadDashboard() {
-      try {
-        const response = await fetch('/api/dashboard');
-        return await response.json();
-      } catch (error) {
-        console.error('Failed to load dashboard:', error);
-        return null;
-      }
-    }
-
-    function validateImportJson() {
-      const textarea = document.getElementById('raw-json-input');
-      const errorDiv = document.getElementById('import-error');
-      if (!textarea || !errorDiv) return;
-      const value = textarea.value.trim();
-      if (value === '') {
-        errorDiv.style.display = 'none';
-        errorDiv.innerHTML = '';
-        return;
-      }
-      try {
-        JSON.parse(value);
-        errorDiv.style.display = 'none';
-        errorDiv.innerHTML = '';
-      } catch (err) {
-        errorDiv.style.display = 'block';
-        errorDiv.innerHTML = '<strong>[Error]</strong> Invalid JSON: ' + escapeHtml(err.message);
-      }
-    }
-
-    async function handleJsonImport(e) {
-      e.preventDefault();
-      const textarea = document.getElementById('raw-json-input');
-      const fileInput = document.getElementById('json-file-input');
-      const resultDiv = document.getElementById('import-result');
-      const errorDiv = document.getElementById('import-error');
-      const progressDiv = document.getElementById('import-progress');
-
-      resultDiv.style.display = 'none';
-      errorDiv.style.display = 'none';
-      progressDiv.style.display = 'block';
-
-      try {
-        let payload;
-        if (fileInput.files.length > 0) {
-          const file = fileInput.files[0];
-          const text = await file.text();
-          payload = JSON.parse(text);
-        } else if (textarea.value) {
-          payload = JSON.parse(textarea.value);
-        } else {
-          throw new Error('No JSON provided');
-        }
-
-        progressDiv.innerHTML = 'Importing...';
-
-        const response = await fetch('/api/import/json', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.detail || `HTTP ${response.status}`);
-        }
-
-        const result = await response.json();
-        progressDiv.style.display = 'none';
-        resultDiv.style.display = 'block';
-        resultDiv.innerHTML = `
-          <div style="background: #10b981; color: white; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;">
-            <strong>[OK] Successfully imported</strong>
-            <br>Created: ${result.created} | Updated: ${result.updated} | Skipped: ${result.skipped}
-          </div>
-          ${result.errors.length > 0 ? `
-            <div style="background: #f59e0b; color: white; padding: 1rem; border-radius: 0.5rem;">
-              <strong>[Warning] Errors:</strong>
-              <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
-                ${result.errors.map(e => `<li>${escapeHtml(e)}</li>`).join('')}
-              </ul>
-            </div>
-          ` : ''}
-        `;
-
-        // Reload dashboard after import
-        setTimeout(() => {
-          location.reload();
-        }, 2000);
-      } catch (error) {
-        progressDiv.style.display = 'none';
-        errorDiv.style.display = 'block';
-        errorDiv.innerHTML = `<strong>[Error]</strong> ${escapeHtml(error.message)}`;
-      }
-    }
-
-    window.addEventListener('DOMContentLoaded', async () => {
-      // Preload the Copilot prompt so step 1 of the import dialog is ready.
-      loadCopilotPrompt();
-      try {
-        const data = await loadDashboard();
-        if (!data) throw new Error('No data');
-
-        const app = document.getElementById('app');
-        if (!app.querySelector('[data-app-initialized]')) {
-          app.innerHTML = `
-            <div style="padding: 2rem; background: #1e293b; min-height: 100vh;">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
-                <h1 style="font-size: 2rem; font-weight: bold; color: #e2e8f0;">HERMES Dashboard</h1>
-                <button onclick="openImportModal()" style="background: #3b82f6; color: white; padding: 0.5rem 1rem; border-radius: 0.375rem; border: none; cursor: pointer; font-weight: 600;">
-                  Import JSON
-                </button>
-              </div>
-              <div style="background: #0f172a; padding: 2rem; border-radius: 0.5rem; border: 1px solid #334155;">
-                <h2 style="color: #94a3b8; margin-bottom: 1rem;">Projects: <span data-testid="projects-count">${data.projects?.length || 0}</span></h2>
-                <h2 style="color: #94a3b8; margin-bottom: 1rem;">Timeline Items: <span data-testid="timeline-count">${data.timeline?.length || 0}</span></h2>
-                <h2 style="color: #94a3b8; margin-bottom: 1rem;">Risks: <span data-testid="risks-count">${data.risks?.length || 0}</span></h2>
-                <h2 style="color: #94a3b8; margin-bottom: 1rem;">Pendenzen: <span data-testid="pendenzen-count">${data.pendenzen?.length || 0}</span></h2>
-                <h2 style="color: #94a3b8;">Reviews: <span data-testid="reviews-count">${data.reviews?.length || 0}</span></h2>
-                <p style="margin-top: 2rem; color: #64748b; font-size: 0.875rem;">
-                  Dashboard is running. Click "Import JSON" to add data.
-                </p>
-              </div>
-            </div>
-            <div id="modal-container"></div>
-          `;
-          renderModal();
-        }
-      } catch (error) {
-        console.error('Failed to load dashboard:', error);
-        document.getElementById('app').innerHTML = `
-          <div style="padding: 2rem;">
-            <h1 style="color: #ef4444;">Error loading dashboard</h1>
-            <p style="color: #94a3b8; margin-top: 1rem;">Check server is running: http://localhost:8000/api/health</p>
-          </div>
-        `;
-      }
-    });
-
-    function renderModal() {
-      const container = document.getElementById('modal-container');
-      if (!showImportModal) {
-        container.innerHTML = '';
-        return;
-      }
-
-      if (importStep === 1) {
-        // Step 1: deliver the ready-to-copy Copilot prompt.
-        container.innerHTML = `
-          <div data-testid="json-import-modal" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
-            <div style="background: #1e293b; padding: 2rem; border-radius: 0.5rem; max-width: 700px; width: 90%; max-height: 85vh; overflow-y: auto;">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                <h2 style="color: #e2e8f0; font-size: 1.5rem;">Step 1 of 2 — Get Copilot Prompt</h2>
-                <button onclick="showImportModal=false;renderModal()" style="background: none; border: none; color: #94a3b8; font-size: 1.5rem; cursor: pointer;">×</button>
-              </div>
-              <p style="color: #94a3b8; margin-bottom: 1rem;">
-                Copy the prompt below and paste it into <strong style="color:#e2e8f0;">M365 Copilot</strong>.
-                Copilot will generate a JSON export of your project. Come back here with the result for Step 2.
-              </p>
-              <pre data-testid="copilot-prompt-text" style="background: #0f172a; padding: 1rem; border-radius: 0.375rem; border: 1px solid #334155; font-family: monospace; font-size: 0.8125rem; max-height: 280px; overflow-y: auto; white-space: pre-wrap; color: #e2e8f0; margin-bottom: 1rem;">${escapeHtml(copilotPrompt || 'Loading prompt…')}</pre>
-              <p style="color: #64748b; font-size: 0.875rem; margin-bottom: 1.5rem;">
-                How to use: 1) Copy prompt below &rarr; 2) Open M365 Copilot &rarr; 3) Paste &amp; send &rarr;
-                4) Save Copilot's JSON response &rarr; 5) Return here and click "Next".
-              </p>
-              <div style="display: flex; align-items: center; gap: 1rem;">
-                <button onclick="copyPromptToClipboard()" data-testid="copy-prompt-btn" title="Copy the prompt to paste into Copilot to export your project" style="background:#334155; color:#e2e8f0; padding:0.5rem 0.75rem; font-size:0.8125rem; border:1px solid #475569; border-radius:0.375rem; cursor:pointer; margin-right:auto;">
-                  Copy Copilot Prompt
-                </button>
-                <button onclick="importStep=2;renderModal()" data-testid="import-next-btn" style="flex: 1; background: #3b82f6; color: white; padding: 0.75rem; border: none; border-radius: 0.375rem; cursor: pointer; font-weight: 600;">
-                  Next: Import JSON &rarr;
-                </button>
-                <button onclick="showImportModal=false;renderModal()" style="flex: 1; background: #64748b; color: white; padding: 0.75rem; border: none; border-radius: 0.375rem; cursor: pointer; font-weight: 600;">Cancel</button>
-              </div>
-            </div>
-          </div>
-        `;
-        return;
-      }
-
-      // Step 2: accept the JSON obtained from Copilot.
-      container.innerHTML = `
-        <div data-testid="json-import-modal" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
-          <div style="background: #1e293b; padding: 2rem; border-radius: 0.5rem; max-width: 600px; width: 90%; max-height: 85vh; overflow-y: auto;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-              <h2 style="color: #e2e8f0; font-size: 1.5rem;">Step 2 of 2 — Import JSON</h2>
-              <button onclick="showImportModal=false;renderModal()" style="background: none; border: none; color: #94a3b8; font-size: 1.5rem; cursor: pointer;">×</button>
-            </div>
-            <form onsubmit="handleJsonImport(event)">
-              <div style="margin-bottom: 1.5rem;">
-                <label style="display: block; color: #94a3b8; margin-bottom: 0.5rem; font-weight: 600;">File Upload</label>
-                <input type="file" id="json-file-input" accept=".json" data-testid="json-file-input" style="display: block; width: 100%; padding: 0.5rem; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 0.375rem;">
-              </div>
-              <div style="margin-bottom: 1.5rem; text-align: center; color: #64748b;">— or —</div>
-              <div style="margin-bottom: 1.5rem;">
-                <label style="display: block; color: #94a3b8; margin-bottom: 0.5rem; font-weight: 600;">Raw JSON</label>
-                <textarea id="raw-json-input" data-testid="raw-json-input" placeholder='{"risks": [{"title": "My Risk", "severity": "high"}]}' style="width: 100%; height: 200px; padding: 0.75rem; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 0.375rem; font-family: monospace; font-size: 0.875rem;" oninput="validateImportJson()"></textarea>
-              </div>
-              <div id="import-error" role="alert" aria-live="assertive" style="display: none; background: #ef4444; color: white; padding: 1rem; border-radius: 0.375rem; margin-bottom: 1rem;" data-testid="import-error"></div>
-              <div id="import-progress" style="display: none; background: #3b82f6; color: white; padding: 1rem; border-radius: 0.375rem; margin-bottom: 1rem; text-align: center;" data-testid="import-progress">Importing...</div>
-              <div id="import-result" role="status" aria-live="polite" style="display: none; margin-bottom: 1rem;" data-testid="import-result"></div>
-              <div style="display: flex; gap: 1rem;">
-                <button type="submit" data-testid="import-submit-btn" style="flex: 1; background: #10b981; color: white; padding: 0.75rem; border: none; border-radius: 0.375rem; cursor: pointer; font-weight: 600;">Import</button>
-                <button type="button" onclick="document.getElementById('raw-json-input').value=''; document.getElementById('json-file-input').value='';" data-testid="clear-form-btn" style="flex: 1; background: #6b7280; color: white; padding: 0.75rem; border: none; border-radius: 0.375rem; cursor: pointer; font-weight: 600;">Clear</button>
-                <button type="button" onclick="importStep=1;renderModal()" data-testid="import-back-btn" style="flex: 1; background: #6b7280; color: white; padding: 0.75rem; border: none; border-radius: 0.375rem; cursor: pointer; font-weight: 600;">&larr; Back</button>
-                <button type="button" onclick="showImportModal=false;renderModal()" style="flex: 1; background: #64748b; color: white; padding: 0.75rem; border: none; border-radius: 0.375rem; cursor: pointer; font-weight: 600;">Cancel</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      `;
-    }
-  </script>
 </body>
 </html>

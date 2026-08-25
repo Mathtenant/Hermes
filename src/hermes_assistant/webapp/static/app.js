@@ -1,14 +1,23 @@
-/* HERMES Dashboard — Main application (Vue 3, requires screens.js loaded first) */
-/* global Vue, ProjectListScreen, ProjectDetailScreen, PendenzenScreen, ReviewsScreen, RisksScreen, WbsNodeItem, WbsTab */
+/* HERMES Dashboard — Main application.
+ *
+ * Requires (in load order): vendor/vue.global.prod.js, components.js, screens.js
+ */
+/* global Vue, OverviewScreen, ProjectListScreen, ProjectDetailScreen,
+          PendenzenScreen, ReviewsScreen, RisksScreen,
+          WbsNodeItem, WbsTab, TimelineTab, KanbanTab */
+(function () {
 'use strict';
 
 const {
-  createApp, ref, reactive, onMounted, onUnmounted, watch,
+  createApp, ref, reactive, computed, onMounted, onUnmounted, watch, nextTick,
 } = Vue;
+
+// Screens that can be reached from the sidebar / hash router.
+const SCREENS = ['overview', 'projects', 'detail', 'pendenzen', 'risks', 'reviews'];
 
 // ── Global reactive state ──────────────────────────────────────────────────
 const state = reactive({
-  screen: 'projects',  // 'projects' | 'detail' | 'pendenzen' | 'reviews'
+  screen: 'overview',  // one of SCREENS
   projectId: null,     // currently selected project ID
   data: null,          // DashboardData from API
   loading: false,
@@ -19,11 +28,23 @@ const state = reactive({
 });
 
 // ── Theme ──────────────────────────────────────────────────────────────────
-const theme = ref(localStorage.getItem('hermes-theme') || 'light');
+function preferredTheme() {
+  const stored = localStorage.getItem('hermes-theme');
+  if (stored === 'dark' || stored === 'light') return stored;
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light';
+}
+
+const theme = ref(preferredTheme());
 
 function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
-  localStorage.setItem('hermes-theme', t);
+  try {
+    localStorage.setItem('hermes-theme', t);
+  } catch {
+    /* storage unavailable (private mode) — theme still applies for this session */
+  }
 }
 
 function toggleTheme() {
@@ -32,27 +53,32 @@ function toggleTheme() {
 }
 
 // ── Toast notifications ────────────────────────────────────────────────────
-const toast = ref(null);
+const toast = reactive({ message: null, isError: false });
 let _toastTimer = null;
 
-function showToast(msg) {
-  toast.value = msg;
+function showToast(msg, isError = false) {
+  toast.message = msg;
+  toast.isError = isError;
   if (_toastTimer) clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => { toast.value = null; }, 4000);
+  _toastTimer = setTimeout(() => { toast.message = null; }, 4000);
 }
 
 // ── API fetch ──────────────────────────────────────────────────────────────
+async function loadDashboard(projectId) {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+  const resp = await fetch(`/api/dashboard${qs}`);
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.detail || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
 async function fetchData(projectId) {
   state.loading = true;
   state.error = null;
   try {
-    const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
-    const resp = await fetch(`/api/dashboard${qs}`);
-    if (!resp.ok) {
-      const body = await resp.json().catch(() => ({}));
-      throw new Error(body.detail || `HTTP ${resp.status}`);
-    }
-    state.data = await resp.json();
+    state.data = await loadDashboard(projectId);
     state.lastRefresh = new Date().toLocaleTimeString();
   } catch (e) {
     state.error = String(e.message || e);
@@ -65,33 +91,63 @@ async function refresh() {
   await fetchData(state.projectId);
 }
 
-// ── Navigation ─────────────────────────────────────────────────────────────
-function goTo(screen) {
-  state.screen = screen;
-  if (screen === 'projects') {
-    state.projectId = null;
-    fetchData(null);
+// ── Navigation (hash-routed so screens are linkable and survive reload) ────
+function syncHash() {
+  const hash = state.projectId && state.screen === 'detail'
+    ? `#/detail/${encodeURIComponent(state.projectId)}`
+    : `#/${state.screen}`;
+  if (window.location.hash !== hash) {
+    // replaceState avoids polluting history with every sidebar click
+    window.history.replaceState(null, '', hash);
   }
+}
+
+function goTo(screen) {
+  if (!SCREENS.includes(screen)) return;
+  // "Project detail" without a selection means the all-projects rollup.
+  state.screen = screen;
+  if (screen === 'projects' || screen === 'overview') {
+    if (state.projectId !== null) {
+      state.projectId = null;
+      fetchData(null);
+    }
+  }
+  syncHash();
 }
 
 function selectProject(projectId) {
   state.projectId = projectId;
   state.screen = 'detail';
+  syncHash();
   fetchData(projectId);
 }
 
-// ── Live polling (5 s, silent — only updates if generated_at changed) ──────
+function clearProject() {
+  state.projectId = null;
+  state.screen = 'projects';
+  syncHash();
+  fetchData(null);
+}
+
+function applyHash() {
+  const raw = window.location.hash.replace(/^#\/?/, '');
+  if (!raw) return false;
+  const [screen, encodedId] = raw.split('/');
+  if (!SCREENS.includes(screen)) return false;
+  state.screen = screen;
+  state.projectId = encodedId ? decodeURIComponent(encodedId) : null;
+  return true;
+}
+
+// ── Live polling (5 s, silent — only swaps data if generated_at changed) ───
 let _pollTimer = null;
 
 function startPolling() {
-  if (_pollTimer) clearInterval(_pollTimer);
+  stopPolling();
   _pollTimer = setInterval(async () => {
-    if (state.loading) return;
+    if (state.loading || document.hidden) return;
     try {
-      const qs = state.projectId ? `?project_id=${encodeURIComponent(state.projectId)}` : '';
-      const resp = await fetch(`/api/dashboard${qs}`);
-      if (!resp.ok) return;
-      const fresh = await resp.json();
+      const fresh = await loadDashboard(state.projectId);
       if (fresh.generated_at !== state.data?.generated_at) {
         state.data = fresh;
         state.lastRefresh = new Date().toLocaleTimeString();
@@ -106,7 +162,10 @@ function stopPolling() {
   if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
 }
 
-// ── JSON Import ────────────────────────────────────────────────────────────
+// ── JSON Import wizard ─────────────────────────────────────────────────────
+// Step 1 hands the user a ready-to-paste M365 Copilot prompt; step 2 accepts
+// the JSON Copilot produced.
+const importStep = ref(1);
 const importMode = ref('text');        // 'text' | 'file'
 const importText = ref('');
 const importFilename = ref('');
@@ -115,23 +174,61 @@ const importLoading = ref(false);
 const importResult = ref(null);
 const importError = ref('');
 const importPreview = ref(null);
+const copilotPrompt = ref('');
+const isDragOver = ref(false);
 
-function _computePreview(jsonStr) {
+async function loadCopilotPrompt() {
+  if (copilotPrompt.value) return;
   try {
-    const data = JSON.parse(jsonStr);
-    if (typeof data !== 'object' || Array.isArray(data)) return null;
-    const counts = {};
-    for (const [k, v] of Object.entries(data)) {
-      if (Array.isArray(v)) counts[k] = v.length;
-    }
-    return Object.keys(counts).length > 0 ? counts : null;
+    const resp = await fetch('/static/prompts/copilot_state_export.txt');
+    if (resp.ok) copilotPrompt.value = await resp.text();
+  } catch {
+    /* prompt is a convenience — the paste step works without it */
+  }
+}
+
+function currentJsonString() {
+  return (importMode.value === 'text' ? importText.value : importFileContent.value).trim();
+}
+
+function computePreview(jsonStr) {
+  if (!jsonStr.trim()) return null;
+  let data;
+  try {
+    data = JSON.parse(jsonStr);
   } catch {
     return null;
+  }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return null;
+  const counts = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (Array.isArray(v)) counts[k] = v.length;
+  }
+  return Object.keys(counts).length > 0 ? counts : null;
+}
+
+/** Re-validate whatever is currently staged, updating preview + inline error. */
+function validateStaged() {
+  const raw = currentJsonString();
+  importResult.value = null;
+  if (!raw) {
+    importError.value = '';
+    importPreview.value = null;
+    return;
+  }
+  try {
+    JSON.parse(raw);
+    importError.value = '';
+    importPreview.value = computePreview(raw);
+  } catch (e) {
+    importError.value = `Invalid JSON: ${e.message}`;
+    importPreview.value = null;
   }
 }
 
 function openImport() {
   state.showImport = true;
+  importStep.value = 1;
   importMode.value = 'text';
   importText.value = '';
   importFilename.value = '';
@@ -140,43 +237,70 @@ function openImport() {
   importResult.value = null;
   importError.value = '';
   importPreview.value = null;
+  isDragOver.value = false;
+  loadCopilotPrompt();
 }
 
 function closeImport() {
   state.showImport = false;
 }
 
-function onImportFile(e) {
-  const file = e.target.files && e.target.files[0];
+function clearImportForm() {
+  importText.value = '';
+  importFileContent.value = '';
+  importFilename.value = '';
+  importError.value = '';
+  importPreview.value = null;
+  importResult.value = null;
+}
+
+async function copyPrompt() {
+  try {
+    await navigator.clipboard.writeText(copilotPrompt.value);
+    showToast('Prompt copied — paste it into M365 Copilot');
+  } catch {
+    showToast('Copy failed — select the prompt and copy manually', true);
+  }
+}
+
+function readImportFile(file) {
   if (!file) return;
   importFilename.value = `${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
   const reader = new FileReader();
   reader.onload = (ev) => {
-    importFileContent.value = ev.target.result;
-    importPreview.value = _computePreview(importFileContent.value);
+    importFileContent.value = String(ev.target.result || '');
+    validateStaged();
   };
   reader.readAsText(file);
 }
 
+function onImportFile(e) {
+  readImportFile(e.target.files && e.target.files[0]);
+}
+
+function onDrop(e) {
+  isDragOver.value = false;
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) {
+    importMode.value = 'file';
+    readImportFile(file);
+  }
+}
+
 async function runImport() {
   if (importLoading.value) return;
-  const jsonStr = (importMode.value === 'text'
-    ? importText.value
-    : importFileContent.value
-  ).trim();
+  const jsonStr = currentJsonString();
   if (!jsonStr) {
     importError.value = 'No JSON provided.';
     return;
   }
-  let payload;
   try {
-    payload = JSON.parse(jsonStr);
+    JSON.parse(jsonStr);
   } catch (e) {
     importError.value = `Invalid JSON: ${e.message}`;
     return;
   }
-  // Unused but validates object structure client-side
-  void payload;
+
   importLoading.value = true;
   importError.value = '';
   importResult.value = null;
@@ -194,13 +318,11 @@ async function runImport() {
         : (detail && detail.errors ? detail.errors.join('; ') : `HTTP ${resp.status}`);
     } else {
       importResult.value = data;
-      if (data.ok) {
-        showToast(
-          `Import done — ${data.created} created, ${data.updated} updated`
-          + (data.skipped ? `, ${data.skipped} skipped` : '')
-        );
-        await refresh();
-      }
+      showToast(
+        `Import done — ${data.created} created, ${data.updated} updated`
+        + (data.skipped ? `, ${data.skipped} skipped` : '')
+      );
+      await refresh();
     }
   } catch (e) {
     importError.value = String(e.message || e);
@@ -211,24 +333,30 @@ async function runImport() {
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────────
 function onKeydown(e) {
-  // Ignore shortcuts when focus is inside an input or select
+  if (e.key === 'Escape') {
+    state.showHelp = false;
+    if (state.showImport) closeImport();
+    return;
+  }
+
+  // Ignore the single-letter shortcuts while typing in a form control
   const tag = e.target.tagName;
-  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  // Don't navigate away from an open dialog
+  if (state.showImport || state.showHelp) return;
 
   switch (e.key) {
-    case '1': goTo('projects'); break;
-    case '2': goTo('detail'); break;
-    case '3': goTo('pendenzen'); break;
-    case '4': goTo('reviews'); break;
+    case '1': goTo('overview'); break;
+    case '2': goTo('projects'); break;
+    case '3': goTo('detail'); break;
+    case '4': goTo('pendenzen'); break;
     case '5': goTo('risks'); break;
+    case '6': goTo('reviews'); break;
     case 'r': refresh(); break;
     case 'd': toggleTheme(); break;
     case 'i': openImport(); break;
-    case '?': state.showHelp = !state.showHelp; break;
-    case 'Escape':
-      state.showHelp = false;
-      if (state.showImport) closeImport();
-      break;
+    case '?': state.showHelp = true; break;
     default: break;
   }
 }
@@ -236,6 +364,7 @@ function onKeydown(e) {
 // ── Root App component ─────────────────────────────────────────────────────
 const App = {
   components: {
+    OverviewScreen,
     ProjectListScreen,
     ProjectDetailScreen,
     PendenzenScreen,
@@ -243,115 +372,173 @@ const App = {
     RisksScreen,
   },
   setup() {
-    // Show toast whenever an API error occurs
-    watch(() => state.error, (err) => { if (err) showToast(err); });
+    // Surface API errors as a toast
+    watch(() => state.error, (err) => { if (err) showToast(err, true); });
 
-    // Live preview as user types JSON
-    watch(importText, (val) => { importPreview.value = _computePreview(val); });
+    // Live validation + preview as the user types or switches mode
+    watch([importText, importMode], validateStaged);
+
+    // Keep the URL hash in step with in-app navigation and vice versa
+    function onHashChange() {
+      const before = state.projectId;
+      if (applyHash() && before !== state.projectId) fetchData(state.projectId);
+    }
 
     onMounted(() => {
       applyTheme(theme.value);
       document.addEventListener('keydown', onKeydown);
-      fetchData(null);
+      window.addEventListener('hashchange', onHashChange);
+      applyHash();
+      syncHash();
+      fetchData(state.projectId);
       startPolling();
+      loadCopilotPrompt();
     });
 
     onUnmounted(() => {
       document.removeEventListener('keydown', onKeydown);
+      window.removeEventListener('hashchange', onHashChange);
       stopPolling();
     });
 
-    const navItems = [
-      { key: 'projects', label: 'Projects', shortcut: '1', icon: '▤' },
-      { key: 'detail',   label: 'Project Detail', shortcut: '2', icon: '◫' },
-      { key: 'pendenzen', label: 'Pendenzen', shortcut: '3', icon: '⚑' },
-      { key: 'reviews',  label: 'Reviews', shortcut: '4', icon: '✓' },
-      { key: 'risks',    label: 'Risks',   shortcut: '5', icon: '⚠' },
-    ];
+    // Counts drive both the sidebar badges and the overview tiles
+    const counts = computed(() => ({
+      projects: state.data?.projects?.length ?? 0,
+      timeline: state.data?.timeline?.length ?? 0,
+      pendenzen: state.data?.pendenzen?.length ?? 0,
+      risks: state.data?.risks?.length ?? 0,
+      reviews: state.data?.reviews?.length ?? 0,
+    }));
+
+    const navItems = computed(() => [
+      { key: 'overview',  label: 'Overview',  shortcut: '1', icon: '◱', count: null },
+      { key: 'projects',  label: 'Projects',  shortcut: '2', icon: '▤', count: counts.value.projects },
+      { key: 'detail',    label: 'Timeline & WBS', shortcut: '3', icon: '◫', count: counts.value.timeline },
+      { key: 'pendenzen', label: 'Pendenzen', shortcut: '4', icon: '⚑', count: counts.value.pendenzen },
+      { key: 'risks',     label: 'Risks',     shortcut: '5', icon: '⚠', count: counts.value.risks },
+      { key: 'reviews',   label: 'Reviews',   shortcut: '6', icon: '✓', count: counts.value.reviews },
+    ]);
 
     const shortcuts = [
-      ['1', 'Projects screen'],
-      ['2', 'Project detail'],
-      ['3', 'Pendenzen'],
-      ['4', 'Reviews'],
+      ['1', 'Overview'],
+      ['2', 'Projects'],
+      ['3', 'Timeline & WBS'],
+      ['4', 'Pendenzen'],
       ['5', 'Risks'],
+      ['6', 'Reviews'],
       ['r', 'Refresh data'],
       ['i', 'Import JSON'],
       ['d', 'Toggle dark / light theme'],
-      ['?', 'Show / hide this help'],
-      ['Esc', 'Close modal'],
+      ['?', 'Show this help'],
+      ['Esc', 'Close dialog'],
     ];
 
+    function focusTextarea() {
+      nextTick(() => {
+        const el = document.querySelector('[data-testid="raw-json-input"]');
+        if (el) el.focus();
+      });
+    }
+
+    function goToPasteStep() {
+      importStep.value = 2;
+      importMode.value = 'text';
+      focusTextarea();
+    }
+
     return {
-      state, theme, toast, navItems, shortcuts,
-      toggleTheme, refresh, goTo, selectProject,
-      // Import modal
-      openImport, closeImport, onImportFile, runImport,
-      importMode, importText, importFilename, importLoading,
-      importResult, importError, importPreview,
+      state, theme, toast, navItems, shortcuts, counts,
+      toggleTheme, refresh, goTo, selectProject, clearProject,
+      // Import wizard
+      openImport, closeImport, clearImportForm, onImportFile, onDrop,
+      runImport, copyPrompt, goToPasteStep,
+      importStep, importMode, importText, importFilename, importLoading,
+      importResult, importError, importPreview, copilotPrompt, isDragOver,
     };
   },
   template: `
     <div class="hermes-layout">
 
-      <!-- ── Navbar ─────────────────────────────────────────────────────── -->
+      <!-- ── Topbar ─────────────────────────────────────────────────────── -->
       <nav class="hermes-navbar" role="banner">
-        <span class="font-bold text-white tracking-widest text-base select-none">HERMES</span>
-        <span class="text-slate-400 text-xs flex-1 hidden sm:block">Local Dashboard</span>
+        <span class="brand select-none">
+          <span class="brand-mark" aria-hidden="true">H</span>
+          HERMES
+        </span>
+        <span class="text-slate-400 text-xs hidden sm:block">Local Dashboard</span>
 
         <span v-if="state.projectId" class="text-slate-300 text-xs hidden md:block">
-          Project:&nbsp;<strong class="text-white font-mono">{{ state.projectId }}</strong>
+          Project&nbsp;<strong class="font-mono">{{ state.projectId }}</strong>
         </span>
 
+        <span class="flex-1"></span>
+
         <button
+          class="tb-btn"
           @click="refresh"
           :disabled="state.loading"
-          class="text-slate-300 hover:text-white text-sm px-2 py-1 rounded hover:bg-slate-700 transition-colors"
-          :aria-label="state.loading ? 'Loading…' : 'Refresh (r)'"
-        >{{ state.loading ? '⏳' : '↻' }}&nbsp;Refresh</button>
+          :aria-label="state.loading ? 'Refreshing…' : 'Refresh data (r)'"
+          title="Refresh (r)"
+        >
+          <span v-if="state.loading" class="spinner" style="width:12px;height:12px;border-width:1.5px"></span>
+          <span v-else aria-hidden="true">↻</span>
+          <span class="hidden sm:block">Refresh</span>
+        </button>
 
         <button
+          class="tb-btn"
+          @click="toggleTheme"
+          :aria-label="'Toggle theme (d) — currently ' + theme"
+          title="Toggle theme (d)"
+        >{{ theme === 'dark' ? '☀' : '☾' }}</button>
+
+        <button
+          class="tb-btn"
+          @click="state.showHelp = true"
+          aria-label="Keyboard shortcuts (?)"
+          title="Keyboard shortcuts (?)"
+        >?</button>
+
+        <button
+          class="tb-btn tb-btn-primary"
           @click="openImport"
-          class="text-slate-300 hover:text-white text-sm px-2 py-1 rounded hover:bg-slate-700 transition-colors"
           aria-label="Import JSON (i)"
           title="Import JSON (i)"
-        >&#8593;&nbsp;Import</button>
-
-        <button
-          @click="toggleTheme"
-          class="text-slate-300 hover:text-white text-sm px-2 py-1 rounded hover:bg-slate-700 transition-colors"
-          :aria-label="'Toggle theme (d) — currently ' + theme"
-          :title="'Toggle theme (d)'"
-        >{{ theme === 'dark' ? '☀' : '◑' }}</button>
-
-        <button
-          @click="state.showHelp = true"
-          class="text-slate-300 hover:text-white text-sm px-3 py-1 rounded hover:bg-slate-700 transition-colors font-bold"
-          aria-label="Keyboard shortcuts (?)"
-          title="Shortcuts (?)"
-        >?</button>
+        >Import JSON</button>
       </nav>
 
       <!-- ── Sidebar ────────────────────────────────────────────────────── -->
       <aside class="hermes-sidebar" role="navigation" aria-label="Main navigation">
+        <span class="sidebar-label">Navigate</span>
         <button
           v-for="item in navItems"
           :key="item.key"
           class="nav-btn"
           :class="{ active: state.screen === item.key }"
           :aria-current="state.screen === item.key ? 'page' : undefined"
+          :data-testid="'nav-' + item.key"
           @click="goTo(item.key)"
         >
           <span class="w-5 text-center select-none" aria-hidden="true">{{ item.icon }}</span>
           <span>{{ item.label }}</span>
-          <span class="ml-auto text-xs opacity-50 font-mono">{{ item.shortcut }}</span>
+          <span v-if="item.count !== null" class="nav-count">{{ item.count }}</span>
         </button>
       </aside>
 
       <!-- ── Main content ───────────────────────────────────────────────── -->
       <main class="hermes-main" role="main">
+        <overview-screen
+          v-if="state.screen === 'overview'"
+          :data="state.data"
+          :loading="state.loading"
+          :error="state.error"
+          :counts="counts"
+          @navigate="goTo"
+          @select-project="selectProject"
+          @import="openImport"
+        />
         <project-list-screen
-          v-if="state.screen === 'projects'"
+          v-else-if="state.screen === 'projects'"
           :data="state.data"
           :loading="state.loading"
           :error="state.error"
@@ -363,7 +550,7 @@ const App = {
           :loading="state.loading"
           :error="state.error"
           :project-id="state.projectId"
-          @back="goTo('projects')"
+          @back="clearProject"
         />
         <pendenzen-screen
           v-else-if="state.screen === 'pendenzen'"
@@ -371,13 +558,13 @@ const App = {
           :loading="state.loading"
           :error="state.error"
         />
-        <reviews-screen
-          v-else-if="state.screen === 'reviews'"
+        <risks-screen
+          v-else-if="state.screen === 'risks'"
           :data="state.data"
           :loading="state.loading"
           :error="state.error"
         />
-        <risks-screen
+        <reviews-screen
           v-else
           :data="state.data"
           :loading="state.loading"
@@ -385,10 +572,10 @@ const App = {
         />
 
         <!-- Status bar -->
-        <footer class="mt-8 pt-3 flex flex-wrap gap-4 text-xs"
-                style="color:var(--c-text-muted);border-top:1px solid var(--c-border)">
+        <footer class="status-bar">
           <span>Last refresh: {{ state.lastRefresh || '—' }}</span>
           <span v-if="state.data?.generated_at">Server: {{ state.data.generated_at }}</span>
+          <span v-if="state.data?.scope">Scope: {{ state.data.scope }}</span>
           <span v-if="state.loading" class="flex items-center gap-1">
             <span class="spinner" style="width:10px;height:10px;border-width:1.5px"></span> Updating&hellip;
           </span>
@@ -396,168 +583,211 @@ const App = {
       </main>
 
       <!-- ── Help modal ─────────────────────────────────────────────────── -->
-      <div v-if="state.showHelp" class="modal-overlay" @click.self="state.showHelp = false" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+      <div v-if="state.showHelp"
+           class="modal-overlay"
+           @click.self="state.showHelp = false"
+           role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
         <div class="modal-box" style="max-width:380px">
           <div class="flex justify-between items-center mb-4">
-            <h2 class="font-semibold text-base">Keyboard Shortcuts</h2>
-            <button @click="state.showHelp = false" class="text-gray-400 hover:text-gray-600 text-2xl leading-none" aria-label="Close help">&times;</button>
+            <h2 class="modal-title">Keyboard Shortcuts</h2>
+            <button class="modal-close" @click="state.showHelp = false" aria-label="Close help">&times;</button>
           </div>
           <table class="w-full text-sm">
             <tbody>
-              <tr v-for="[key, desc] in shortcuts" :key="key" class="border-b" style="border-color:var(--c-border)">
-                <td class="py-2 pr-4 w-16"><kbd class="kbd">{{ key }}</kbd></td>
-                <td class="py-2">{{ desc }}</td>
+              <tr v-for="[key, desc] in shortcuts" :key="key">
+                <td class="py-1.5 pr-4 w-16"><kbd class="kbd">{{ key }}</kbd></td>
+                <td class="py-1.5">{{ desc }}</td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- ── Import JSON Modal ──────────────────────────────────────────── -->
+      <!-- ── Import JSON wizard ─────────────────────────────────────────── -->
       <div v-if="state.showImport"
            class="modal-overlay"
            @click.self="closeImport"
            role="dialog"
            aria-modal="true"
            aria-label="Import JSON data"
-           data-testid="import-modal">
-        <div class="modal-box" style="max-width:560px">
-          <div class="flex justify-between items-center mb-4">
-            <h2 class="font-semibold text-base">Import JSON</h2>
-            <button @click="closeImport"
-                    class="text-gray-400 hover:text-gray-600 text-2xl leading-none"
-                    aria-label="Close import modal">&times;</button>
+           data-testid="json-import-modal">
+        <div class="modal-box" style="max-width:640px">
+
+          <div class="flex justify-between items-start mb-4">
+            <div>
+              <div class="modal-step">Step {{ importStep }} of 2</div>
+              <h2 class="modal-title">
+                {{ importStep === 1 ? 'Get the Copilot prompt' : 'Import the JSON' }}
+              </h2>
+            </div>
+            <button class="modal-close" @click="closeImport" aria-label="Close import dialog">&times;</button>
           </div>
 
-          <!-- Mode toggle -->
-          <div class="flex gap-2 mb-3">
-            <button @click="importMode='text'"
-                    class="text-xs px-3 py-1 rounded border transition-colors"
-                    :style="importMode==='text'
-                      ? 'background:var(--c-primary);color:#fff;border-color:var(--c-primary)'
-                      : 'border-color:var(--c-border)'"
-                    data-testid="mode-text">Paste JSON</button>
-            <button @click="importMode='file'"
-                    class="text-xs px-3 py-1 rounded border transition-colors"
-                    :style="importMode==='file'
-                      ? 'background:var(--c-primary);color:#fff;border-color:var(--c-primary)'
-                      : 'border-color:var(--c-border)'"
-                    data-testid="mode-file">Upload File</button>
-          </div>
+          <!-- ── Step 1: hand over the Copilot prompt ── -->
+          <template v-if="importStep === 1">
+            <p class="text-sm" style="color:var(--c-text-muted)">
+              Copy this prompt into <strong style="color:var(--c-text)">M365 Copilot</strong>.
+              It replies with a JSON export of your project, which you paste back here in step 2.
+            </p>
 
-          <!-- Text mode -->
-          <div v-if="importMode==='text'">
+            <pre data-testid="copilot-prompt-text"
+                 class="prompt-block mt-3">{{ copilotPrompt || 'Loading prompt…' }}</pre>
+
+            <ol class="steps-list">
+              <li>Copy the prompt</li>
+              <li>Paste it into M365 Copilot and send</li>
+              <li>Copy Copilot's JSON reply</li>
+              <li>Return here and continue to step 2</li>
+            </ol>
+
+            <div class="modal-actions">
+              <button class="btn"
+                      @click="copyPrompt"
+                      data-testid="copy-prompt-btn"
+                      title="Copy the prompt so you can paste it into Copilot">
+                Copy prompt
+              </button>
+              <span class="flex-1"></span>
+              <button class="btn" @click="closeImport">Cancel</button>
+              <button class="btn btn-primary"
+                      @click="goToPasteStep"
+                      data-testid="import-next-btn">
+                Next: paste JSON &rarr;
+              </button>
+            </div>
+          </template>
+
+          <!-- ── Step 2: accept the JSON ── -->
+          <template v-else>
+            <div class="segmented mb-3" role="group" aria-label="Import source">
+              <button :class="{ active: importMode === 'text' }"
+                      @click="importMode = 'text'"
+                      data-testid="mode-text">Paste JSON</button>
+              <button :class="{ active: importMode === 'file' }"
+                      @click="importMode = 'file'"
+                      data-testid="mode-file">Upload file</button>
+            </div>
+
+            <label class="sr-only" for="raw-json-input">Raw JSON</label>
             <textarea
+              v-show="importMode === 'text'"
+              id="raw-json-input"
               v-model="importText"
-              placeholder='{"risks": [{"title": "Example risk"}]}'
-              class="w-full font-mono text-xs rounded p-2"
-              style="min-height:180px;background:var(--c-bg-card);border:1px solid var(--c-border);color:var(--c-text);resize:vertical"
-              data-testid="import-textarea"
+              class="json-textarea"
+              placeholder='{"risks": [{"title": "Example risk", "severity": "high"}]}'
+              spellcheck="false"
+              data-testid="raw-json-input"
             ></textarea>
-          </div>
 
-          <!-- File mode -->
-          <div v-else
-               class="flex flex-col items-center justify-center p-8 rounded cursor-pointer"
-               style="border:2px dashed var(--c-border);min-height:180px"
-               @click="$el.querySelector('#import-file-input').click()">
-            <input id="import-file-input"
-                   type="file"
-                   accept=".json,application/json"
-                   @change="onImportFile"
-                   style="display:none"
-                   data-testid="import-file-input">
-            <span style="color:var(--c-primary)">Click to select a JSON file</span>
-            <span v-if="importFilename"
-                  class="mt-2 text-xs"
-                  style="color:var(--c-text-muted)"
-                  data-testid="import-filename">{{ importFilename }}</span>
-            <span v-else class="mt-2 text-xs" style="color:var(--c-text-muted)">
-              or drag and drop
-            </span>
-          </div>
+            <div v-show="importMode === 'file'"
+                 class="drop-zone"
+                 :class="{ 'is-dragover': isDragOver }"
+                 data-testid="json-drop-zone"
+                 @click="$el.querySelector('#json-file-input').click()"
+                 @dragover.prevent="isDragOver = true"
+                 @dragleave.prevent="isDragOver = false"
+                 @drop.prevent="onDrop">
+              <input id="json-file-input"
+                     type="file"
+                     accept=".json,application/json"
+                     @change="onImportFile"
+                     style="display:none"
+                     data-testid="json-file-input">
+              <span style="color:var(--c-primary);font-weight:600">Choose a JSON file</span>
+              <span v-if="importFilename" data-testid="import-filename">{{ importFilename }}</span>
+              <span v-else>or drag and drop it here</span>
+            </div>
 
-          <!-- Preview -->
-          <div v-if="importPreview"
-               class="mt-3 p-2 rounded text-xs"
-               style="background:var(--c-bg-card);border:1px solid var(--c-border)"
-               data-testid="import-preview">
-            <strong>Will import:</strong>
-            <span v-for="(count, type) in importPreview" :key="type" class="ml-2">
-              {{ type }}: <strong>{{ count }}</strong>
-            </span>
-          </div>
+            <!-- Live preview of what will be imported -->
+            <div v-if="importPreview" class="notice notice-info" data-testid="import-preview">
+              <strong>Will import:</strong>
+              <span v-for="(count, type) in importPreview" :key="type" class="ml-2">
+                {{ type }} <strong>{{ count }}</strong>
+              </span>
+            </div>
 
-          <!-- Result -->
-          <div v-if="importResult"
-               class="mt-3 p-2 rounded text-xs"
-               style="background:var(--c-bg-card);border:1px solid var(--c-border)"
-               data-testid="import-result">
-            <span v-if="importResult.ok" style="color:#22c55e">
-              Done: {{ importResult.created }} created,
-              {{ importResult.updated }} updated
-              <template v-if="importResult.skipped">,
-                {{ importResult.skipped }} skipped
+            <!-- Inline error (invalid JSON, server rejection) -->
+            <div v-show="importError"
+                 class="notice notice-error"
+                 role="alert"
+                 aria-live="assertive"
+                 data-testid="import-error"
+                 id="json-error">{{ importError }}</div>
+
+            <div v-show="importLoading"
+                 class="notice notice-info flex items-center gap-2"
+                 data-testid="import-progress">
+              <span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span>
+              Importing&hellip;
+            </div>
+
+            <!-- Result summary -->
+            <div v-show="importResult"
+                 class="notice"
+                 :class="importResult && importResult.ok ? 'notice-success' : 'notice-error'"
+                 role="status"
+                 aria-live="polite"
+                 data-testid="import-result">
+              <template v-if="importResult">
+                <span v-if="importResult.ok">
+                  Successfully imported — {{ importResult.created }} created,
+                  {{ importResult.updated }} updated<template v-if="importResult.skipped">,
+                  {{ importResult.skipped }} skipped</template>.
+                </span>
+                <span v-else>Import failed.</span>
               </template>
-            </span>
-            <span v-else style="color:#ef4444">Import failed</span>
-            <ul v-if="importResult.errors && importResult.errors.length"
-                class="mt-1 list-disc pl-4"
-                style="color:#f97316">
-              <li v-for="e in importResult.errors.slice(0, 5)" :key="e">{{ e }}</li>
-              <li v-if="importResult.errors.length > 5"
-                  style="color:var(--c-text-muted)">
-                +{{ importResult.errors.length - 5 }} more errors
-              </li>
-            </ul>
-          </div>
+            </div>
 
-          <!-- Inline error -->
-          <div v-if="importError"
-               class="mt-3 text-xs"
-               style="color:#ef4444"
-               data-testid="import-error">{{ importError }}</div>
+            <div v-if="importResult && importResult.errors && importResult.errors.length"
+                 class="notice notice-warn"
+                 data-testid="import-errors">
+              <strong>{{ importResult.errors.length }} item(s) reported a problem:</strong>
+              <ul>
+                <li v-for="e in importResult.errors.slice(0, 5)" :key="e">{{ e }}</li>
+                <li v-if="importResult.errors.length > 5">
+                  +{{ importResult.errors.length - 5 }} more
+                </li>
+              </ul>
+            </div>
 
-          <!-- Spinner -->
-          <div v-if="importLoading" class="mt-3 flex items-center gap-2 text-xs" style="color:var(--c-text-muted)">
-            <span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span>
-            Importing&hellip;
-          </div>
-
-          <!-- Action buttons -->
-          <div class="flex gap-3 mt-4">
-            <button
-              @click="runImport"
-              :disabled="importLoading"
-              class="text-sm px-4 py-2 rounded transition-colors"
-              style="background:var(--c-primary);color:#fff"
-              :style="importLoading ? 'opacity:0.6;cursor:not-allowed' : ''"
-              data-testid="import-submit"
-            >{{ importLoading ? 'Importing…' : 'Import' }}</button>
-            <button
-              @click="closeImport"
-              class="text-sm px-4 py-2 rounded transition-colors"
-              style="background:var(--c-bg-card);border:1px solid var(--c-border)"
-              data-testid="import-cancel"
-            >Cancel</button>
-          </div>
+            <div class="modal-actions">
+              <button class="btn"
+                      @click="importStep = 1"
+                      data-testid="import-back-btn">&larr; Back</button>
+              <button class="btn"
+                      @click="clearImportForm"
+                      data-testid="clear-form-btn">Clear</button>
+              <span class="flex-1"></span>
+              <button class="btn" @click="closeImport" data-testid="import-cancel">Cancel</button>
+              <button class="btn btn-primary"
+                      @click="runImport"
+                      :disabled="importLoading"
+                      data-testid="import-submit-btn">
+                {{ importLoading ? 'Importing…' : 'Import' }}
+              </button>
+            </div>
+          </template>
         </div>
       </div>
 
       <!-- ── Toast ──────────────────────────────────────────────────────── -->
-      <div v-if="toast" class="toast" role="alert" aria-live="assertive">
-        {{ toast }}
-      </div>
+      <div v-if="toast.message"
+           class="toast"
+           :class="{ 'is-error': toast.isError }"
+           role="alert"
+           aria-live="assertive">{{ toast.message }}</div>
     </div>
   `,
 };
 
 // ── Mount ──────────────────────────────────────────────────────────────────
-// Register shared sub-components globally so they are available in all
-// screen templates without repeating the local components: {} declaration.
+// Sub-components shared across screens are registered globally so screen
+// templates can use them without repeating a local components: {} block.
+// WbsNodeItem in particular is recursive and *must* be global.
 const vueApp = createApp(App);
-vueApp.component('WbsNodeItem', WbsNodeItem);  // recursive — must be global
+vueApp.component('WbsNodeItem', WbsNodeItem);
 vueApp.component('WbsTab', WbsTab);
 vueApp.component('TimelineTab', TimelineTab);
 vueApp.component('KanbanTab', KanbanTab);
 vueApp.mount('#app');
+}());

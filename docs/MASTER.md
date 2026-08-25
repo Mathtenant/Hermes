@@ -867,7 +867,7 @@ project data. Replaces the TUI as the primary interface for day-to-day use.
 **Architecture**
 
 ```
-Browser (Vue 3 + Tailwind CDN)
+Browser (Vue 3 — vendored locally, no CDN)
         │  fetch /api/dashboard
         ▼
 FastAPI server (hermes_assistant.webapp.server)
@@ -892,19 +892,24 @@ SQLite task/job stores + schedule.json files
 
 | File | Purpose |
 |---|---|
-| `index.html` | SPA shell; loads Vue 3 + Tailwind from CDN |
-| `style.css` | CSS custom properties, dark/light theme, layout |
+| `index.html` | SPA shell; loads the vendored Vue runtime, then components/screens/app |
+| `vendor/vue.global.prod.js` | Vue 3 full build (includes the runtime template compiler the screens need) — vendored so the dashboard runs fully offline |
+| `style.css` | Design tokens, a self-contained utility layer (replaces the former Tailwind CDN), and all component styles |
 | `components.js` | Shared WBS components (`WbsNodeItem`, `WbsTab`) |
-| `screens.js` | Screen components for all 4 views |
+| `screens.js` | Screen components for all 6 views |
 | `app.js` | Root app, global state, keyboard shortcuts, polling |
 
-**Screens:** (1) **Projects** — sortable table, click to drill in. (2) **Project Detail** — Timeline (colour-coded by status), Kanban (To Do / Blocked / Done), WBS (collapsible tree with status icons). (3) **Pendenzen** — filterable by source/priority/status, sorted by priority rank. (4) **Reviews** — completed review jobs, verdict colour coding (green pass / amber pass_with_comments / red fail), click for detail modal. (5) **Risks** *(F1)* — non-confidential risks from `RiskRegistry.export_public()`, sortable by score (severity×likelihood), status colour-coded (open=red, mitigated=amber, accepted=blue, closed=grey), empty state "No risks recorded".
+**Screens:** (0) **Overview** — landing screen; headline count tiles (each navigates to its screen) plus "Coming up", "Needs attention" and "Highest-scoring risks" panels. (1) **Projects** — sortable table, click to drill in. (2) **Project Detail** — Timeline (colour-coded by status), Kanban (To Do / Blocked / Done), WBS (collapsible tree with status icons). (3) **Pendenzen** — filterable by source/priority/status, sorted by priority rank. (4) **Reviews** — completed review jobs, verdict colour coding (green pass / amber pass_with_comments / red fail), click for detail modal. (5) **Risks** *(F1)* — non-confidential risks from `RiskRegistry.export_public()`, sortable by score (severity×likelihood), status colour-coded (open=red, mitigated=amber, accepted=blue, closed=grey), empty state "No risks recorded".
 
 **`/api/dashboard` — DashboardData fields:** `generated_at`, `scope`, `range_start`, `range_end`, `projects`, `timeline`, `kanban`, `wbs`, `pendenzen`, `reviews`, `risks`. The `risks` array carries only safe fields per `RiskRow` (`id`, `title`, `severity`, `likelihood`, `status`, `score`, `updated_at`) — confidential risks and the `owner` field are excluded.
 
-**Keyboard shortcuts:** `1`–`5` switch screens · `r` refresh · `d` toggle dark/light · `?` help · `Esc` close modal. Theme persisted in `localStorage`.
+**Keyboard shortcuts:** `1`–`6` switch screens · `r` refresh · `i` import JSON · `d` toggle dark/light · `?` help · `Esc` close dialog. Theme persisted in `localStorage`.
 
-**Security:** same-origin only (no CORS); CSP headers on every response (`default-src 'none'`, only `'self'` and HTTPS CDN for scripts/styles); `_validate_safe_json()` on every API response (forbidden fields `raw_notes`, `evidence_quote`, `rationale`, `assumptions`, etc. → HTTP 500); Pydantic `extra="forbid"` on all view models; no authentication (trusted LAN assumption; Phase 5 adds SSO); localhost bind by default.
+**Routing:** screens are hash-routed (`#/overview`, `#/pendenzen`, `#/detail/<project_id>`), so a view survives reload and can be linked to.
+
+**JSON import:** a two-step wizard in the topbar — step 1 hands over the ready-to-copy M365 Copilot prompt (`static/prompts/copilot_state_export.txt`), step 2 accepts the resulting JSON by paste, file picker or drag-and-drop, with live validation and a pre-import preview of the row counts.
+
+**Security:** same-origin only (no CORS); CSP headers on every response (`default-src 'none'`, scripts/styles are served from `'self'` — the CDN allowance is no longer exercised now that Vue is vendored); `_validate_safe_json()` on every API response (forbidden fields `raw_notes`, `evidence_quote`, `rationale`, `assumptions`, etc. → HTTP 500); Pydantic `extra="forbid"` on all view models; no authentication (trusted LAN assumption; Phase 5 adds SSO); localhost bind by default.
 
 **Deps:** `pip install -e ".[webapp]"` (FastAPI + uvicorn). The `dev` extra already includes FastAPI + httpx. Tests: `pytest tests/test_webapp_endpoints.py tests/test_webapp_e2e.py -v`.
 

@@ -1,7 +1,9 @@
 // Hermes chat widget — self-contained vanilla JS (no build step, no framework
 // dependency). Exposes window.ChatWidget with a mount(el) method and auto-mounts
-// into #chat-app on DOMContentLoaded. Kept framework-free because index.html
-// ships only a minimal non-reactive Vue stub.
+// into #chat-app on DOMContentLoaded. Deliberately framework-free: it lives
+// outside the Vue root (#app) so a dashboard re-render never interrupts an
+// in-flight streamed reply. Presentation comes from style.css so it themes with
+// the rest of the dashboard.
 
 (function () {
   "use strict";
@@ -45,19 +47,16 @@
     var msgs = state.messages
       .map(function (m) {
         var mine = m.role === "user";
-        var bubble = mine
-          ? "align-self:flex-end;background:#3b82f6;color:#fff;"
-          : "align-self:flex-start;background:#334155;color:#e2e8f0;";
         var suggestions = "";
         if (m.suggestions && m.suggestions.length) {
           suggestions =
-            '<div class="chat-suggestions" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem;">' +
+            '<div class="chat-suggestions">' +
             m.suggestions
               .map(function (s) {
                 return (
                   '<button class="chat-suggestion" data-suggestion="' +
                   esc(s) +
-                  '" style="background:#10b981;color:#fff;padding:0.25rem 0.75rem;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;">' +
+                  '">' +
                   esc(s) +
                   "</button>"
                 );
@@ -66,10 +65,8 @@
             "</div>";
         }
         return (
-          '<div style="display:flex;flex-direction:column;gap:0.25rem;">' +
-          '<div style="' +
-          bubble +
-          'padding:0.5rem 0.75rem;border-radius:6px;max-width:80%;">' +
+          '<div class="chat-row' + (mine ? " mine" : "") + '">' +
+          '<div class="chat-bubble ' + (mine ? "mine" : "theirs") + '">' +
           esc(m.content) +
           "</div>" +
           suggestions +
@@ -78,19 +75,24 @@
       })
       .join("");
 
+    if (!msgs) {
+      msgs =
+        '<div class="chat-empty">Ask Hermes about risks, pendenzen or the plan.</div>';
+    }
+
     var typing = state.isLoading
-      ? '<div class="chat-typing" style="align-self:flex-start;color:#94a3b8;font-size:0.875rem;">Assistant is typing...</div>'
+      ? '<div class="chat-typing">Assistant is typing…</div>'
       : "";
 
     var bodyInner = state.isOpen
-      ? '<div class="chat-messages" aria-live="polite" aria-atomic="false" aria-label="Chat messages" style="flex:1;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:0.75rem;">' +
+      ? '<div class="chat-messages" aria-live="polite" aria-atomic="false" aria-label="Chat messages">' +
         msgs +
         typing +
         "</div>" +
-        '<div style="border-top:1px solid #334155;padding:1rem;display:flex;gap:0.5rem;align-items:center;">' +
-        '<label for="chat-input" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;">Message</label>' +
-        '<input id="chat-input" class="chat-input" aria-label="Chat message input" placeholder="Ask Hermes..." style="flex:1;padding:0.5rem;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:4px;font-size:0.875rem;" />' +
-        '<button class="chat-send" aria-label="Send message" style="background:#10b981;color:#fff;padding:0.5rem 1rem;border:none;border-radius:4px;cursor:pointer;">Send</button>' +
+        '<div class="chat-composer">' +
+        '<label for="chat-input" class="sr-only">Message</label>' +
+        '<input id="chat-input" class="chat-input" aria-label="Chat message input" placeholder="Ask Hermes…" />' +
+        '<button class="chat-send" aria-label="Send message">Send</button>' +
         "</div>"
       : "";
 
@@ -107,22 +109,19 @@
       bodyInner +
       "</div>";
 
-    var collapsedClass = state.isOpen ? "" : " is-collapsed";
-    // When collapsed, omit the fixed height so the container shrinks to the
-    // header bar. When expanded the explicit height gives the chat area its
-    // full 500 px canvas.
-    var containerHeight = state.isOpen ? "height:500px;" : "";
+    // When collapsed the container shrinks to just the header bar; `is-open`
+    // gives the expanded panel its full canvas (see style.css).
     root.innerHTML =
-      '<div id="chat-widget" class="panel' +
-      collapsedClass +
-      '" style="position:fixed;bottom:20px;right:20px;width:400px;' +
-      containerHeight +
-      'border:1px solid #334155;border-radius:8px;background:#1e293b;display:flex;flex-direction:column;z-index:900;box-shadow:0 4px 12px rgba(0,0,0,0.3);">' +
-      '<div style="background:#0f172a;padding:1rem;border-bottom:1px solid #334155;display:flex;justify-content:space-between;align-items:center;">' +
-      '<h3 style="margin:0;color:#e2e8f0;font-size:1rem;">Hermes Chat</h3>' +
+      '<div id="chat-widget" class="panel ' +
+      (state.isOpen ? "is-open" : "is-collapsed") +
+      '">' +
+      '<div class="chat-header">' +
+      '<h3 class="chat-title"><span class="chat-dot" aria-hidden="true"></span>Hermes Chat</h3>' +
       '<button class="chat-toggle" data-collapse-target="chat-widget-body" aria-expanded="' +
       String(state.isOpen) +
-      '" style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1.5rem;">' +
+      '" aria-label="' +
+      (state.isOpen ? "Collapse chat" : "Expand chat") +
+      '">' +
       (state.isOpen ? "−" : "+") +
       "</button>" +
       "</div>" +

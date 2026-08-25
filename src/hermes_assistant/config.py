@@ -126,6 +126,11 @@ class Settings(BaseSettings):
     # instead of falling back to the answer_question handler.  Tune via the
     # CHAT_CONFIDENCE_THRESHOLD environment variable (float, 0–1).
     chat_confidence_threshold: float = 0.7
+    # Ollama model backing the chat intent router. Defaults to the roster
+    # ROUTER model; override via the CHAT_MODEL environment variable, or swap
+    # it at runtime from the dashboard (POST /api/chat/model), which applies
+    # until the server restarts.
+    chat_model: str = "qwen3:4b"
 
     # --- RAG (Phase 1) --------------------------------------------------- #
     # Single Chroma collection for the whole corpus; a per-model collection

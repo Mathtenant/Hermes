@@ -1,6 +1,10 @@
 # Static, language-aware response templates for conversational intents
 # (Phase 5 / Q1). These replace the generic capability fallback for greetings,
 # capability queries, and meta questions — no LLM call required.
+#
+# Every intent block must carry an `en` entry: ResponseFormatter falls back to
+# `en` for any language it cannot find, so a language detected by
+# detect_language() (currently en/de/fr) can never raise a KeyError.
 
 smalltalk:
   en:
@@ -11,23 +15,43 @@ smalltalk:
     greeting: "Hallo! Woran arbeitest du gerade?"
     thanks: "Gern."
     goodbye: "Bis dann!"
+  fr:
+    greeting: "Bonjour ! Sur quoi travaillez-vous ?"
+    thanks: "Je vous en prie."
+    goodbye: "À bientôt !"
 
 capability:
   en:
     default: "I can help with: creating risks, tasks, and plans; showing what you're working on; running reviews. For example: 'Create a task to deploy' or 'Show me the risks' or 'What's the plan?'"
   de:
     default: "Ich kann dir helfen mit: Risiken, Aufgaben und Pläne erstellen; zeigen, woran du arbeitest; Reviews durchführen. Zum Beispiel: 'Erstelle eine Aufgabe zum Testen' oder 'Zeige mir die Risiken' oder 'Was ist der Plan?'"
+  fr:
+    default: "Je peux vous aider à : créer des risques, des tâches et des plans ; afficher votre travail en cours ; lancer des revues. Par exemple : 'Créer une tâche de déploiement' ou 'Montre-moi les risques' ou 'Quel est le plan ?'"
 
 meta:
   en:
-    model: "I'm a local AI assistant using the Qwen model, running entirely on your machine with no external services."
+    model: "I'm a local AI assistant running [model] via Ollama, entirely on your machine with no external services."
     local: "Yes, I run completely locally on your computer. No data leaves your machine."
     data: "I can see your current project data (risks, plans, tasks) and help you manage it."
   de:
-    model: "Ich bin ein lokaler KI-Assistent basierend auf Qwen, der vollständig auf deinem Gerät läuft."
+    model: "Ich bin ein lokaler KI-Assistent und nutze [model] über Ollama, vollständig auf deinem Gerät."
     local: "Ja, ich laufe komplett lokal auf deinem Computer. Keine Daten verlassen dein Gerät."
     data: "Ich sehe deine aktuellen Projektdaten (Risiken, Pläne, Aufgaben) und helfe dir, sie zu verwalten."
+  fr:
+    model: "Je suis un assistant IA local utilisant [model] via Ollama, entièrement sur votre machine, sans service externe."
+    local: "Oui, je fonctionne entièrement en local sur votre ordinateur. Aucune donnée ne quitte votre machine."
+    data: "Je vois les données actuelles de votre projet (risques, plans, tâches) et je vous aide à les gérer."
 
 unknown:
   en: "I understood your message, but I'm not sure how to help. Did you mean: [suggestions]? Or ask me something else."
   de: "Ich habe deine Nachricht verstanden, bin mir aber unsicher, wie ich helfen kann. Meintest du: [suggestions]? Oder frag mich etwas anderes."
+  fr: "J'ai compris votre message, mais je ne sais pas comment vous aider. Vouliez-vous dire : [suggestions] ? Ou demandez-moi autre chose."
+
+# Shown when the local model could not be reached at all (Ollama not running,
+# model not pulled, request timed out). Distinct from `unknown` on purpose: the
+# assistant never classified the message, so telling the user it "understood"
+# and offering suggestions would be misleading and hides a fixable setup error.
+llm_unavailable:
+  en: "I couldn't reach the local model, so I can't answer that yet. Check that Ollama is running (`ollama serve`) and that the chat model is pulled (`ollama pull [model]`), then try again. Details: [reason]"
+  de: "Ich konnte das lokale Modell nicht erreichen und kann das daher noch nicht beantworten. Prüfe, ob Ollama läuft (`ollama serve`) und das Chat-Modell geladen ist (`ollama pull [model]`), und versuche es erneut. Details: [reason]"
+  fr: "Je n'ai pas pu joindre le modèle local, je ne peux donc pas encore répondre. Vérifiez qu'Ollama est lancé (`ollama serve`) et que le modèle de chat est téléchargé (`ollama pull [model]`), puis réessayez. Détails : [reason]"

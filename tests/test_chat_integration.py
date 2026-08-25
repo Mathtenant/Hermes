@@ -211,6 +211,10 @@ def test_send_message_whitespace_only_fails(client):
 class _KeywordRouter:
     """Classify by keyword so conversational intents are testable offline."""
 
+    # Mirrors the real IntentRouter, which exposes the active model id so the
+    # formatter can name it in meta replies.
+    model = settings.chat_model
+
     def classify(self, message, context):  # noqa: ANN001
         from hermes_assistant.chat.model import IntentClassification
 
@@ -279,7 +283,9 @@ def test_chat_meta_returns_model_info(convo_client):
     )
     assert response.status_code == 200
     data = response.json()
-    assert "qwen" in data["message"]["content"].lower()
+    # Names the configured chat model rather than a hard-coded vendor string.
+    content = data["message"]["content"]
+    assert settings.chat_model in content, content
     assert data["action"] is None
 
 
@@ -555,3 +561,85 @@ def test_stream_message_nonstreaming_unchanged(client):
     data = response.json()
     assert "session_id" in data
     assert data["message"]["role"] == "assistant"
+
+
+# --------------------------------------------------------------------------- #
+# Model selection (GET /api/chat/models, POST /api/chat/model)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def model_client(client, monkeypatch):
+    """A client whose Ollama health reports two installed models."""
+    service = chat_api.get_chat_service()
+    monkeypatch.setattr(
+        service.llm_client,
+        "health",
+        lambda: {
+            "available": True,
+            "host": "http://localhost:11434",
+            "models": ["qwen3:4b", "llama3.1:8b"],
+            "error": None,
+        },
+    )
+    try:
+        yield client
+    finally:
+        chat_api._active_model = None
+
+
+def test_list_models_returns_installed_and_current(model_client):
+    data = model_client.get("/api/chat/models").json()
+    assert data["available"] is True
+    assert data["models"] == ["llama3.1:8b", "qwen3:4b"]
+    assert data["current"] == settings.chat_model
+
+
+def test_set_model_switches_router(model_client):
+    resp = model_client.post("/api/chat/model", json={"model": "llama3.1:8b"})
+    assert resp.status_code == 200
+    assert resp.json()["current"] == "llama3.1:8b"
+    # The live router must actually be repointed, not just the reported value.
+    assert chat_api.get_chat_service().router.model == "llama3.1:8b"
+    assert model_client.get("/api/chat/models").json()["current"] == "llama3.1:8b"
+
+
+def test_set_model_rejects_model_that_is_not_pulled(model_client):
+    resp = model_client.post("/api/chat/model", json={"model": "mistral:7b"})
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert "not installed" in detail
+    assert "ollama pull mistral:7b" in detail
+    # The router must be left untouched by a rejected switch.
+    assert chat_api.get_chat_service().router.model == settings.chat_model
+
+
+def test_set_model_accepts_bare_name_with_one_matching_tag(model_client):
+    resp = model_client.post("/api/chat/model", json={"model": "llama3.1"})
+    assert resp.status_code == 200
+    assert resp.json()["current"] == "llama3.1:8b"
+
+
+def test_set_model_requires_ollama_running(client, monkeypatch):
+    service = chat_api.get_chat_service()
+    monkeypatch.setattr(
+        service.llm_client,
+        "health",
+        lambda: {"available": False, "models": [], "error": "connection refused"},
+    )
+    resp = client.post("/api/chat/model", json={"model": "qwen3:4b"})
+    assert resp.status_code == 503
+    assert "ollama serve" in resp.json()["detail"]
+
+
+def test_list_models_reports_unreachable_ollama(client, monkeypatch):
+    service = chat_api.get_chat_service()
+    monkeypatch.setattr(
+        service.llm_client,
+        "health",
+        lambda: {"available": False, "models": [], "error": "connection refused"},
+    )
+    data = client.get("/api/chat/models").json()
+    assert data["available"] is False
+    assert data["models"] == []
+    assert data["error"]

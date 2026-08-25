@@ -15,14 +15,15 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-logger = logging.getLogger(__name__)
-
+from hermes_assistant import __version__
 from hermes_assistant.config import settings
 from hermes_assistant.dashboard_html import (
     _FORBIDDEN_FIELDS,
     _FS_RE,
     load_dashboard_data,
 )
+
+logger = logging.getLogger(__name__)
 
 # Matches field names that begin with internal_ or confidential_ (any suffix).
 _INTERNAL_FIELD_RE = re.compile(
@@ -182,9 +183,16 @@ app.include_router(chat_api.router)
 @app.get("/api/health")
 @confidentiality_guard
 async def health() -> dict[str, str]:
-    """Health check — always returns 200 OK with current timestamp."""
+    """Health check — always returns 200 OK with current timestamp.
+
+    Also carries the running ``version`` so the dashboard can display it
+    without hard-coding a version string in the frontend. The single source
+    of truth is ``hermes_assistant.__version__``; ``test_version_matches_
+    pyproject`` keeps it in step with the packaging metadata.
+    """
     return {
         "status": "ok",
+        "version": __version__,
         "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 

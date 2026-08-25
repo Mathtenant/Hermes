@@ -91,6 +91,22 @@ async function refresh() {
   await fetchData(state.projectId);
 }
 
+// ── App version ────────────────────────────────────────────────────────────
+// Served by /api/health from hermes_assistant.__version__, so the frontend
+// never carries its own copy of the version string.
+const version = ref('');
+
+async function loadVersion() {
+  try {
+    const resp = await fetch('/api/health');
+    if (!resp.ok) return;
+    const body = await resp.json();
+    if (body.version) version.value = body.version;
+  } catch {
+    // Version is cosmetic — leave it blank rather than surfacing an error
+  }
+}
+
 // ── Navigation (hash-routed so screens are linkable and survive reload) ────
 function syncHash() {
   const hash = state.projectId && state.screen === 'detail'
@@ -393,6 +409,7 @@ const App = {
       fetchData(state.projectId);
       startPolling();
       loadCopilotPrompt();
+      loadVersion();
     });
 
     onUnmounted(() => {
@@ -447,7 +464,7 @@ const App = {
     }
 
     return {
-      state, theme, toast, navItems, shortcuts, counts,
+      state, theme, toast, navItems, shortcuts, counts, version,
       toggleTheme, refresh, goTo, selectProject, clearProject,
       // Import wizard
       openImport, closeImport, clearImportForm, onImportFile, onDrop,
@@ -465,6 +482,10 @@ const App = {
           <span class="brand-mark" aria-hidden="true">H</span>
           HERMES
         </span>
+        <span v-if="version"
+              class="app-version"
+              data-testid="app-version"
+              :title="'HERMES Local Assistant version ' + version">v{{ version }}</span>
         <span class="text-slate-400 text-xs hidden sm:block">Local Dashboard</span>
 
         <span v-if="state.projectId" class="text-slate-300 text-xs hidden md:block">

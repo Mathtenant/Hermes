@@ -881,7 +881,7 @@ SQLite task/job stores + schedule.json files
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/health` | GET | Health check; `{"status":"ok","timestamp":"…"}` |
+| `/api/health` | GET | Health check; `{"status":"ok","version":"0.1.0","timestamp":"…"}` |
 | `/api/dashboard` | GET | Full DashboardData JSON (all projects) |
 | `/api/dashboard?project_id=X` | GET | Scoped DashboardData for project X |
 | `/api/refresh` | GET | Same as `/api/dashboard` — fresh disk read |
@@ -904,6 +904,8 @@ SQLite task/job stores + schedule.json files
 **`/api/dashboard` — DashboardData fields:** `generated_at`, `scope`, `range_start`, `range_end`, `projects`, `timeline`, `kanban`, `wbs`, `pendenzen`, `reviews`, `risks`. The `risks` array carries only safe fields per `RiskRow` (`id`, `title`, `severity`, `likelihood`, `status`, `score`, `updated_at`) — confidential risks and the `owner` field are excluded.
 
 **Keyboard shortcuts:** `1`–`6` switch screens · `r` refresh · `i` import JSON · `d` toggle dark/light · `?` help · `Esc` close dialog. Theme persisted in `localStorage`.
+
+**Version display:** the running version is shown as a small muted pill in the top-left corner of the topbar, next to the brand (`data-testid="app-version"`). The frontend never hard-codes it — it reads `version` from `/api/health`, which serves `hermes_assistant.__version__`. That module attribute is the single source of truth; `test_version_matches_pyproject` fails the build if `pyproject.toml` drifts from it. To cut a new version, edit `__version__` in `src/hermes_assistant/__init__.py` and the matching `version` in `pyproject.toml`.
 
 **Routing:** screens are hash-routed (`#/overview`, `#/pendenzen`, `#/detail/<project_id>`), so a view survives reload and can be linked to.
 

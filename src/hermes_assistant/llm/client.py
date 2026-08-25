@@ -344,6 +344,7 @@ class OllamaClient:
         messages: list[dict[str, str]],
         schema: type[T],
         *,
+        system: str | None = None,
         num_ctx: int = 8192,
         max_retries: int = 1,
         temperature: float = 0.1,
@@ -359,6 +360,12 @@ class OllamaClient:
             model: Model ID.
             messages: Chat messages.
             schema: Pydantic model class to validate against.
+            system: Optional system prompt, prepended as a ``system`` message.
+                Callers that ground a classification in project state (e.g.
+                :class:`~hermes_assistant.chat.router.IntentRouter`) pass the
+                grounded prompt here rather than building the message list
+                themselves. Ignored when ``messages`` already opens with a
+                system message.
             num_ctx: Context window.
             max_retries: Max retry attempts after the first call.
             temperature: Sampling temperature. Defaults to 0.1 (deterministic);
@@ -379,6 +386,8 @@ class OllamaClient:
         """
         json_schema = _flatten_schema(schema.model_json_schema())
         attempt_messages = list(messages)
+        if system and not (attempt_messages and attempt_messages[0].get("role") == "system"):
+            attempt_messages = [{"role": "system", "content": system}, *attempt_messages]
         last_raw: str | None = None
 
         for attempt in range(max_retries + 1):

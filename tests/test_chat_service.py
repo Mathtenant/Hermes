@@ -149,8 +149,19 @@ def test_formatter_capability_lists_examples():
 
 
 def test_formatter_meta_model():
-    text = ResponseFormatter.format_result({}, "meta", "What model are you?")
-    assert "qwen" in text.lower()
+    """The meta reply names whichever model is active, not a hard-coded one."""
+    text = ResponseFormatter.format_result(
+        {}, "meta", "What model are you?", "qwen3:4b"
+    )
+    assert "qwen3:4b" in text
+
+    # Swapping the model must change the answer — otherwise the reply would
+    # keep claiming a model the assistant is no longer running.
+    swapped = ResponseFormatter.format_result(
+        {}, "meta", "What model are you?", "llama3.1:8b"
+    )
+    assert "llama3.1:8b" in swapped
+    assert "qwen" not in swapped.lower()
 
 
 def test_formatter_meta_local():
@@ -178,6 +189,8 @@ def test_service_capability_no_action():
 
 def test_service_meta_no_action():
     class MetaRouter:
+        model = "qwen3:4b"
+
         def classify(self, message, context):  # noqa: ANN001
             return IntentClassification(intent="meta", params={}, confidence=0.9)
 
@@ -185,7 +198,7 @@ def test_service_meta_no_action():
     service = ChatService(store, MetaRouter(), FakeExecutor(), FakeLLMClient())
     turn = service.handle_turn("What model are you?", "proj1")
     assert turn.action is None
-    assert "qwen" in turn.message.content.lower()
+    assert "qwen3:4b" in turn.message.content
 
 
 def test_service_greeting_not_rephrase_fallback():
@@ -592,3 +605,79 @@ def test_stream_turn_suggestions_in_done_event():
     store = ChatStore(":memory:")
     _, terminal = _collect_stream(_service(store), "Hello", "proj1")
     assert isinstance(terminal.get("suggestions"), list)
+
+
+# --------------------------------------------------------------------------- #
+# Regression: an unreachable model must say so, not pretend it understood.
+#
+# _classify swallows every router exception. It used to degrade to
+# confidence 0.0, which rendered the "unknown" template — telling the user
+# "I understood your message, but I'm not sure how to help" when in truth
+# Ollama was unreachable. That hid a fixable setup error behind a reply that
+# blamed the user's phrasing.
+# --------------------------------------------------------------------------- #
+
+
+class _BrokenRouter:
+    """Stands in for a router whose model cannot be reached."""
+
+    model = "qwen3:4b"
+
+    def classify(self, message, context):  # noqa: ANN001
+        raise ConnectionError("Cannot reach Ollama at http://localhost:11434")
+
+
+def test_unreachable_model_reports_setup_error():
+    store = ChatStore(":memory:")
+    service = ChatService(store, _BrokenRouter(), FakeExecutor(), FakeLLMClient())
+    turn = service.handle_turn("test", "proj1")
+    content = turn.message.content
+
+    # Names the real cause and the remedy...
+    assert "ollama" in content.lower()
+    assert "Cannot reach Ollama" in content
+    # ...and must NOT claim comprehension or offer intent suggestions.
+    assert "I understood your message" not in content
+    assert turn.action is None
+
+
+def test_unreachable_model_reports_setup_error_when_streaming():
+    store = ChatStore(":memory:")
+    service = ChatService(store, _BrokenRouter(), FakeExecutor(), FakeLLMClient())
+    chunks = [c for c in service.stream_turn("test", "proj1") if isinstance(c, str)]
+    content = "".join(chunks)
+
+    assert "Cannot reach Ollama" in content
+    assert "I understood your message" not in content
+
+
+def test_genuine_unknown_still_offers_suggestions():
+    """A real low-confidence classification keeps the original fallback."""
+
+    class _UnsureRouter:
+        model = "qwen3:4b"
+
+        def classify(self, message, context):  # noqa: ANN001
+            return IntentClassification(intent="unknown", params={}, confidence=0.2)
+
+    store = ChatStore(":memory:")
+    service = ChatService(store, _UnsureRouter(), FakeExecutor(), FakeLLMClient())
+    content = service.handle_turn("asdfgh", "proj1").message.content
+
+    assert "I understood your message" in content
+    assert "ollama" not in content.lower()
+
+
+def test_french_message_does_not_crash():
+    """detect_language can return 'fr'; every block must resolve (or fall back)."""
+
+    class _SmallTalkRouter:
+        model = "qwen3:4b"
+
+        def classify(self, message, context):  # noqa: ANN001
+            return IntentClassification(intent="smalltalk", params={}, confidence=0.9)
+
+    store = ChatStore(":memory:")
+    service = ChatService(store, _SmallTalkRouter(), FakeExecutor(), FakeLLMClient())
+    turn = service.handle_turn("Bonjour, pouvez-vous m'aider ?", "proj1")
+    assert turn.message.content.strip()

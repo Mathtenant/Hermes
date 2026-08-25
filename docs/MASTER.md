@@ -925,9 +925,10 @@ message, executes the matching action, and replies in prose. All inference is
 local (Ollama).
 
 **Architecture**
-- **IntentRouter** (`chat/router.py`) — classifies a message into one of eight intents using the ROUTER model (`qwen3:4b`) via grammar-constrained structured output. The LLM client is duck-typed (`LLMClient` Protocol) for test injection.
+- **IntentRouter** (`chat/router.py`) — classifies a message into one of eight intents using the chat model (`settings.chat_model`, default `qwen3:4b`) via grammar-constrained structured output. It passes its grounded prompt as `structured(..., system=...)`; `OllamaClient.structured` prepends that as a `system` message. The LLM client is duck-typed (`LLMClient` Protocol) for test injection — note that a fake accepting `**kwargs` will mask a signature drift against the real client, so `test_router_call_matches_real_client_signature` binds the router's actual call against `OllamaClient.structured`.
 - **ActionExecutor** (`chat/executor.py`) — dispatches an intent to a concrete side effect against the Risk Registry, Task Store, and Plan Editor. Every handler returns a JSON-serialisable dict; errors are captured, not raised.
-- **ChatService** (`chat/service.py`) — orchestrates one turn: classify → execute (or fall back) → format → persist → suggest. Intent classification is wrapped so an unavailable ROUTER model degrades to a safe `answer_question` fallback.
+- **ChatService** (`chat/service.py`) — orchestrates one turn: classify → execute (or fall back) → format → persist → suggest. Intent classification is wrapped so a router failure never 500s the request; the failure reason is returned alongside the classification and rendered from the `llm_unavailable` template, which names the cause and the remedy. This is deliberately distinct from the `unknown` reply: telling a user "I understood your message, but I'm not sure how to help" when Ollama is simply not running hides a fixable setup error behind a reply that blames their phrasing.
+- The service is constructed with the Risk Registry, Plan Editor, and Task Store injected, so `ChatContext` is hydrated with real project state (risk list, open task count) on every turn.
 - **ChatStore** (`chat/store.py`) — WAL-mode SQLite persistence of sessions, messages, and actions with `ON DELETE CASCADE`. Opened with `check_same_thread=False` for FastAPI threadpool workers.
 - **ResponseFormatter** (`chat/service.py`) — renders executor result dicts into natural-language replies.
 - **prompts.py** — router and answer system prompts plus `build_context_block`.
@@ -937,12 +938,21 @@ local (Ollama).
 - `GET /api/chat/sessions` — list sessions (optional `project_id` filter).
 - `GET /api/chat/sessions/{id}` — session plus full message history.
 - `DELETE /api/chat/sessions/{id}` — delete a session (cascades messages/actions).
+- `GET /api/chat/models` — installed Ollama models plus the active one: `{available, models[], current, default, error}`. `available:false` (with `error`) means Ollama is unreachable, so the UI can explain an empty picker instead of showing a blank dropdown.
+- `POST /api/chat/model` — swap the model backing the intent router: `{"model": "llama3.1:8b"}`. Rejects a model that is not pulled (422, listing what *is* installed) rather than leaving every later turn failing; 503 when Ollama is down. A bare name is accepted when exactly one installed tag matches. The override is process-local and not persisted — a restart returns to `settings.chat_model`.
 
 All responses pass through a confidentiality guard; blocking work runs in a thread pool. Input validated (message 1–2000 chars, `project_id` required).
 
-**Frontend (`webapp/static/chat.js`):** self-contained, framework-free widget mounted into `#chat-app`. Fixed bottom-right, collapsible, user/assistant bubbles, suggestion buttons, typing indicator, Enter-to-send, inline error display.
+**Frontend (`webapp/static/chat.js`):** self-contained, framework-free widget mounted into `#chat-app`. Fixed bottom-right, user/assistant bubbles, suggestion buttons, typing indicator, Enter-to-send, inline error display.
 
-**Intents:** `create_risk`, `create_task`, `list_risks`, `show_plan`, `review_status`, `run_review`, `answer_question`, `smalltalk`.
+- **Collapse/expand:** the entire header bar is the control (`role="button"`, `tabindex="0"`, Enter/Space), not just the `+`/`−` glyph, which is now decorative (`aria-hidden`). State persists in `sessionStorage`.
+- **Model picker:** a `<select>` below the header lists installed models and switches the router via `POST /api/chat/model`. The list is fetched lazily on first expand, so a collapsed widget costs no request. A rejected switch rolls the selection back and shows the server's reason, so the dropdown never displays a model the server refused.
+
+**Intents:** `create_risk`, `create_task`, `list_risks`, `show_plan`, `review_status`, `run_review`, `answer_question`, `smalltalk`, `capability`, `meta`, `unknown`.
+
+**Config:** `chat_model` (env `CHAT_MODEL`, default `qwen3:4b`) selects the router model; `chat_confidence_threshold` (env `CHAT_CONFIDENCE_THRESHOLD`, default 0.7) is the minimum confidence to execute an action.
+
+**Response templates (`chat/responses.yaml`):** conversational intents are answered from static, language-aware templates with no LLM call. `detect_language` returns `en`/`de`/`fr`; every block carries an `en` entry and `ResponseFormatter._block` falls back to it, so a language without a translation can never raise `KeyError` mid-turn. `[model]` is substituted with the active model so "what model are you?" stays truthful after a swap.
 
 **Testing:** 13 `ChatStore` + 11 `IntentRouter` + 15 `ActionExecutor` + 10 `ChatService`/`ResponseFormatter` unit tests; 20 API integration tests; 2 perf tests; 15 E2E browser tests (`e2e/test_chat_ui.py`, marked `e2e`, skipped without Playwright + live server on `:8000`).
 

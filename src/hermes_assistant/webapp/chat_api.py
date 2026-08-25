@@ -86,6 +86,12 @@ MAX_MESSAGE_CHARS = 2000
 # the service against fresh database paths — used by the test suite.
 _chat_service: ChatService | None = None
 
+# Runtime model override set via POST /api/chat/model. None means "use
+# settings.chat_model". Deliberately process-local and not persisted: swapping
+# models is a live experiment, and a restart should return to the configured
+# default rather than silently keeping a model someone tried once.
+_active_model: str | None = None
+
 
 def get_chat_service() -> ChatService:
     """Build (once) and return the shared :class:`ChatService`.
@@ -98,13 +104,106 @@ def get_chat_service() -> ChatService:
         data_dir = Path(settings.data_dir)
         store = ChatStore(settings.chat_db_path)
         client = OllamaClient()
-        intent_router = IntentRouter(client)
+        intent_router = IntentRouter(client, model=_active_model or settings.chat_model)
         risk_registry = RiskRegistry(data_dir / "risks.db")
         task_store = TaskStore(settings.tasks_db_path)
         plan_editor = PlanEditor(data_dir / "plans.db")
         executor = ActionExecutor(risk_registry, task_store, plan_editor)
-        _chat_service = ChatService(store, intent_router, executor, client)
+        _chat_service = ChatService(
+            store,
+            intent_router,
+            executor,
+            client,
+            risk_registry=risk_registry,
+            plan_editor=plan_editor,
+            task_store=task_store,
+        )
     return _chat_service
+
+
+def get_active_model() -> str:
+    """Return the model the chat router is currently using."""
+    return _active_model or settings.chat_model
+
+
+class ModelSelection(BaseModel):
+    """Body for ``POST /api/chat/model``."""
+
+    model: str
+
+
+@router.get("/models")
+@confidentiality_guard
+async def list_models() -> dict:
+    """List the models installed in the local Ollama, plus the active one.
+
+    ``available`` is False when Ollama cannot be reached; ``models`` is then
+    empty and ``error`` carries the transport detail so the UI can explain
+    why the picker is empty instead of showing a silently blank dropdown.
+    """
+    service = get_chat_service()
+
+    def handle():  # noqa: ANN202
+        return service.llm_client.health()
+
+    health = await run_in_threadpool(handle)
+    installed = [m for m in health.get("models", []) if m]
+    return {
+        "available": bool(health.get("available")),
+        "models": sorted(installed),
+        "current": get_active_model(),
+        "default": settings.chat_model,
+        "error": health.get("error") or "",
+    }
+
+
+@router.post("/model")
+@confidentiality_guard
+async def set_model(req: ModelSelection) -> dict:
+    """Switch the model backing the chat intent router.
+
+    The model must already be installed in Ollama — switching to a model that
+    is not pulled would leave every subsequent turn failing, so it is rejected
+    up front with the list of models that *are* available.
+    """
+    global _active_model
+    requested = (req.model or "").strip()
+    if not requested:
+        raise HTTPException(status_code=422, detail="model required")
+
+    service = get_chat_service()
+
+    def handle():  # noqa: ANN202
+        return service.llm_client.health()
+
+    health = await run_in_threadpool(handle)
+    if not health.get("available"):
+        raise HTTPException(
+            status_code=503,
+            detail="Ollama is not reachable — start it with `ollama serve`.",
+        )
+
+    installed = [m for m in health.get("models", []) if m]
+    # Ollama reports fully-qualified tags (e.g. "qwen3:4b"); accept a bare
+    # name when exactly one installed tag matches it.
+    if requested not in installed:
+        bare_matches = [m for m in installed if m.split(":")[0] == requested]
+        if len(bare_matches) == 1:
+            requested = bare_matches[0]
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Model {requested!r} is not installed. "
+                    f"Available: {', '.join(sorted(installed)) or 'none'}. "
+                    f"Pull it first with `ollama pull {requested}`."
+                ),
+            )
+
+    _active_model = requested
+    service.router.model = requested
+    _log.info("Chat model switched to %s", requested)
+    return {"current": requested, "models": sorted(installed)}
 
 
 class ChatMessageRequest(BaseModel):

@@ -61,6 +61,12 @@ class ResponseFormatter:
     _RESPONSES: dict[str, Any] | None = None
     _CONVERSATIONAL = ("smalltalk", "capability", "meta", "unknown")
 
+    # Sentinel intent used when the router could not reach the model at all.
+    # Handled like a conversational intent (no side effect, no executor call)
+    # but rendered from its own template so a setup problem is not disguised
+    # as "I understood you but don't know how to help".
+    LLM_UNAVAILABLE = "llm_unavailable"
+
     @classmethod
     def load_responses(cls) -> dict[str, Any]:
         """Lazily load and cache the static response templates."""
@@ -105,8 +111,24 @@ class ResponseFormatter:
         return "en"
 
     @classmethod
+    def _block(cls, key: str, language: str) -> Any:
+        """Return the template block for ``key``/``language``, falling back to en.
+
+        ``detect_language`` may return a language a block does not translate;
+        without this fallback that would raise KeyError and 500 the turn.
+        """
+        entry = cls.load_responses()[key]
+        if isinstance(entry, dict) and language not in entry:
+            return entry["en"]
+        return entry[language] if isinstance(entry, dict) else entry
+
+    @classmethod
     def format_result(
-        cls, result: dict[str, Any], intent: str, message: str = ""
+        cls,
+        result: dict[str, Any],
+        intent: str,
+        message: str = "",
+        model: str = "",
     ) -> str:
         """Convert an action result (or conversational intent) into prose.
 
@@ -114,20 +136,43 @@ class ResponseFormatter:
         is drawn from the static templates, disambiguated by keywords in
         ``message``. Existing action intents ignore ``message`` and render
         ``result`` as before, preserving the historical two-arg signature.
+
+        ``model`` is the active chat model id. It fills the ``[model]``
+        placeholder so "what model are you?" answers truthfully after a
+        runtime model swap instead of naming a hard-coded one.
         """
+        if intent == cls.LLM_UNAVAILABLE:
+            return cls._format_unavailable(
+                message, str(result.get("reason", "")), model
+            )
         if intent in cls._CONVERSATIONAL:
-            return cls._format_conversational(intent, message)
+            return cls._format_conversational(intent, message, model)
         return cls.format_result_existing(result, intent)
 
+    @staticmethod
+    def _with_model(template: str, model: str) -> str:
+        """Fill the ``[model]`` placeholder with the active model id."""
+        return template.replace("[model]", model or "a local model")
+
     @classmethod
-    def _format_conversational(cls, intent: str, message: str) -> str:
+    def _format_unavailable(cls, message: str, reason: str, model: str = "") -> str:
+        """Render the 'local model unreachable' reply, naming the real cause."""
+        language = cls.detect_language(message)
+        template = cls._block(cls.LLM_UNAVAILABLE, language)
+        return template.replace("[reason]", reason or "no detail available").replace(
+            "[model]", model or "the chat model"
+        )
+
+    @classmethod
+    def _format_conversational(
+        cls, intent: str, message: str, model: str = ""
+    ) -> str:
         """Render a smalltalk/capability/meta/unknown reply from templates."""
         language = cls.detect_language(message)
-        responses = cls.load_responses()
         msg_lower = message.lower()
 
         if intent == "smalltalk":
-            block = responses["smalltalk"][language]
+            block = cls._block("smalltalk", language)
             if any(w in msg_lower for w in ["hello", "hi", "hallo", "hey", "guten"]):
                 return block.get("greeting", "Hello!")
             if any(w in msg_lower for w in ["thanks", "thank you", "danke", "dank dir"]):
@@ -137,21 +182,21 @@ class ResponseFormatter:
             return block["greeting"]
 
         if intent == "capability":
-            return responses["capability"][language]["default"]
+            return cls._block("capability", language)["default"]
 
         if intent == "meta":
-            block = responses["meta"][language]
+            block = cls._block("meta", language)
             if any(w in msg_lower for w in ["model", "modell", "which ai", "welch"]):
-                return block["model"]
+                return cls._with_model(block["model"], model)
             if any(w in msg_lower for w in ["local", "lokal", "offline", "my machine"]):
                 return block["local"]
             if any(w in msg_lower for w in ["data", "daten", "see", "sehen", "project"]):
                 return block["data"]
-            return block["model"]
+            return cls._with_model(block["model"], model)
 
         # unknown
         suggestions = ["create a risk", "list risks", "show plan"]
-        return responses["unknown"][language].replace(
+        return cls._block("unknown", language).replace(
             "[suggestions]", " / ".join(suggestions)
         )
 
@@ -273,30 +318,40 @@ class ChatService:
         )
 
         # 4. Classify intent (degrade gracefully on any router failure).
-        classification = self._classify(message, context)
+        classification, failure_reason = self._classify(message, context)
 
         # 5. Execute the action, or handle a conversational intent.
         #    Conversational intents (smalltalk/capability/meta/unknown) are
         #    answered from static templates with no side effect and no LLM call.
         high_confidence = classification.confidence >= settings.chat_confidence_threshold
-        conversational = classification.intent in ResponseFormatter._CONVERSATIONAL
-        if conversational:
+        unavailable = bool(failure_reason)
+        conversational = (
+            classification.intent in ResponseFormatter._CONVERSATIONAL or unavailable
+        )
+        if unavailable:
+            result = {"action": "conversational", "reason": failure_reason}
+            response_text = ResponseFormatter.format_result(
+                result, ResponseFormatter.LLM_UNAVAILABLE, message, self._model()
+            )
+        elif conversational:
             result = {"action": "conversational"}
             response_text = ResponseFormatter.format_result(
-                result, classification.intent, message
+                result, classification.intent, message, self._model()
             )
         elif high_confidence:
             result = self.executor.execute(
                 classification.intent, classification.params, context
             )
             response_text = ResponseFormatter.format_result(
-                result, classification.intent, message
+                result, classification.intent, message, self._model()
             )
         else:
             # Low confidence and not a recognised conversational intent:
             # degrade to the improved "unknown" fallback (suggestions).
             result = {"action": "conversational"}
-            response_text = ResponseFormatter.format_result(result, "unknown", message)
+            response_text = ResponseFormatter.format_result(
+                result, "unknown", message, self._model()
+            )
 
         # H1: Guard BEFORE persistence — validate response before writing to store.
         # Lazy import avoids the circular dependency:
@@ -405,26 +460,39 @@ class ChatService:
         )
 
         # 4. Classify intent (degrade gracefully on any router failure).
-        classification = self._classify(message, context)
+        classification, failure_reason = self._classify(message, context)
 
         # 5. Execute the action or handle conversational intent.
         high_confidence = classification.confidence >= settings.chat_confidence_threshold
-        conversational = classification.intent in ResponseFormatter._CONVERSATIONAL
-        if conversational:
-            result: dict[str, Any] = {"action": "conversational"}
+        unavailable = bool(failure_reason)
+        conversational = (
+            classification.intent in ResponseFormatter._CONVERSATIONAL or unavailable
+        )
+        if unavailable:
+            result: dict[str, Any] = {
+                "action": "conversational",
+                "reason": failure_reason,
+            }
             response_text = ResponseFormatter.format_result(
-                result, classification.intent, message
+                result, ResponseFormatter.LLM_UNAVAILABLE, message, self._model()
+            )
+        elif conversational:
+            result = {"action": "conversational"}
+            response_text = ResponseFormatter.format_result(
+                result, classification.intent, message, self._model()
             )
         elif high_confidence:
             result = self.executor.execute(
                 classification.intent, classification.params, context
             )
             response_text = ResponseFormatter.format_result(
-                result, classification.intent, message
+                result, classification.intent, message, self._model()
             )
         else:
             result = {"action": "conversational"}
-            response_text = ResponseFormatter.format_result(result, "unknown", message)
+            response_text = ResponseFormatter.format_result(
+                result, "unknown", message, self._model()
+            )
 
         # 6. Yield text word-by-word for perceived responsiveness, buffering
         #    the assembled text for the guard check.
@@ -483,13 +551,32 @@ class ChatService:
         }
 
     # ------------------------------------------------------------------ #
-    def _classify(self, message: str, context: ChatContext) -> IntentClassification:
-        """Classify intent, degrading to a safe fallback on any error."""
+    def _model(self) -> str:
+        """Active chat model id, read from the router so swaps are reflected."""
+        return getattr(self.router, "model", "") or ""
+
+    def _classify(
+        self, message: str, context: ChatContext
+    ) -> tuple[IntentClassification, str]:
+        """Classify intent, reporting the reason when the model is unreachable.
+
+        Returns the classification plus a failure reason (empty on success).
+        A router failure means Ollama is down, the model is not pulled, or the
+        request timed out — none of which the user can diagnose from a generic
+        "I'm not sure how to help". The reason is surfaced verbatim so the
+        setup problem is actionable.
+        """
         try:
-            return self.router.classify(message, context)
-        except Exception:  # noqa: BLE001 - LLM/transport failures must not 500
-            return IntentClassification(
-                intent="answer_question", params={}, confidence=0.0
+            return self.router.classify(message, context), ""
+        except Exception as exc:  # noqa: BLE001 - LLM/transport failures must not 500
+            reason = f"{type(exc).__name__}: {exc}"
+            logger.warning("Intent classification failed — %s", reason)
+            # `intent` stays inside its Literal domain — the failure travels in
+            # the reason string, so the router's intent vocabulary is not
+            # widened with a value the model itself could never return.
+            return (
+                IntentClassification(intent="unknown", params={}, confidence=0.0),
+                reason,
             )
 
     def _build_suggestions(

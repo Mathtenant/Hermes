@@ -1090,6 +1090,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 
 #chat-widget.is-open { height: 500px; max-height: calc(100vh - 40px); }
 
+/* The entire header bar is the collapse/expand control. */
 .chat-header {
   display: flex;
   align-items: center;
@@ -1098,7 +1099,12 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
   padding: 0.625rem 0.875rem;
   border-bottom: 1px solid var(--c-border);
   background: var(--c-bg-card);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease;
 }
+
+.chat-header:hover { background: var(--c-bg-subtle); }
 
 .chat-title {
   display: inline-flex;
@@ -1127,6 +1133,48 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
   border-radius: 4px;
 }
 .chat-toggle:hover { color: var(--c-text); background: var(--c-bg-subtle); }
+
+/* Model picker strip between the header and the message list. */
+.chat-modelbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  border-bottom: 1px solid var(--c-border-soft);
+  background: var(--c-bg-subtle);
+  flex-wrap: wrap;
+}
+
+.chat-model-select {
+  flex: 1;
+  min-width: 0;
+  padding: 0.25rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--c-text);
+  background: var(--c-bg-card);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+}
+
+.chat-model-select:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.chat-model-error {
+  flex-basis: 100%;
+  font-size: 0.6875rem;
+  color: var(--c-fail);
+}
+
+/* Inline system note (e.g. "Model switched to …") — not a chat bubble. */
+.chat-note {
+  align-self: center;
+  font-size: 0.6875rem;
+  color: var(--c-text-faint);
+  background: var(--c-bg-subtle);
+  border: 1px solid var(--c-border-soft);
+  border-radius: 9999px;
+  padding: 0.125rem 0.625rem;
+}
 
 .chat-messages {
   flex: 1;

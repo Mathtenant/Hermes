@@ -33,6 +33,11 @@
     session: null,
     project: "default",
     messages: [],
+    // Model picker: populated from GET /api/chat/models on first expand.
+    models: [],
+    currentModel: "",
+    modelsLoaded: false,
+    modelError: "",
   };
 
   function esc(s) {
@@ -43,9 +48,78 @@
       .replace(/"/g, "&quot;");
   }
 
+  // ── Model picker ─────────────────────────────────────────────────────────
+  // Loaded lazily (first expand) so a collapsed widget costs no request.
+  function loadModels(root) {
+    if (state.modelsLoaded) return;
+    state.modelsLoaded = true;
+    fetch("/api/chat/models")
+      .then(function (r) {
+        return r.ok ? r.json() : null;
+      })
+      .then(function (data) {
+        if (!data) return;
+        state.models = data.models || [];
+        state.currentModel = data.current || "";
+        state.modelError = data.available
+          ? ""
+          : "Ollama unreachable — start it with `ollama serve`";
+        render(root);
+      })
+      .catch(function () {
+        state.modelError = "Could not load the model list";
+        render(root);
+      });
+  }
+
+  function selectModel(root, model) {
+    if (!model || model === state.currentModel) return;
+    var previous = state.currentModel;
+    state.currentModel = model;
+    state.modelError = "";
+    render(root);
+
+    fetch("/api/chat/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: model }),
+    })
+      .then(function (r) {
+        return r.json().then(function (body) {
+          return { ok: r.ok, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.ok) {
+          state.currentModel = res.body.current || model;
+          pushSystemNote("Model switched to " + state.currentModel);
+        } else {
+          // Roll back so the dropdown never shows a model the server rejected.
+          state.currentModel = previous;
+          state.modelError =
+            typeof res.body.detail === "string"
+              ? res.body.detail
+              : "Could not switch model";
+        }
+        render(root);
+      })
+      .catch(function (err) {
+        state.currentModel = previous;
+        state.modelError = String(err.message || err);
+        render(root);
+      });
+  }
+
+  function pushSystemNote(text) {
+    state.messages.push({ role: "system", content: text });
+  }
+
   function render(root) {
     var msgs = state.messages
       .map(function (m) {
+        if (m.role === "system") {
+          return '<div class="chat-note">' + esc(m.content) + "</div>";
+        }
         var mine = m.role === "user";
         var suggestions = "";
         if (m.suggestions && m.suggestions.length) {
@@ -84,8 +158,45 @@
       ? '<div class="chat-typing">Assistant is typing…</div>'
       : "";
 
+    // Model picker row. Rendered even before the list arrives so the widget
+    // does not visibly reflow once /api/chat/models responds.
+    var options = state.models
+      .map(function (m) {
+        return (
+          '<option value="' +
+          esc(m) +
+          '"' +
+          (m === state.currentModel ? " selected" : "") +
+          ">" +
+          esc(m) +
+          "</option>"
+        );
+      })
+      .join("");
+    if (!state.models.length && state.currentModel) {
+      options =
+        '<option value="' + esc(state.currentModel) + '" selected>' +
+        esc(state.currentModel) +
+        "</option>";
+    }
+    var modelBar =
+      '<div class="chat-modelbar">' +
+      '<label for="chat-model" class="sr-only">Chat model</label>' +
+      '<select id="chat-model" class="chat-model-select" data-testid="chat-model-select"' +
+      (state.models.length ? "" : " disabled") +
+      ">" +
+      (options || '<option value="">No models found</option>') +
+      "</select>" +
+      (state.modelError
+        ? '<span class="chat-model-error" data-testid="chat-model-error">' +
+          esc(state.modelError) +
+          "</span>"
+        : "") +
+      "</div>";
+
     var bodyInner = state.isOpen
-      ? '<div class="chat-messages" aria-live="polite" aria-atomic="false" aria-label="Chat messages">' +
+      ? modelBar +
+        '<div class="chat-messages" aria-live="polite" aria-atomic="false" aria-label="Chat messages">' +
         msgs +
         typing +
         "</div>" +
@@ -111,36 +222,91 @@
 
     // When collapsed the container shrinks to just the header bar; `is-open`
     // gives the expanded panel its full canvas (see style.css).
+    // render() replaces the whole subtree, so anything the user has typed (and
+    // where their caret/focus was) would be lost. That matters because renders
+    // are not only user-driven: the model list arriving, or a streamed token,
+    // re-renders asynchronously and would otherwise wipe a half-typed message
+    // mid-keystroke. Carry the composer state across the swap.
+    var previousInput = root.querySelector(".chat-input");
+    var draft = previousInput ? previousInput.value : "";
+    var caret = previousInput ? previousInput.selectionStart : null;
+    var hadFocus = previousInput && document.activeElement === previousInput;
+
     root.innerHTML =
       '<div id="chat-widget" class="panel ' +
       (state.isOpen ? "is-open" : "is-collapsed") +
       '">' +
-      '<div class="chat-header">' +
-      '<h3 class="chat-title"><span class="chat-dot" aria-hidden="true"></span>Hermes Chat</h3>' +
-      '<button class="chat-toggle" data-collapse-target="chat-widget-body" aria-expanded="' +
+      // The whole bar is the toggle — clicking anywhere on it (or pressing
+      // Enter/Space while it is focused) expands/collapses the panel. The
+      // +/- button stays for affordance and screen-reader labelling, but is
+      // no longer the only hit target.
+      '<div class="chat-header" role="button" tabindex="0" data-testid="chat-header"' +
+      ' aria-controls="chat-widget-body" aria-expanded="' +
       String(state.isOpen) +
       '" aria-label="' +
       (state.isOpen ? "Collapse chat" : "Expand chat") +
       '">' +
+      '<h3 class="chat-title"><span class="chat-dot" aria-hidden="true"></span>Hermes Chat</h3>' +
+      '<button class="chat-toggle" data-collapse-target="chat-widget-body" tabindex="-1"' +
+      ' aria-hidden="true">' +
       (state.isOpen ? "−" : "+") +
       "</button>" +
       "</div>" +
       body +
       "</div>";
 
+    var nextInput = root.querySelector(".chat-input");
+    if (nextInput && draft) {
+      nextInput.value = draft;
+      if (hadFocus) {
+        nextInput.focus();
+        if (caret !== null) {
+          try {
+            nextInput.setSelectionRange(caret, caret);
+          } catch (e) {
+            /* older browsers — restoring the text alone is enough */
+          }
+        }
+      }
+    }
+
     wire(root);
   }
 
   function wire(root) {
-    var toggle = root.querySelector(".chat-toggle");
-    if (toggle) {
-      toggle.onclick = function () {
-        state.isOpen = !state.isOpen;
-        // Persist so a page reload keeps the panel collapsed/expanded.
-        writeCollapsed(!state.isOpen);
-        render(root);
+    function toggleOpen() {
+      state.isOpen = !state.isOpen;
+      // Persist so a page reload keeps the panel collapsed/expanded.
+      writeCollapsed(!state.isOpen);
+      render(root);
+      if (state.isOpen) loadModels(root);
+    }
+
+    // Whole header bar toggles. The inner button has no own handler — the
+    // click bubbles to the header, so a single listener covers both.
+    var header = root.querySelector(".chat-header");
+    if (header) {
+      header.onclick = toggleOpen;
+      header.onkeydown = function (e) {
+        if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+          e.preventDefault(); // Space would otherwise scroll the page
+          toggleOpen();
+        }
       };
     }
+
+    var modelSelect = root.querySelector(".chat-model-select");
+    if (modelSelect) {
+      modelSelect.onchange = function () {
+        selectModel(root, this.value);
+      };
+      // The picker sits inside the header's sibling body, but guard anyway so
+      // interacting with it can never collapse the panel.
+      modelSelect.onclick = function (e) {
+        e.stopPropagation();
+      };
+    }
+
     var input = root.querySelector(".chat-input");
     var send = root.querySelector(".chat-send");
     if (send && input) {
@@ -164,6 +330,10 @@
 
   function sendMessage(root, text) {
     if (!text || !text.trim()) return;
+    // Clear the live composer before rendering: render() preserves whatever is
+    // in the field, so the sent text would otherwise stay behind.
+    var composer = root.querySelector(".chat-input");
+    if (composer) composer.value = "";
     state.messages.push({ role: "user", content: text });
     state.isLoading = true;
     // Placeholder assistant bubble updated token-by-token during streaming.
@@ -247,6 +417,9 @@
       var root = typeof el === "string" ? document.querySelector(el) : el;
       if (!root) return;
       render(root);
+      // Only fetch the model list when the panel starts expanded; a collapsed
+      // widget stays free until the user opens it.
+      if (state.isOpen) loadModels(root);
       return root;
     },
   };

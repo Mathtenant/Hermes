@@ -166,3 +166,58 @@ def test_router_init_custom_model():
     )
     router = IntentRouter(client, model="custom_model")
     assert router.model == "custom_model"
+
+
+# --------------------------------------------------------------------------- #
+# Regression: the router must be callable against the *real* client signature.
+#
+# The FakeLLMClient above absorbs any keyword via **kwargs, which hid a real
+# defect: IntentRouter.classify passes `system=`, but OllamaClient.structured
+# had no such parameter. Every live turn raised TypeError, ChatService caught
+# it, and the user saw the generic "not sure how to help" reply — so the chat
+# never worked against Ollama while the suite stayed green.
+# --------------------------------------------------------------------------- #
+
+
+def test_router_call_matches_real_client_signature():
+    """The kwargs the router sends must bind to OllamaClient.structured."""
+    import inspect
+
+    from hermes_assistant.llm.client import OllamaClient
+
+    signature = inspect.signature(OllamaClient.structured)
+    # Bind exactly what IntentRouter.classify passes. Raises TypeError if the
+    # real client cannot accept it.
+    signature.bind(
+        OllamaClient,  # self
+        "qwen3:4b",
+        [{"role": "user", "content": "hi"}],
+        IntentClassification,
+        system="grounded system prompt",
+        num_ctx=4096,
+    )
+
+
+def test_structured_prepends_system_prompt():
+    """`system=` is delivered to Ollama as a leading system message."""
+    from hermes_assistant.llm.client import OllamaClient
+
+    captured: dict = {}
+
+    class _StubClient(OllamaClient):
+        def _post(self, path, payload, timeout):  # noqa: ANN001, ANN202
+            captured["messages"] = payload["messages"]
+            return {
+                "message": {
+                    "content": IntentClassification(
+                        intent="smalltalk", params={}, confidence=0.9
+                    ).model_dump_json()
+                }
+            }
+
+    router = IntentRouter(_StubClient(), model="qwen3:4b")
+    router.classify("Hello", ChatContext(project_id="proj1"))
+
+    assert captured["messages"][0]["role"] == "system"
+    assert "proj1" in captured["messages"][0]["content"]
+    assert captured["messages"][-1] == {"role": "user", "content": "Hello"}

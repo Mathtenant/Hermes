@@ -947,6 +947,7 @@ All responses pass through a confidentiality guard; blocking work runs in a thre
 
 - **Collapse/expand:** the entire header bar is the control (`role="button"`, `tabindex="0"`, Enter/Space), not just the `+`/`−` glyph, which is now decorative (`aria-hidden`). State persists in `sessionStorage`.
 - **Model picker:** a `<select>` below the header lists installed models and switches the router via `POST /api/chat/model`. The list is fetched lazily on first expand, so a collapsed widget costs no request. A rejected switch rolls the selection back and shows the server's reason, so the dropdown never displays a model the server refused.
+- **Tab title flash:** local inference is slow enough that people tab away mid-question, so when a turn finishes while `document.hidden` is true the tab title alternates (~1.2 s) between the page title and `💬 Hermes reply ready`, counting and pluralising multiple replies (`(2) 💬 Hermes replies ready`). Returning to the tab — `visibilitychange` or window `focus` — clears the interval and restores the original title. Nothing happens while the tab is visible: the streamed bubble is already the signal. It fires on errors too, since the wait is over either way. Purely client-side, no permission prompt, no backend change (it hooks the existing SSE completion). Note it only covers a *backgrounded tab*; a visible tab with the widget collapsed still gives no signal.
 
 **Intents:** `create_risk`, `create_task`, `list_risks`, `show_plan`, `review_status`, `run_review`, `answer_question`, `smalltalk`, `capability`, `meta`, `unknown`.
 

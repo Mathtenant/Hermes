@@ -978,7 +978,23 @@ Three long-standing failures were fixed rather than tolerated. A suite that is r
 - **`security_audit.py::test_pre_commit_hook_active`** — `core.hooksPath` is per-clone local config and cannot be committed, and `bootstrap.sh` never set it, so *every fresh clone* failed. Bootstrap now wires the hook; the test skips (with the remedy) when the config is unset, and still fails when it points somewhere wrong — distinguishing "not provisioned" from "actively broken".
 - **Four `@pytest.mark.asyncio` guard tests** failed with `Runner.run() cannot be called from a running event loop` whenever the session also collected the Playwright E2E tests, because Playwright's sync API keeps a greenlet loop running in the main thread. The suite therefore passed or failed depending on which files were run together. They now drive the coroutine on a private loop in its own thread, making them independent of session composition.
 
-Whole suite: **1139 passed, 22 skipped, no failures**, in ~73 s.
+### Why a work-breakdown import looked like it did nothing
+
+Reported as: *"Successfully imported — 0 created, 66 updated"* with no visible change. Three independent causes, all reproduced first.
+
+1. **Nothing on the landing screen counted work packages.** The Overview tiles covered projects, timeline, pendenzen, risks and reviews; the sidebar badge for *Timeline & WBS* showed the **timeline** count. Importing 66 WBS nodes therefore changed no number anywhere — the data was there, two clicks away, with nothing pointing at it. Added an **Arbeitspakete** tile (`data-testid="tasks-count"`), made the sidebar badge count tasks + timeline, and included the task tree in the "no data yet" check. `wbs` carries only root nodes, so the count walks the tree — counting the array would report 6 for a 66-node breakdown.
+2. **Re-import silently ignored structural corrections.** `TaskStore.update()` writes the blob but syncs only the `status` column, so assigning `parent_id` through it left the indexed column — the one `list_by_parent` reads — pointing at the old parent. Correcting a structure in Copilot and re-importing reported "66 updated" while the tree on screen never moved; `node_kind` changes were dropped too. Added `TaskStore.set_parent()`, which moves the indexed column, the blob, both parents' `children_ids` and the WBS numbers of the moved subtree together, and refuses a move that would make a node its own ancestor. The importer now calls it and also applies `node_kind`.
+3. **The whole-project export never reached those screens at all.** `project_state/v1` mapped `wbs` → `plans` → plans.db, which no dashboard screen reads. It now emits `tasks` as well: plans.db keeps the versioned plan history, tasks.db is what WBS and Kanban render.
+
+The import result now also names where each entity type became visible (`66 Arbeitspakete → Strukturplan & Kanban`), because counts alone do not say what landed or which screen to look at.
+
+### Chat: messages could be lost when sent quickly
+
+`render()` replaced the widget's entire subtree on every streamed token. If that landed while text was being written into the composer, the value ended up on a node already detached from the document, so the send read an empty field and **the message vanished with no error** — reproducibly, roughly one in four rapid sequences. Preserving the value across the swap could not fix it: the race is with the write itself, not with the value.
+
+The composer and header are now built once (`renderShell`) and only the message list and model bar are refreshed (`patch`); a full rebuild happens only on an explicit collapse/expand, never mid-typing. Handlers are delegated to the mount point, which survives every render.
+
+Whole suite: **1146 passed, 22 skipped, no failures**, in ~84 s.
 
 **Security:** same-origin only (no CORS); CSP headers on every response (`default-src 'none'`, scripts/styles are served from `'self'` — the CDN allowance is no longer exercised now that Vue is vendored); `_validate_safe_json()` on every API response (forbidden fields `raw_notes`, `evidence_quote`, `rationale`, `assumptions`, etc. → HTTP 500); Pydantic `extra="forbid"` on all view models; no authentication (trusted LAN assumption; Phase 5 adds SSO); localhost bind by default.
 

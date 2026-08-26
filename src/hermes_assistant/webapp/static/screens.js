@@ -58,6 +58,7 @@ const OverviewScreen = {
         && !props.error
         && (props.counts?.projects ?? 0) === 0
         && (props.counts?.risks ?? 0) === 0
+        && (props.counts?.tasks ?? 0) === 0
         && (props.counts?.pendenzen ?? 0) === 0
     );
 
@@ -103,6 +104,12 @@ const OverviewScreen = {
             <span class="stat-label">Timeline items</span>
             <span class="stat-value">{{ counts.timeline }}</span>
             <span class="stat-hint">{{ upcoming.length }} upcoming</span>
+          </button>
+
+          <button class="stat-tile" @click="$emit('navigate', 'detail')">
+            <span class="stat-label">Arbeitspakete</span>
+            <span class="stat-value" data-testid="tasks-count">{{ counts.tasks }}</span>
+            <span class="stat-hint">Strukturplan &amp; Kanban</span>
           </button>
 
           <button class="stat-tile"

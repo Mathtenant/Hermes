@@ -502,3 +502,130 @@ def test_unsalvageable_input_still_raises():
 
     with pytest.raises(_json.JSONDecodeError):
         loads_forgiving("this is not json at all")
+
+
+# --------------------------------------------------------------------------- #
+# Re-import must apply structural corrections.
+#
+# Reported symptom: "0 created, 66 updated" and nothing visibly changed. Two
+# separate causes, both covered here and in the UI tests.
+# --------------------------------------------------------------------------- #
+
+
+def _wbs(nodes):
+    return {"schema": "hermes.wbs/v1", "wbs": nodes}
+
+
+def _tree(tmp_path: Path):
+    store = TaskStore(str(tmp_path / "tasks.db"))
+    try:
+        data = load_dashboard_data(
+            task_store=store,
+            job_store=JobStore(":memory:"),
+            risk_registry=None,
+            projects_root=tmp_path / "projects",
+        )
+    finally:
+        store.close()
+    return {n.title: [(c.title, c.wbs_number, c.kind) for c in n.children]
+            for n in data.wbs}
+
+
+def test_reimport_applies_reparenting(tmp_path: Path):
+    """Moving a node to a different parent must take effect on re-import.
+
+    ``update()`` writes the blob but syncs only the status column, so assigning
+    parent_id through it left the indexed column — the one the tree is read
+    from — pointing at the old parent. The import reported "updated" while the
+    WBS on screen never moved.
+    """
+    base = [
+        {"external_ref": "wp/a", "title": "Phase A", "node_kind": "phase", "status": "open"},
+        {"external_ref": "wp/b", "title": "Phase B", "node_kind": "phase", "status": "open"},
+    ]
+    _run_import(_wbs([*base, {
+        "external_ref": "wp/x", "parent_ref": "wp/a", "title": "Task X",
+        "node_kind": "task", "status": "open"}]), tmp_path)
+    assert [t for t, _, _ in _tree(tmp_path)["Phase A"]] == ["Task X"]
+
+    result = _run_import(_wbs([*base, {
+        "external_ref": "wp/x", "parent_ref": "wp/b", "title": "Task X",
+        "node_kind": "task", "status": "open"}]), tmp_path)
+    assert result.created == 0 and result.updated == 3
+
+    tree = _tree(tmp_path)
+    assert tree["Phase A"] == []
+    assert [t for t, _, _ in tree["Phase B"]] == ["Task X"]
+
+
+def test_reimport_recomputes_wbs_numbers_after_a_move(tmp_path: Path):
+    """A WBS number encodes the path, so a move must renumber the subtree."""
+    base = [
+        {"external_ref": "wp/a", "title": "Phase A", "node_kind": "phase", "status": "open"},
+        {"external_ref": "wp/b", "title": "Phase B", "node_kind": "phase", "status": "open"},
+    ]
+    _run_import(_wbs([*base, {
+        "external_ref": "wp/x", "parent_ref": "wp/a", "title": "Task X",
+        "node_kind": "task", "status": "open"}]), tmp_path)
+    assert _tree(tmp_path)["Phase A"][0][1] == "1.1"
+
+    _run_import(_wbs([*base, {
+        "external_ref": "wp/x", "parent_ref": "wp/b", "title": "Task X",
+        "node_kind": "task", "status": "open"}]), tmp_path)
+    assert _tree(tmp_path)["Phase B"][0][1] == "2.1"
+
+
+def test_reimport_applies_node_kind_change(tmp_path: Path):
+    base = [{"external_ref": "wp/a", "title": "Phase A",
+             "node_kind": "phase", "status": "open"}]
+    _run_import(_wbs([*base, {
+        "external_ref": "wp/x", "parent_ref": "wp/a", "title": "X",
+        "node_kind": "task", "status": "open"}]), tmp_path)
+    assert _tree(tmp_path)["Phase A"][0][2] == "task"
+
+    _run_import(_wbs([*base, {
+        "external_ref": "wp/x", "parent_ref": "wp/a", "title": "X",
+        "node_kind": "deliverable", "status": "open"}]), tmp_path)
+    assert _tree(tmp_path)["Phase A"][0][2] == "deliverable"
+
+
+def test_set_parent_refuses_to_create_a_cycle(tmp_path: Path):
+    """Moving a node under its own descendant would detach the subtree."""
+    _run_import(_wbs([
+        {"external_ref": "wp/a", "title": "A", "node_kind": "phase", "status": "open"},
+        {"external_ref": "wp/b", "parent_ref": "wp/a", "title": "B",
+         "node_kind": "task", "status": "open"},
+    ]), tmp_path)
+
+    store = TaskStore(str(tmp_path / "tasks.db"))
+    try:
+        a = store.find_by_external_ref("wp/a")
+        b = store.find_by_external_ref("wp/b")
+        with pytest.raises(ValueError):
+            store.set_parent(a.id, b.id)
+    finally:
+        store.close()
+
+
+def test_full_export_also_populates_wbs_and_kanban(tmp_path: Path):
+    """The whole-project export must reach the screens too.
+
+    Its `wbs` section maps to `plans` → plans.db, which no dashboard screen
+    reads; on its own that reported success and left WBS and Kanban empty.
+    """
+    payload = {
+        "schema": "hermes.project_state/v1",
+        "project": {"external_ref": "proj/demo", "title": "Demo"},
+        "wbs": [
+            {"external_ref": "wp/root", "title": "Realisierung",
+             "node_kind": "phase", "status": "open"},
+            {"external_ref": "wp/kid", "parent_ref": "wp/root", "title": "Checkout",
+             "node_kind": "task", "status": "open"},
+        ],
+    }
+    result = _run_import(payload, tmp_path)
+    assert result.entity_counts.get("plans") == 1   # history preserved
+    assert result.entity_counts.get("tasks") == 2   # and now rendered
+
+    tree = _tree(tmp_path)
+    assert [t for t, _, _ in tree["Realisierung"]] == ["Checkout"]

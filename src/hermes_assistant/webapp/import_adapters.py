@@ -6,9 +6,9 @@ Maps versioned third-party schemas → native importer schema so that
 Adapters are registered by schema-version string via ``_register`` and
 dispatched deterministically by ``adapt_payload``.  Each adapter returns a
 dict whose keys are a subset of the native importer entity types
-(``risks``, ``plans``, ``pendenzen``, ``projects``) plus the special
-``_skipped_sections`` key that lists top-level sections that were present
-but have no importer mapping.
+(``risks``, ``plans``, ``pendenzen``, ``projects``, ``tasks``, ``schedule``)
+plus the special ``_skipped_sections`` key that lists top-level sections that
+were present but have no importer mapping.
 """
 from __future__ import annotations
 
@@ -417,6 +417,30 @@ def _adapt_project_state_v1(payload: dict) -> dict:
             items.append(item)
         out["plans"] = [
             {"plan_id": plan_id, "author": "copilot-import", "items": items}
+        ]
+
+        # Also emit the tree as `tasks`. `plans` lands in plans.db, which keeps
+        # the versioned plan history but which no dashboard screen reads — so
+        # on its own the whole-project export left the WBS and Kanban empty
+        # while reporting success. Both are written: plans.db for history,
+        # tasks.db for what is actually rendered.
+        out["tasks"] = [
+            {
+                "title": str(node.get("title", "")),
+                "status": _TASK_STATUS_TABLE.get(
+                    str(node.get("status", "open")).lower(), "open"
+                ),
+                "node_kind": _NODE_KIND_TABLE.get(
+                    str(node.get("node_kind", "task")).lower(), "task"
+                ),
+                **({"external_ref": str(node["external_ref"])}
+                   if node.get("external_ref") else {}),
+                **({"parent_ref": str(node["parent_ref"])}
+                   if node.get("parent_ref") else {}),
+                **({"owner": str(node["owner"])} if node.get("owner") else {}),
+            }
+            for node in wbs_raw
+            if isinstance(node, dict)
         ]
 
     # ── risks — German enum translation ───────────────────────────────────

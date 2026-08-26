@@ -289,3 +289,40 @@ def test_title_flash_cycle_resets_after_return(page_hidden_control: Page):
     seen = _titles_over(page_hidden_control, samples=6, gap_ms=300)
     assert any("Hermes reply ready" in t for t in seen), seen
     assert not any("(2)" in t for t in seen), seen
+
+
+def test_rapid_sends_do_not_lose_messages(page_with_chat: Page):
+    """Sending several messages quickly must not drop any of them.
+
+    render() used to replace the widget's whole subtree on every streamed
+    token. If that landed while text was being written into the composer, the
+    value ended up on a node already detached from the document, so the send
+    read an empty field and the message vanished with no error. Preserving the
+    value across the swap could not fix it — the race is with the write itself
+    — so the composer is now built once and only the message list is
+    refreshed.
+    """
+    for i in range(3):
+        page_with_chat.locator(".chat-input").fill(f"Rapid {i}")
+        page_with_chat.locator(".chat-send").click()
+
+    page_with_chat.wait_for_timeout(3500)
+    sent = page_with_chat.evaluate(
+        "window.ChatWidget.state.messages"
+        ".filter(m => m.role === 'user').map(m => m.content)"
+    )
+    for i in range(3):
+        assert f"Rapid {i}" in sent, f"lost 'Rapid {i}' — got {sent}"
+
+
+def test_composer_keeps_text_while_a_reply_streams(page_with_chat: Page):
+    """Typing the next question while a reply arrives must not be wiped."""
+    page_with_chat.locator(".chat-input").fill("First question")
+    page_with_chat.locator(".chat-send").click()
+    # Type immediately, while the answer is still streaming in.
+    page_with_chat.locator(".chat-input").fill("Second question, still typing")
+    page_with_chat.wait_for_timeout(2500)
+    assert (
+        page_with_chat.locator(".chat-input").input_value()
+        == "Second question, still typing"
+    )

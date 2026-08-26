@@ -175,7 +175,8 @@
     window.addEventListener("focus", stopTitleFlash);
   }
 
-  function render(root) {
+  // ── HTML builders (shared by the full rebuild and the incremental patch) ──
+  function messagesHtml() {
     var msgs = state.messages
       .map(function (m) {
         if (m.role === "system") {
@@ -190,10 +191,7 @@
               .map(function (s) {
                 return (
                   '<button class="chat-suggestion" data-suggestion="' +
-                  esc(s) +
-                  '">' +
-                  esc(s) +
-                  "</button>"
+                  esc(s) + '">' + esc(s) + "</button>"
                 );
               })
               .join("") +
@@ -203,63 +201,54 @@
           '<div class="chat-row' + (mine ? " mine" : "") + '">' +
           '<div class="chat-bubble ' + (mine ? "mine" : "theirs") + '">' +
           esc(m.content) +
-          "</div>" +
-          suggestions +
-          "</div>"
+          "</div>" + suggestions + "</div>"
         );
       })
       .join("");
+    return msgs ||
+      '<div class="chat-empty">Ask Hermes about risks, pendenzen or the plan.</div>';
+  }
 
-    if (!msgs) {
-      msgs =
-        '<div class="chat-empty">Ask Hermes about risks, pendenzen or the plan.</div>';
-    }
-
-    var typing = state.isLoading
+  function typingHtml() {
+    return state.isLoading
       ? '<div class="chat-typing">Assistant is typing…</div>'
       : "";
+  }
 
-    // Model picker row. Rendered even before the list arrives so the widget
-    // does not visibly reflow once /api/chat/models responds.
+  function modelBarHtml() {
     var options = state.models
       .map(function (m) {
         return (
-          '<option value="' +
-          esc(m) +
-          '"' +
-          (m === state.currentModel ? " selected" : "") +
-          ">" +
-          esc(m) +
-          "</option>"
+          '<option value="' + esc(m) + '"' +
+          (m === state.currentModel ? " selected" : "") + ">" + esc(m) + "</option>"
         );
       })
       .join("");
     if (!state.models.length && state.currentModel) {
       options =
         '<option value="' + esc(state.currentModel) + '" selected>' +
-        esc(state.currentModel) +
-        "</option>";
+        esc(state.currentModel) + "</option>";
     }
-    var modelBar =
+    return (
       '<div class="chat-modelbar">' +
       '<label for="chat-model" class="sr-only">Chat model</label>' +
       '<select id="chat-model" class="chat-model-select" data-testid="chat-model-select"' +
-      (state.models.length ? "" : " disabled") +
-      ">" +
+      (state.models.length ? "" : " disabled") + ">" +
       (options || '<option value="">No models found</option>') +
       "</select>" +
       (state.modelError
         ? '<span class="chat-model-error" data-testid="chat-model-error">' +
-          esc(state.modelError) +
-          "</span>"
+          esc(state.modelError) + "</span>"
         : "") +
-      "</div>";
+      "</div>"
+    );
+  }
 
+  function renderShell(root) {
     var bodyInner = state.isOpen
-      ? modelBar +
+      ? modelBarHtml() +
         '<div class="chat-messages" aria-live="polite" aria-atomic="false" aria-label="Chat messages">' +
-        msgs +
-        typing +
+        messagesHtml() + typingHtml() +
         "</div>" +
         '<div class="chat-composer">' +
         '<label for="chat-input" class="sr-only">Message</label>' +
@@ -268,123 +257,133 @@
         "</div>"
       : "";
 
-    // The body is always a distinctly-identified panel so collapse state is
-    // addressable (#chat-widget-body). When collapsed it renders empty (no
-    // child input), which both hides the panel and drops interactive controls.
     var bodyStyle = state.isOpen
       ? "flex:1;display:flex;flex-direction:column;overflow:hidden;"
       : "display:none;";
     var body =
-      '<div id="chat-widget-body" class="panel-body" style="' +
-      bodyStyle +
-      '">' +
-      bodyInner +
-      "</div>";
-
-    // When collapsed the container shrinks to just the header bar; `is-open`
-    // gives the expanded panel its full canvas (see style.css).
-    // render() replaces the whole subtree, so anything the user has typed (and
-    // where their caret/focus was) would be lost. That matters because renders
-    // are not only user-driven: the model list arriving, or a streamed token,
-    // re-renders asynchronously and would otherwise wipe a half-typed message
-    // mid-keystroke. Carry the composer state across the swap.
-    var previousInput = root.querySelector(".chat-input");
-    var draft = previousInput ? previousInput.value : "";
-    var caret = previousInput ? previousInput.selectionStart : null;
-    var hadFocus = previousInput && document.activeElement === previousInput;
+      '<div id="chat-widget-body" class="panel-body" style="' + bodyStyle + '">' +
+      bodyInner + "</div>";
 
     root.innerHTML =
       '<div id="chat-widget" class="panel ' +
-      (state.isOpen ? "is-open" : "is-collapsed") +
-      '">' +
-      // The whole bar is the toggle — clicking anywhere on it (or pressing
-      // Enter/Space while it is focused) expands/collapses the panel. The
-      // +/- button stays for affordance and screen-reader labelling, but is
-      // no longer the only hit target.
+      (state.isOpen ? "is-open" : "is-collapsed") + '">' +
       '<div class="chat-header" role="button" tabindex="0" data-testid="chat-header"' +
-      ' aria-controls="chat-widget-body" aria-expanded="' +
-      String(state.isOpen) +
-      '" aria-label="' +
-      (state.isOpen ? "Collapse chat" : "Expand chat") +
-      '">' +
+      ' aria-controls="chat-widget-body" aria-expanded="' + String(state.isOpen) +
+      '" aria-label="' + (state.isOpen ? "Collapse chat" : "Expand chat") + '">' +
       '<h3 class="chat-title"><span class="chat-dot" aria-hidden="true"></span>Hermes Chat</h3>' +
       '<button class="chat-toggle" data-collapse-target="chat-widget-body" tabindex="-1"' +
-      ' aria-hidden="true">' +
-      (state.isOpen ? "−" : "+") +
-      "</button>" +
-      "</div>" +
-      body +
-      "</div>";
-
-    var nextInput = root.querySelector(".chat-input");
-    if (nextInput && draft) {
-      nextInput.value = draft;
-      if (hadFocus) {
-        nextInput.focus();
-        if (caret !== null) {
-          try {
-            nextInput.setSelectionRange(caret, caret);
-          } catch (e) {
-            /* older browsers — restoring the text alone is enough */
-          }
-        }
-      }
-    }
+      ' aria-hidden="true">' + (state.isOpen ? "−" : "+") + "</button>" +
+      "</div>" + body + "</div>";
 
     wire(root);
   }
 
-  function wire(root) {
-    function toggleOpen() {
-      state.isOpen = !state.isOpen;
-      // Persist so a page reload keeps the panel collapsed/expanded.
-      writeCollapsed(!state.isOpen);
-      render(root);
-      if (state.isOpen) loadModels(root);
+  /** Rebuild only the parts that change while the user may be typing.
+   *
+   * Replacing the whole subtree on every streamed token destroyed whatever
+   * was in the composer — and worse, could swap the element out *during* a
+   * keystroke or a programmatic fill, so the text landed on a node already
+   * detached from the document and the message was silently never sent.
+   * Preserving the value across the swap could not fix that: the race is with
+   * the write itself, not with the value.
+   *
+   * The composer and header are therefore built once and left alone; only the
+   * message list and the model bar are refreshed.
+   */
+  function patch(root) {
+    var messages = root.querySelector(".chat-messages");
+    if (messages) messages.innerHTML = messagesHtml() + typingHtml();
+
+    var bar = root.querySelector(".chat-modelbar");
+    if (bar) {
+      var select = bar.querySelector(".chat-model-select");
+      // Leave an open dropdown alone; rewriting it would close it mid-choice.
+      if (select && document.activeElement !== select) {
+        bar.outerHTML = modelBarHtml();
+      } else if (!select) {
+        bar.outerHTML = modelBarHtml();
+      }
+    }
+  }
+
+  function render(root) {
+    // A structural change (collapsing/expanding) genuinely needs a rebuild,
+    // and only happens on an explicit click — never mid-typing.
+    var widget = root.querySelector("#chat-widget");
+    var openNow = widget && widget.classList.contains("is-open");
+    if (!widget || openNow !== state.isOpen) {
+      renderShell(root);
+      return;
+    }
+    patch(root);
+    var list = root.querySelector(".chat-messages");
+    if (list) list.scrollTop = list.scrollHeight;
+  }
+
+  // Delegated listeners are attached once to the mount point, which survives
+  // every render, instead of being re-bound to fresh nodes on each one.
+  // Per-render binding loses events that arrive while the subtree is being
+  // replaced: an async render (the model list resolving, a stream finishing)
+  // landing between typing and clicking dropped the message entirely.
+  function wireOnce(root) {
+    if (root._hermesWired) return;
+    root._hermesWired = true;
+
+    function liveInputValue() {
+      var el = root.querySelector(".chat-input");
+      return el ? el.value : "";
     }
 
-    // Whole header bar toggles. The inner button has no own handler — the
-    // click bubbles to the header, so a single listener covers both.
-    var header = root.querySelector(".chat-header");
-    if (header) {
-      header.onclick = toggleOpen;
-      header.onkeydown = function (e) {
+    root.addEventListener("click", function (e) {
+      var suggestion = e.target.closest && e.target.closest(".chat-suggestion");
+      if (suggestion) {
+        sendMessage(root, suggestion.getAttribute("data-suggestion"));
+        return;
+      }
+      if (e.target.closest && e.target.closest(".chat-send")) {
+        sendMessage(root, liveInputValue());
+        return;
+      }
+      // The model picker sits below the header; interacting with it must not
+      // bubble up into the collapse toggle.
+      if (e.target.closest && e.target.closest(".chat-model-select")) return;
+      if (e.target.closest && e.target.closest(".chat-header")) {
+        toggleOpen(root);
+      }
+    });
+
+    root.addEventListener("keydown", function (e) {
+      if (e.target.closest && e.target.closest(".chat-input")) {
+        if (e.key === "Enter") sendMessage(root, e.target.value);
+        return;
+      }
+      if (e.target.closest && e.target.closest(".chat-header")) {
         if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
           e.preventDefault(); // Space would otherwise scroll the page
-          toggleOpen();
+          toggleOpen(root);
         }
-      };
-    }
+      }
+    });
 
-    var modelSelect = root.querySelector(".chat-model-select");
-    if (modelSelect) {
-      modelSelect.onchange = function () {
-        selectModel(root, this.value);
-      };
-      // The picker sits inside the header's sibling body, but guard anyway so
-      // interacting with it can never collapse the panel.
-      modelSelect.onclick = function (e) {
-        e.stopPropagation();
-      };
-    }
+    root.addEventListener("change", function (e) {
+      if (e.target.closest && e.target.closest(".chat-model-select")) {
+        selectModel(root, e.target.value);
+      }
+    });
+  }
 
-    var input = root.querySelector(".chat-input");
-    var send = root.querySelector(".chat-send");
-    if (send && input) {
-      send.onclick = function () {
-        sendMessage(root, input.value);
-      };
-      input.onkeyup = function (e) {
-        if (e.key === "Enter") sendMessage(root, input.value);
-      };
-    }
-    var sugg = root.querySelectorAll(".chat-suggestion");
-    for (var i = 0; i < sugg.length; i++) {
-      sugg[i].onclick = function () {
-        sendMessage(root, this.getAttribute("data-suggestion"));
-      };
-    }
-    // Keep the message list scrolled to the newest message.
+  function toggleOpen(root) {
+    state.isOpen = !state.isOpen;
+    // Persist so a page reload keeps the panel collapsed/expanded.
+    writeCollapsed(!state.isOpen);
+    render(root);
+    if (state.isOpen) loadModels(root);
+  }
+
+  function wire(root) {
+    // Behaviour lives in the delegated listeners installed by wireOnce(); the
+    // only per-render work left is scrolling to the newest message.
+    wireOnce(root);
     var list = root.querySelector(".chat-messages");
     if (list) list.scrollTop = list.scrollHeight;
   }

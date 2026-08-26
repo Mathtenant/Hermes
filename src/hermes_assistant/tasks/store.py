@@ -227,6 +227,115 @@ class TaskStore:
             assert result is not None
             return result
 
+    def set_parent(
+        self, task_id: str, new_parent_id: str | None, changed_by: str = "system"
+    ) -> Task:
+        """Move a task to a different parent, keeping every index consistent.
+
+        ``update()`` deliberately cannot do this: it writes the blob and syncs
+        only the ``status`` column, so assigning ``parent_id`` through it would
+        leave the indexed column — the one ``list_by_parent`` reads — pointing
+        at the old parent. The tree would then render in its previous shape
+        while the stored blob claimed otherwise.
+
+        Moving a node means four things must change together: the indexed
+        column, the blob, both parents' ``children_ids``, and the WBS numbers
+        of the moved subtree (which are derived from the parent's).
+
+        Raises ``KeyError`` if the task or the new parent does not exist, and
+        ``ValueError`` if the move would make a node its own ancestor.
+        """
+        with self._lock:
+            task = self.get(task_id)
+            if task is None:
+                raise KeyError(f"Task {task_id!r} not found")
+            if task.parent_id == new_parent_id:
+                return task
+
+            if new_parent_id is not None:
+                if self.get(new_parent_id) is None:
+                    raise KeyError(f"New parent {new_parent_id!r} not found")
+                # Walk up from the target: if we meet the node being moved, the
+                # move would detach the subtree into a cycle.
+                cursor: str | None = new_parent_id
+                while cursor is not None:
+                    if cursor == task_id:
+                        raise ValueError(
+                            f"Cannot move {task_id!r} under its own descendant"
+                        )
+                    parent = self.get(cursor)
+                    cursor = parent.parent_id if parent else None
+
+            old_parent_id = task.parent_id
+            now = _now()
+
+            self._conn.execute(
+                "UPDATE tasks SET parent_id = ?, updated_at = ? WHERE id = ?",
+                (new_parent_id, now.isoformat(), task_id),
+            )
+            self._update_blob(
+                task_id,
+                {
+                    "parent_id": new_parent_id,
+                    "updated_at": now,
+                    "updates": [
+                        *task.updates,
+                        TaskUpdate(
+                            timestamp=now,
+                            field="parent_id",
+                            old_value=old_parent_id,
+                            new_value=new_parent_id,
+                            changed_by=changed_by,
+                        ),
+                    ],
+                },
+            )
+
+            # Detach from the old parent, attach to the new one.
+            if old_parent_id:
+                old_parent = self.get(old_parent_id)
+                if old_parent is not None:
+                    self._update_blob(
+                        old_parent_id,
+                        {"children_ids": [
+                            c for c in old_parent.children_ids if c != task_id
+                        ]},
+                    )
+            if new_parent_id:
+                new_parent = self.get(new_parent_id)
+                if new_parent is not None and task_id not in new_parent.children_ids:
+                    self._update_blob(
+                        new_parent_id,
+                        {"children_ids": [*new_parent.children_ids, task_id]},
+                    )
+
+            self._renumber_subtree(task_id)
+            self._conn.commit()
+            result = self.get(task_id)
+            assert result is not None
+            return result
+
+    def _renumber_subtree(self, task_id: str) -> None:
+        """Recompute wbs_number for *task_id* and everything beneath it.
+
+        A WBS number encodes the path to the node, so moving a node invalidates
+        its own number and every descendant's.
+        """
+        task = self.get(task_id)
+        if task is None:
+            return
+        siblings = [t for t in self.list_by_parent(task.parent_id) if t.id != task_id]
+        position = len(siblings) + 1
+        if task.parent_id is None:
+            number = str(position)
+        else:
+            parent = self.get(task.parent_id)
+            prefix = parent.wbs_number if parent and parent.wbs_number else ""
+            number = f"{prefix}.{position}" if prefix else str(position)
+        self._update_blob(task_id, {"wbs_number": number})
+        for child in self.list_by_parent(task_id):
+            self._renumber_subtree(child.id)
+
     def close_task(self, task_id: str, changed_by: str = "system") -> Task:
         """Convenience method: set status = 'closed'."""
         with self._lock:

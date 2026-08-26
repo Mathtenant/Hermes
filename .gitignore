@@ -34,6 +34,10 @@ data/**/*.db
 data/**/*.db-wal
 data/**/*.db-shm
 data/**/*.jsonl
+# Derived, not authored: `hermes schedule` and the JSON importer both write
+# this per project. It is a function of the plan, so tracking it only ever
+# produces conflicts against whatever each machine last regenerated.
+data/projects/*/schedule.json
 src/hermes_assistant/data/*.db
 src/hermes_assistant/data/*.db-wal
 src/hermes_assistant/data/*.db-shm

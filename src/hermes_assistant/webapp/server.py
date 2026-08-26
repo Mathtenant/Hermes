@@ -303,8 +303,13 @@ async def import_json(request: Request) -> Response:
         MAX_IMPORT_BYTES,
         ImportResult,
         import_payload,
+        loads_forgiving,
         validate_import_payload,
     )
+
+    # Repairs applied to malformed-but-salvageable Copilot output; surfaced in
+    # the result so a sloppy export is visible rather than silently accepted.
+    json_repairs: list[str] = []
 
     content_type = request.headers.get("content-type", "")
 
@@ -320,9 +325,9 @@ async def import_json(request: Request) -> Response:
                     raise HTTPException(
                         status_code=413, detail="File exceeds 10 MB limit"
                     )
-                payload = _json.loads(content)
+                payload, json_repairs = loads_forgiving(content)
             elif raw_text is not None:
-                payload = _json.loads(str(raw_text))
+                payload, json_repairs = loads_forgiving(str(raw_text))
             else:
                 raise HTTPException(
                     status_code=422,
@@ -336,7 +341,7 @@ async def import_json(request: Request) -> Response:
                 )
             if not body:
                 raise HTTPException(status_code=422, detail="Empty request body")
-            payload = _json.loads(body)
+            payload, json_repairs = loads_forgiving(body)
     except HTTPException:
         raise
     except _json.JSONDecodeError as exc:
@@ -369,6 +374,8 @@ async def import_json(request: Request) -> Response:
         result.errors.append(
             f"Section {sec!r} is not supported by the importer and was skipped"
         )
+    for repair in json_repairs:
+        result.errors.append(f"JSON repariert: {repair}")
     json_str = result.model_dump_json()
     violations = _validate_safe_json(json_str)
     if violations:

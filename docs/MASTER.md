@@ -957,6 +957,29 @@ Imported content is machine-generated from documents nobody vetted, so it is the
 
 The importer's own guard patterns are imported from the response guard rather than re-declared, so the two cannot drift and let content pass import only to break every later response.
 
+### Tolerating real Copilot output
+
+The prompts forbid code fences and prose, but models emit them anyway, and a bare `Expecting value: line 1 column 1` gives the user nothing to act on. `loads_forgiving()` tries strict parsing first — a clean export takes the fast path and is never rewritten — then salvages the three common deviations:
+
+| Copilot emitted | Result |
+|---|---|
+| ```` ```json … ``` ```` | fence stripped |
+| `Here is the JSON you requested: {…}` | outermost object extracted |
+| `{"risks":[{…},]}` | structural trailing comma removed |
+
+Every repair is reported in `ImportResult.errors` as `JSON repariert: …`, so a sloppy export is visible rather than silently accepted. Repairs touch only material *outside* the JSON document plus structural commas: the trailing-comma pass is a string-aware character scan, not a regex, because a naive pattern would rewrite a comma inside a value such as `"Abnahme, }"` — turning a syntax repair into silent data corruption. Text that cannot be salvaged still raises.
+
+### Test-suite reliability
+
+Three long-standing failures were fixed rather than tolerated. A suite that is red by default teaches people to ignore red, which is the real stability cost.
+
+- **`test_json_import_ui.py` (17 failures)** — written against the one-step import modal that predated the two-step wizard, so every test looked for the JSON textarea while the dialog was still on step 1. Rewritten around `_open_paste_step()`. Two of its assertions had also become wrong on purpose and now assert the intended behaviour: the importer is **atomic per entity type** (one invalid row aborts that type — "2 of 3 created" would mean the guarantee was lost), and the dialog **stays open after success** so warnings such as redaction notices remain readable. Runtime fell from ~460 s to ~18 s, because the tests no longer sit through 5 s timeouts.
+- **`test_chat_ui.py::test_error_message`** — routed `**/api/chat/message`, which never matches `/api/chat/message/stream`, the endpoint the widget actually calls; the abort silently did nothing and the request succeeded. The widget now also names the likely cause ("the Hermes server is unreachable") instead of surfacing a bare `Failed to fetch`.
+- **`security_audit.py::test_pre_commit_hook_active`** — `core.hooksPath` is per-clone local config and cannot be committed, and `bootstrap.sh` never set it, so *every fresh clone* failed. Bootstrap now wires the hook; the test skips (with the remedy) when the config is unset, and still fails when it points somewhere wrong — distinguishing "not provisioned" from "actively broken".
+- **Four `@pytest.mark.asyncio` guard tests** failed with `Runner.run() cannot be called from a running event loop` whenever the session also collected the Playwright E2E tests, because Playwright's sync API keeps a greenlet loop running in the main thread. The suite therefore passed or failed depending on which files were run together. They now drive the coroutine on a private loop in its own thread, making them independent of session composition.
+
+Whole suite: **1139 passed, 22 skipped, no failures**, in ~73 s.
+
 **Security:** same-origin only (no CORS); CSP headers on every response (`default-src 'none'`, scripts/styles are served from `'self'` — the CDN allowance is no longer exercised now that Vue is vendored); `_validate_safe_json()` on every API response (forbidden fields `raw_notes`, `evidence_quote`, `rationale`, `assumptions`, etc. → HTTP 500); Pydantic `extra="forbid"` on all view models; no authentication (trusted LAN assumption; Phase 5 adds SSO); localhost bind by default.
 
 **Deps:** `pip install -e ".[webapp]"` (FastAPI + uvicorn). The `dev` extra already includes FastAPI + httpx. Tests: `pytest tests/test_webapp_endpoints.py tests/test_webapp_e2e.py -v`.

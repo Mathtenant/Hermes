@@ -13,6 +13,42 @@ from fastapi import HTTPException
 
 from hermes_assistant.webapp.server import _validate_safe_json, confidentiality_guard
 
+
+def _await(coro):
+    """Drive *coro* to completion on a private loop in its own thread.
+
+    These tests were ``@pytest.mark.asyncio`` coroutines, which fail with
+    "Runner.run() cannot be called from a running event loop" whenever the
+    session also collects the Playwright E2E tests: Playwright's sync API keeps
+    a greenlet-driven loop running in the main thread, and pytest-asyncio
+    cannot start another one there. The suite therefore passed or failed
+    depending on which files were run together — the kind of flakiness that
+    teaches people to ignore red.
+
+    Running the coroutine on a dedicated thread makes these tests independent
+    of whatever the main thread's loop is doing.
+    """
+    import asyncio
+    import threading
+
+    box: dict[str, object] = {}
+
+    def runner() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            box["value"] = loop.run_until_complete(coro)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller
+            box["error"] = exc
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=runner)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]  # type: ignore[misc]
+    return box["value"]
+
 # ---------------------------------------------------------------------------
 # _validate_safe_json — forbidden field names
 # ---------------------------------------------------------------------------
@@ -93,31 +129,27 @@ def test_validate_safe_json_clean_payload_has_no_violations() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_confidentiality_guard_passes_clean_dict() -> None:
+def test_confidentiality_guard_passes_clean_dict() -> None:
     @confidentiality_guard
     async def endpoint() -> dict[str, str]:
         return {"status": "ok"}
 
-    result = await endpoint()
-    assert result == {"status": "ok"}
+    assert _await(endpoint()) == {"status": "ok"}
 
 
-@pytest.mark.asyncio
-async def test_confidentiality_guard_raises_500_on_violation() -> None:
+def test_confidentiality_guard_raises_500_on_violation() -> None:
     @confidentiality_guard
     async def endpoint() -> dict[str, str]:
         return {"raw_notes": "should never leave the server"}
 
     with pytest.raises(HTTPException) as exc_info:
-        await endpoint()
+        _await(endpoint())
     assert exc_info.value.status_code == 500
     # H2: detail must be generic — forbidden field names must not be disclosed to clients.
     assert exc_info.value.detail == "Internal error"
 
 
-@pytest.mark.asyncio
-async def test_confidentiality_guard_detail_is_generic_not_violations() -> None:
+def test_confidentiality_guard_detail_is_generic_not_violations() -> None:
     """H2: the HTTP error detail must never expose which fields triggered the guard."""
 
     @confidentiality_guard
@@ -125,7 +157,7 @@ async def test_confidentiality_guard_detail_is_generic_not_violations() -> None:
         return {"raw_notes": "x", "internal_budget": "y"}
 
     with pytest.raises(HTTPException) as exc_info:
-        await endpoint()
+        _await(endpoint())
     assert exc_info.value.status_code == 500
     detail = exc_info.value.detail.lower()
     # Violation field names must NOT appear in the client-facing error.
@@ -134,8 +166,7 @@ async def test_confidentiality_guard_detail_is_generic_not_violations() -> None:
     assert "internal_budget" not in detail
 
 
-@pytest.mark.asyncio
-async def test_confidentiality_guard_ignores_non_dict_responses() -> None:
+def test_confidentiality_guard_ignores_non_dict_responses() -> None:
     """Endpoints returning a Response object (not a dict) are not re-validated
     here — they're expected to call _validate_safe_json explicitly (as
     /api/dashboard does)."""
@@ -144,8 +175,7 @@ async def test_confidentiality_guard_ignores_non_dict_responses() -> None:
     async def endpoint() -> str:
         return "raw_notes"  # a bare string is not JSON-validated by the decorator
 
-    result = await endpoint()
-    assert result == "raw_notes"
+    assert _await(endpoint()) == "raw_notes"
 
 
 # ---------------------------------------------------------------------------

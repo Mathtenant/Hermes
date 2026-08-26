@@ -25,7 +25,15 @@ ollama pull qwen3-30b-a3b-instruct-2507 || \
 echo "   - bge-m3 (embeddings)"
 ollama pull bge-m3 || echo "⚠️  Failed to pull bge-m3 (Ollama may not be running)"
 
-# 3) Initialize directories
+# 3) Wire the guardrail pre-commit hook
+# core.hooksPath is per-clone local config, so it cannot be committed — without
+# this step every fresh clone runs unprotected (and security_audit's hook check
+# has nothing to verify).
+echo "🪝 Wiring the pre-commit guardrail hook..."
+chmod +x scripts/hooks/pre-commit 2>/dev/null || true
+git config core.hooksPath scripts/hooks
+
+# 4) Initialize directories
 echo "📁 Creating data directories..."
 mkdir -p data/{corpus,projects,vectorstore}
 

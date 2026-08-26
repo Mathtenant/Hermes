@@ -85,7 +85,14 @@ def test_typing_indicator(page_with_chat: Page):
 
 
 def test_error_message(page_with_chat: Page):
-    page_with_chat.route("**/api/chat/message", lambda route: route.abort())
+    """A failed request must surface an error in the transcript.
+
+    The pattern has to cover /api/chat/message/stream, which is what the widget
+    actually calls; a bare "**/api/chat/message" never matches it, so the abort
+    silently did nothing and the request succeeded.
+    """
+    page_with_chat.route("**/api/chat/message*", lambda route: route.abort())
+    page_with_chat.route("**/api/chat/message/**", lambda route: route.abort())
     page_with_chat.locator(".chat-input").fill("Test")
     page_with_chat.locator(".chat-send").click()
     page_with_chat.wait_for_selector("text=Error", timeout=5000)

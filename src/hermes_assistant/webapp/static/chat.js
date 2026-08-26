@@ -464,7 +464,15 @@
         return pump();
       })
       .catch(function (err) {
-        state.messages[assistantIdx].content = "Error: " + err.message;
+        // Name the likely cause rather than surfacing a bare "Failed to fetch":
+        // the usual reason is the local server being down, which the user can
+        // act on. The raw message is kept for anything less obvious.
+        var detail = String((err && err.message) || err);
+        var unreachable = /failed to fetch|networkerror|load failed/i.test(detail);
+        state.messages[assistantIdx].content = unreachable
+          ? "Error: the Hermes server is unreachable — is it still running? (" +
+            detail + ")"
+          : "Error: " + detail;
       })
       .then(function () {
         state.isLoading = false;

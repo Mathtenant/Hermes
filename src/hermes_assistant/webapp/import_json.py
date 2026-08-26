@@ -167,6 +167,99 @@ def _sanitise_entity(entity_type: str, raw: dict[str, Any]) -> list[str]:
     return notes
 
 
+def _strip_trailing_commas(text: str) -> str:
+    """Remove ``,`` that sits directly before a closing brace or bracket.
+
+    Scanned character by character with string/escape awareness rather than by
+    regex: a naive pattern would also rewrite a comma inside a value such as
+    ``"Abnahme, }"``, silently corrupting the user's data to fix a syntax
+    error. Only commas in structural position are touched.
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(text):
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            continue
+        if ch == ",":
+            rest = text[i + 1 :]
+            stripped = rest.lstrip()
+            if stripped[:1] in ("}", "]"):
+                continue  # structural trailing comma — drop it
+        out.append(ch)
+    return "".join(out)
+
+
+def loads_forgiving(raw: str | bytes) -> tuple[Any, list[str]]:
+    """Parse JSON, tolerating the wrappers language models routinely add.
+
+    The prompts forbid code fences and prose, but models emit them anyway, and
+    a bare ``Expecting value: line 1 column 1`` tells the user nothing they can
+    act on. Strict parsing is tried first, so a well-formed export takes the
+    fast path and is never rewritten.
+
+    Repairs are limited to material *outside* the JSON document plus
+    structural trailing commas, and every one is reported so the user can see
+    that their export was not clean.
+
+    Returns ``(payload, repairs)``. Raises ``json.JSONDecodeError`` if the text
+    cannot be salvaged.
+    """
+    import json
+
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+    repairs: list[str] = []
+
+    try:
+        return json.loads(text), repairs
+    except json.JSONDecodeError:
+        pass
+
+    candidate = text.lstrip("﻿").strip()
+    if candidate != text.strip():
+        repairs.append("Byte-Order-Mark entfernt")
+
+    # ```json … ``` — by far the most common deviation.
+    fence = re.search(r"```[a-zA-Z]*\s*(.*?)```", candidate, re.DOTALL)
+    if fence:
+        candidate = fence.group(1).strip()
+        repairs.append("Markdown-Code-Fence entfernt")
+
+    # "Here is the JSON you asked for: { … }" — keep the outermost object.
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start > 0 or (end != -1 and end < len(candidate) - 1):
+        if start != -1 and end > start:
+            candidate = candidate[start : end + 1]
+            repairs.append("Text vor/nach dem JSON entfernt")
+
+    try:
+        return json.loads(candidate), repairs
+    except json.JSONDecodeError:
+        pass
+
+    without_commas = _strip_trailing_commas(candidate)
+    if without_commas != candidate:
+        payload = json.loads(without_commas)  # may raise — nothing left to try
+        repairs.append("Nachgestellte Kommas entfernt")
+        return payload, repairs
+
+    # Nothing worked: re-raise the error for the best candidate we produced,
+    # so the reported position refers to the text we actually tried to parse.
+    return json.loads(candidate), repairs
+
+
 # A project id becomes a directory name under projects_root. Anything with a
 # separator, a parent reference, or a drive letter can escape that root — a
 # "project_ref" of "proj/../../x" wrote schedule.json two levels above it.

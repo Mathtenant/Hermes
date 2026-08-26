@@ -444,3 +444,61 @@ def test_deep_child_first_tree_does_not_blow_the_stack(tmp_path: Path):
     result = _run_import({"schema": "hermes.wbs/v1", "wbs": chain}, tmp_path)
     assert result.errors == []
     assert result.created == depth
+
+
+# --------------------------------------------------------------------------- #
+# Tolerating the output language models actually produce.
+#
+# The prompts forbid code fences and prose, but models emit them anyway. A bare
+# "Expecting value: line 1 column 1" gives the user nothing to act on, and this
+# is the single likeliest failure of the whole Copilot workflow.
+# --------------------------------------------------------------------------- #
+
+
+def test_strict_json_takes_the_fast_path_unrepaired():
+    from hermes_assistant.webapp.import_json import loads_forgiving
+
+    payload, repairs = loads_forgiving('{"risks":[{"title":"Clean"}]}')
+    assert payload["risks"][0]["title"] == "Clean"
+    assert repairs == []
+
+
+@pytest.mark.parametrize(
+    "raw,expected_title,expected_repair",
+    [
+        ('```json\n{"risks":[{"title":"Fenced"}]}\n```',
+         "Fenced", "Code-Fence"),
+        ('Here is the JSON you requested:\n{"risks":[{"title":"Prose"}]}\nHope that helps!',
+         "Prose", "Text vor/nach"),
+        ('{"risks":[{"title":"Trailing"},]}',
+         "Trailing", "Kommas"),
+    ],
+)
+def test_common_llm_wrappers_are_repaired(raw, expected_title, expected_repair):
+    from hermes_assistant.webapp.import_json import loads_forgiving
+
+    payload, repairs = loads_forgiving(raw)
+    assert payload["risks"][0]["title"] == expected_title
+    assert any(expected_repair in r for r in repairs), repairs
+
+
+def test_repair_never_rewrites_string_contents():
+    """A comma before '}' *inside a value* must survive untouched.
+
+    A regex-based trailing-comma fix would silently corrupt this title, turning
+    a syntax repair into data loss.
+    """
+    from hermes_assistant.webapp.import_json import loads_forgiving
+
+    payload, repairs = loads_forgiving('{"risks":[{"title":"Abnahme, }"}]}')
+    assert payload["risks"][0]["title"] == "Abnahme, }"
+    assert repairs == []
+
+
+def test_unsalvageable_input_still_raises():
+    import json as _json
+
+    from hermes_assistant.webapp.import_json import loads_forgiving
+
+    with pytest.raises(_json.JSONDecodeError):
+        loads_forgiving("this is not json at all")

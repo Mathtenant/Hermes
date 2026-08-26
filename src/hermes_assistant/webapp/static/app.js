@@ -15,6 +15,19 @@ const {
 // Screens that can be reached from the sidebar / hash router.
 const SCREENS = ['overview', 'projects', 'detail', 'pendenzen', 'risks', 'reviews'];
 
+// Sidebar icons: SVG path data on a 24×24 grid, drawn as strokes so they
+// inherit the nav item's colour and stay optically consistent with each other
+// (the previous Unicode glyphs were rendered by whichever fallback font
+// happened to carry them, at whatever weight that font used).
+const NAV_ICONS = {
+  overview:  'M4 5h7v6H4zM13 5h7v4h-7zM13 11h7v8h-7zM4 13h7v6H4z',
+  projects:  'M4 6h16M4 12h16M4 18h16',
+  detail:    'M4 6h9M4 12h13M4 18h7M19 5v4M17 7h4',
+  pendenzen: 'M5 21V4h11l-1.5 3.5L16 11H5',
+  risks:     'M12 4l8.5 15h-17zM12 10v4M12 17.2v.1',
+  reviews:   'M4.5 12.5l4.5 4.5 10.5-11',
+};
+
 // ── Global reactive state ──────────────────────────────────────────────────
 const state = reactive({
   screen: 'overview',  // one of SCREENS
@@ -449,21 +462,33 @@ const App = {
     });
 
     // Counts drive both the sidebar badges and the overview tiles
+    // `wbs` carries only the root nodes, so counting the array would report 6
+    // for a 66-node breakdown. Walk the tree for the real total: without it,
+    // importing a work breakdown changed no number anywhere on the dashboard
+    // and looked like nothing had happened.
+    function countTree(nodes) {
+      return (nodes ?? []).reduce(
+        (total, node) => total + 1 + countTree(node.children), 0
+      );
+    }
+
     const counts = computed(() => ({
       projects: state.data?.projects?.length ?? 0,
       timeline: state.data?.timeline?.length ?? 0,
+      tasks: countTree(state.data?.wbs),
       pendenzen: state.data?.pendenzen?.length ?? 0,
       risks: state.data?.risks?.length ?? 0,
       reviews: state.data?.reviews?.length ?? 0,
     }));
 
     const navItems = computed(() => [
-      { key: 'overview',  label: 'Overview',  shortcut: '1', icon: '◱', count: null },
-      { key: 'projects',  label: 'Projects',  shortcut: '2', icon: '▤', count: counts.value.projects },
-      { key: 'detail',    label: 'Timeline & WBS', shortcut: '3', icon: '◫', count: counts.value.timeline },
-      { key: 'pendenzen', label: 'Pendenzen', shortcut: '4', icon: '⚑', count: counts.value.pendenzen },
-      { key: 'risks',     label: 'Risks',     shortcut: '5', icon: '⚠', count: counts.value.risks },
-      { key: 'reviews',   label: 'Reviews',   shortcut: '6', icon: '✓', count: counts.value.reviews },
+      { key: 'overview',  label: 'Overview',  shortcut: '1', icon: NAV_ICONS.overview,  count: null },
+      { key: 'projects',  label: 'Projects',  shortcut: '2', icon: NAV_ICONS.projects,  count: counts.value.projects },
+      { key: 'detail',    label: 'Timeline & WBS', shortcut: '3', icon: NAV_ICONS.detail,
+        count: counts.value.tasks + counts.value.timeline },
+      { key: 'pendenzen', label: 'Pendenzen', shortcut: '4', icon: NAV_ICONS.pendenzen, count: counts.value.pendenzen },
+      { key: 'risks',     label: 'Risks',     shortcut: '5', icon: NAV_ICONS.risks,     count: counts.value.risks },
+      { key: 'reviews',   label: 'Reviews',   shortcut: '6', icon: NAV_ICONS.reviews,   count: counts.value.reviews },
     ]);
 
     const shortcuts = [
@@ -498,6 +523,31 @@ const App = {
       loadCopilotPrompt();
     }
 
+    // Where each imported entity type becomes visible. Without this the user
+    // is told "66 updated" with no hint that the result lives two clicks away
+    // on another screen.
+    const ENTITY_DESTINATIONS = {
+      tasks: { label: 'Arbeitspakete', screen: 'Strukturplan & Kanban' },
+      schedule: { label: 'Terminplan', screen: 'Timeline' },
+      risks: { label: 'Risiken', screen: 'Risks' },
+      pendenzen: { label: 'Pendenzen', screen: 'Pendenzen' },
+      projects: { label: 'Projekte', screen: 'Projects' },
+      plans: { label: 'Plan-Versionen', screen: 'nicht im Dashboard sichtbar' },
+    };
+
+    const importedWhere = computed(() => {
+      const counts = importResult.value && importResult.value.entity_counts;
+      if (!counts) return [];
+      return Object.entries(counts)
+        .filter(([, n]) => n > 0)
+        .map(([type, n]) => ({
+          type,
+          count: n,
+          label: (ENTITY_DESTINATIONS[type] || {}).label || type,
+          screen: (ENTITY_DESTINATIONS[type] || {}).screen || type,
+        }));
+    });
+
     const activePromptHint = computed(() => {
       const kind = PROMPT_KINDS.find((k) => k.key === promptKind.value);
       return kind ? kind.hint : '';
@@ -510,6 +560,7 @@ const App = {
       openImport, closeImport, clearImportForm, onImportFile, onDrop,
       runImport, copyPrompt, goToPasteStep,
       promptKind, promptKinds: PROMPT_KINDS, selectPromptKind, activePromptHint,
+      importedWhere,
       importStep, importMode, importText, importFilename, importLoading,
       importResult, importError, importPreview, copilotPrompt, isDragOver,
     };
@@ -581,7 +632,9 @@ const App = {
           :data-testid="'nav-' + item.key"
           @click="goTo(item.key)"
         >
-          <span class="w-5 text-center select-none" aria-hidden="true">{{ item.icon }}</span>
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path :d="item.icon" />
+          </svg>
           <span>{{ item.label }}</span>
           <span v-if="item.count !== null" class="nav-count">{{ item.count }}</span>
         </button>
@@ -811,6 +864,16 @@ const App = {
                   {{ importResult.skipped }} skipped</template>.
                 </span>
                 <span v-else>Import failed.</span>
+                <!-- Counts alone do not say what landed or where to look for
+                     it, which made a work-breakdown import feel like nothing
+                     had happened. Name the screen each entity type shows on. -->
+                <div v-if="importResult.ok && importedWhere.length"
+                     class="mt-1"
+                     data-testid="import-where">
+                  <span v-for="w in importedWhere" :key="w.type" class="block">
+                    {{ w.count }} {{ w.label }} → {{ w.screen }}
+                  </span>
+                </div>
               </template>
             </div>
 

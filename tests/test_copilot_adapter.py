@@ -91,7 +91,14 @@ class TestGoldenFile:
     def test_adapt_produces_importer_keys(self, copilot_v1_payload):
         """Adapted payload must contain only native importer entity keys."""
         adapted = adapt_payload(copilot_v1_payload)
-        valid_keys = {"risks", "plans", "pendenzen", "projects", "_skipped_sections"}
+        # "tasks" is emitted alongside "plans": plans.db keeps the versioned
+        # plan history, tasks.db is what the WBS and Kanban screens render.
+        # Without the tasks copy the whole-project export reported success and
+        # left both screens empty.
+        valid_keys = {
+            "risks", "plans", "pendenzen", "projects", "tasks",
+            "_skipped_sections",
+        }
         extra = set(adapted.keys()) - valid_keys
         assert not extra, f"Unexpected keys in adapted payload: {extra}"
 
@@ -393,8 +400,11 @@ class TestPromptExampleFixture:
         result = import_payload(
             adapted, risks_db=":memory:", plans_db=":memory:", tasks_db=":memory:"
         )
-        # 1 project + 1 plan (3 wbs items flattened) + 2 risks + 3 pendenzen = 7
-        assert result.created == 7, f"Expected 7 created, got {result.created}"
+        # 1 project + 1 plan (3 wbs items flattened) + 2 risks + 3 pendenzen
+        # + the same 3 wbs nodes again as tasks (plans.db keeps the plan
+        # version, tasks.db is what the WBS/Kanban screens actually read) = 10
+        assert result.created == 10, f"Expected 10 created, got {result.created}"
+        assert result.entity_counts.get("tasks") == 3
         assert result.updated == 0
         assert result.skipped == 0
         assert result.errors == []

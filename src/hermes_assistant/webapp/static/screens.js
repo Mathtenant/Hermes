@@ -58,6 +58,7 @@ const OverviewScreen = {
         && !props.error
         && (props.counts?.projects ?? 0) === 0
         && (props.counts?.risks ?? 0) === 0
+        && (props.counts?.tasks ?? 0) === 0
         && (props.counts?.pendenzen ?? 0) === 0
     );
 
@@ -91,43 +92,61 @@ const OverviewScreen = {
       <div v-else-if="error" class="card notice-error">{{ error }}</div>
 
       <template v-else>
-        <!-- Headline counts — each tile is a shortcut into its screen -->
-        <div class="stat-grid">
-          <button class="stat-tile" @click="$emit('navigate', 'projects')">
-            <span class="stat-label">Projects</span>
-            <span class="stat-value">{{ counts.projects }}</span>
-            <span class="stat-hint">View all projects</span>
-          </button>
-
-          <button class="stat-tile" @click="$emit('navigate', 'detail')">
-            <span class="stat-label">Timeline items</span>
-            <span class="stat-value">{{ counts.timeline }}</span>
-            <span class="stat-hint">{{ upcoming.length }} upcoming</span>
-          </button>
-
-          <button class="stat-tile"
-                  :class="{ 'is-alert': blockers.length > 0 }"
-                  @click="$emit('navigate', 'pendenzen')">
-            <span class="stat-label">Pendenzen</span>
-            <span class="stat-value">{{ counts.pendenzen }}</span>
-            <span class="stat-hint">
-              {{ openPendenzen.length }} open<template v-if="blockers.length">, {{ blockers.length }} blocker</template>
+        <!-- Headline: one hero figure — the open work a lead actually acts
+             on — with the remaining counts as secondary tiles. Each is a
+             shortcut into its screen. -->
+        <div class="overview-head">
+          <button class="hero-tile" @click="$emit('navigate', 'pendenzen')">
+            <span class="hero-label">Open pendenzen</span>
+            <span class="hero-value">{{ openPendenzen.length }}</span>
+            <span class="hero-hint" :class="{ 'is-alert': blockers.length > 0 }">
+              <template v-if="blockers.length">
+                {{ blockers.length }} blocker<template v-if="blockers.length !== 1">s</template>
+              </template>
+              <template v-else-if="counts.pendenzen">nothing blocking</template>
+              <template v-else>no pendenzen recorded</template>
             </span>
           </button>
 
-          <button class="stat-tile"
-                  :class="{ 'is-alert': openRisks.length > 0 }"
-                  @click="$emit('navigate', 'risks')">
-            <span class="stat-label">Risks</span>
-            <span class="stat-value" data-testid="risks-count">{{ counts.risks }}</span>
-            <span class="stat-hint">{{ openRisks.length }} open</span>
-          </button>
+          <div class="stat-grid">
+            <button class="stat-tile" @click="$emit('navigate', 'projects')">
+              <span class="stat-label">Projects</span>
+              <span class="stat-value">{{ counts.projects }}</span>
+              <span class="stat-hint">View all projects</span>
+            </button>
 
-          <button class="stat-tile" @click="$emit('navigate', 'reviews')">
-            <span class="stat-label">Reviews</span>
-            <span class="stat-value">{{ counts.reviews }}</span>
-            <span class="stat-hint">Rubric verdicts</span>
-          </button>
+            <button class="stat-tile" @click="$emit('navigate', 'detail')">
+              <span class="stat-label">Timeline items</span>
+              <span class="stat-value">{{ counts.timeline }}</span>
+              <span class="stat-hint">{{ upcoming.length }} upcoming</span>
+            </button>
+
+            <button class="stat-tile" @click="$emit('navigate', 'detail')">
+              <span class="stat-label">Arbeitspakete</span>
+              <span class="stat-value" data-testid="tasks-count">{{ counts.tasks }}</span>
+              <span class="stat-hint">Strukturplan &amp; Kanban</span>
+            </button>
+
+            <button class="stat-tile" @click="$emit('navigate', 'risks')">
+              <span class="stat-label">Risks</span>
+              <span class="stat-value" data-testid="risks-count">{{ counts.risks }}</span>
+              <span class="stat-hint">{{ openRisks.length }} open</span>
+            </button>
+
+            <button class="stat-tile" @click="$emit('navigate', 'reviews')">
+              <span class="stat-label">Reviews</span>
+              <span class="stat-value">{{ counts.reviews }}</span>
+              <span class="stat-hint">Rubric verdicts</span>
+            </button>
+
+            <button class="stat-tile" @click="$emit('navigate', 'pendenzen')">
+              <span class="stat-label">Pendenzen total</span>
+              <span class="stat-value">{{ counts.pendenzen }}</span>
+              <span class="stat-hint">
+                {{ counts.pendenzen - openPendenzen.length }} closed
+              </span>
+            </button>
+          </div>
         </div>
 
         <!-- Nothing imported yet -->
@@ -195,7 +214,7 @@ const OverviewScreen = {
                         :class="scoreBand(r.score)"
                         :style="{ width: Math.min(100, (r.score / 25) * 100) + '%' }"></span>
                 </span>
-                <span class="text-xs tabular-nums font-semibold">{{ r.score }}</span>
+                <span class="text-xs score-value">{{ r.score }}</span>
               </span>
             </div>
           </section>
@@ -273,7 +292,7 @@ const ProjectListScreen = {
           <span class="result-count">{{ sorted.length }} of {{ data.projects.length }}</span>
         </div>
 
-        <div class="card card-flush overflow-x-auto">
+        <div class="card card-flush table-scroll">
           <table class="data-table">
             <thead>
               <tr>
@@ -375,21 +394,21 @@ const KanbanTab = {
                class="text-gray-400 text-xs italic text-center py-4">
             Empty
           </div>
-          <div v-for="card in col.cards"
-               :key="card.id"
-               class="kanban-card"
-               tabindex="0"
-               @click="openCard(card)"
-               @keydown.enter="openCard(card)">
-            <div class="text-gray-400 font-mono text-xs mb-0.5">{{ card.wbs_number }}</div>
-            <div class="font-medium leading-snug">{{ card.title }}</div>
-            <div class="flex items-center gap-2 mt-1 flex-wrap">
-              <span v-if="card.owner" class="text-gray-400 text-xs">{{ card.owner }}</span>
-              <span v-if="card.priority"
-                    class="badge"
-                    :class="card.priority === 'blocker' ? 'badge-blocked' : 'badge-open'">
-                {{ card.priority }}
-              </span>
+          <div class="kanban-cards">
+            <div v-for="card in col.cards"
+                 :key="card.id"
+                 class="kanban-card"
+                 :class="card.priority ? 'prio-' + card.priority : ''"
+                 tabindex="0"
+                 @click="openCard(card)"
+                 @keydown.enter="openCard(card)">
+              <div class="kanban-card-title" :title="card.title">
+                <span v-if="card.wbs_number" class="kanban-card-wbs">{{ card.wbs_number }}</span>{{ card.title }}
+              </div>
+              <div v-if="card.owner || card.priority" class="kanban-card-meta">
+                <span v-if="card.owner" class="truncate">{{ card.owner }}</span>
+                <span v-if="card.priority" class="ml-auto shrink-0">{{ card.priority }}</span>
+              </div>
             </div>
           </div>
           <div v-if="col.overflow" class="text-gray-400 text-xs italic text-center py-1">
@@ -522,8 +541,13 @@ const PendenzenScreen = {
     }
 
     function statusBadgeClass(s) {
-      const map = { open: 'badge-open', closed: 'badge-closed', blocked: 'badge-blocked' };
-      return `badge ${map[s] ?? 'badge-open'}`;
+      const map = { open: 'chip-open', closed: 'chip-closed', blocked: 'chip-blocked' };
+      return `chip ${map[s] ?? 'chip-open'}`;
+    }
+
+    function statusMark(s) {
+      const map = { open: 'mark-ring', closed: 'mark-dot', blocked: 'mark-square' };
+      return map[s] ?? 'mark-ring';
     }
 
     function resetFilters() {
@@ -535,7 +559,7 @@ const PendenzenScreen = {
 
     return {
       query, filterSource, filterPriority, filterStatus, sources, statuses,
-      filtered, toggleSort, sortIcon, statusBadgeClass, resetFilters,
+      filtered, toggleSort, sortIcon, statusBadgeClass, statusMark, resetFilters,
     };
   },
   template: `
@@ -581,7 +605,7 @@ const PendenzenScreen = {
             <button class="btn mt-2" @click="resetFilters">Reset filters</button>
           </div>
         </div>
-        <div v-else class="card card-flush overflow-x-auto">
+        <div v-else class="card card-flush table-scroll">
           <table class="data-table">
             <thead>
               <tr>
@@ -596,13 +620,18 @@ const PendenzenScreen = {
             <tbody>
               <tr v-for="r in filtered" :key="r.id">
                 <td class="max-w-xs truncate" :title="r.title">{{ r.title }}</td>
-                <td><span class="badge badge-open">{{ r.source }}</span></td>
+                <td class="text-gray-400">{{ r.source }}</td>
                 <td>
-                  <span class="inline-flex items-center gap-1">
+                  <span class="inline-flex items-center gap-2">
                     <span :class="['prio-dot', r.priority]"></span>{{ r.priority }}
                   </span>
                 </td>
-                <td><span :class="statusBadgeClass(r.status)">{{ r.status }}</span></td>
+                <td>
+                  <span :class="statusBadgeClass(r.status)">
+                    <span class="chip-mark" :class="statusMark(r.status)" aria-hidden="true"></span>
+                    {{ r.status }}
+                  </span>
+                </td>
                 <td class="text-gray-400">{{ r.owner || '—' }}</td>
                 <td class="font-mono text-xs">{{ r.due_date || '—' }}</td>
               </tr>
@@ -647,14 +676,17 @@ const RisksScreen = {
       return sortKey.value === key ? (sortDir.value === 1 ? ' ↑' : ' ↓') : '';
     }
 
-    function statusClass(s) {
+    // Each status gets its own silhouette as well as its own fill, so the
+    // state is still readable in greyscale, in print, and to a reader who
+    // cannot separate the hues.
+    function statusMark(s) {
       const map = {
-        open: 'risk-open',
-        mitigated: 'risk-mitigated',
-        accepted: 'risk-accepted',
-        closed: 'risk-closed',
+        open: 'mark-ring',
+        mitigated: 'mark-square',
+        accepted: 'mark-bar',
+        closed: 'mark-dot',
       };
-      return map[s] ?? '';
+      return map[s] ?? 'mark-dot';
     }
 
     function scoreBand(score) {
@@ -664,7 +696,21 @@ const RisksScreen = {
       return 'low';
     }
 
-    return { query, filterStatus, filtered, openCount, toggleSort, sortIcon, statusClass, scoreBand };
+    // Severity arrives as free text; map the words we know onto the same
+    // sequential scale the score meter uses, and fall back to the lightest
+    // step for anything unrecognised rather than inventing a level.
+    function severityBand(severity) {
+      const s = String(severity ?? '').toLowerCase();
+      if (s.startsWith('crit') || s.startsWith('block')) return 'critical';
+      if (s.startsWith('high') || s.startsWith('hoch')) return 'high';
+      if (s.startsWith('med') || s.startsWith('mit')) return 'medium';
+      return 'low';
+    }
+
+    return {
+      query, filterStatus, filtered, openCount, toggleSort, sortIcon,
+      statusMark, scoreBand, severityBand,
+    };
   },
   template: `
     <div>
@@ -701,7 +747,7 @@ const RisksScreen = {
             <p class="text-sm">Import a JSON export or add risks with <code>hermes risk-add</code>.</p>
           </div>
         </div>
-        <div v-else class="card card-flush overflow-x-auto">
+        <div v-else class="card card-flush table-scroll">
           <table class="data-table">
             <thead>
               <tr>
@@ -716,7 +762,12 @@ const RisksScreen = {
             <tbody>
               <tr v-for="r in filtered" :key="r.id">
                 <td class="max-w-xs truncate" :title="r.title">{{ r.title }}</td>
-                <td>{{ r.severity }}</td>
+                <td>
+                  <span class="sev">
+                    <span class="sev-dot" :class="severityBand(r.severity)" aria-hidden="true"></span>
+                    {{ r.severity }}
+                  </span>
+                </td>
                 <td class="text-right tabular-nums">{{ r.likelihood }}</td>
                 <td>
                   <span class="score-bar">
@@ -725,10 +776,15 @@ const RisksScreen = {
                             :class="scoreBand(r.score)"
                             :style="{ width: Math.min(100, (r.score / 25) * 100) + '%' }"></span>
                     </span>
-                    <span class="tabular-nums font-semibold">{{ r.score }}</span>
+                    <span class="score-value">{{ r.score }}</span>
                   </span>
                 </td>
-                <td><span :class="statusClass(r.status)">{{ r.status }}</span></td>
+                <td>
+                  <span class="chip" :class="'chip-' + r.status">
+                    <span class="chip-mark" :class="statusMark(r.status)" aria-hidden="true"></span>
+                    {{ r.status }}
+                  </span>
+                </td>
                 <td class="font-mono text-xs">{{ (r.updated_at || '').substring(0, 10) }}</td>
               </tr>
             </tbody>
@@ -796,7 +852,7 @@ const ReviewsScreen = {
             <p class="text-sm">Run <code>hermes review --wait</code> to produce one.</p>
           </div>
         </div>
-        <div v-else class="card card-flush overflow-x-auto">
+        <div v-else class="card card-flush table-scroll">
           <table class="data-table">
             <thead>
               <tr>

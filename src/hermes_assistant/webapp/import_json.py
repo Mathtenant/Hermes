@@ -963,7 +963,21 @@ def _import_tasks(
                     title=raw["title"],
                     status=raw.get("status", existing.status),
                     owner=raw.get("owner", existing.owner),
+                    node_kind=raw.get("node_kind", existing.node_kind),
                 )
+                # Re-parenting has to go through set_parent(): update() writes
+                # the blob but syncs only the status column, so the indexed
+                # parent_id — the one the tree is read from — would keep
+                # pointing at the old parent. Without this, correcting a
+                # structure in Copilot and re-importing reported "n updated"
+                # while the WBS on screen never moved.
+                if existing.parent_id != parent_id:
+                    try:
+                        store.set_parent(existing.id, parent_id)
+                    except (KeyError, ValueError) as exc:
+                        result.errors.append(
+                            f"tasks[{i}]: could not re-parent {raw['title']!r}: {exc}"
+                        )
                 if external_ref:
                     ref_to_id[external_ref] = existing.id
                 result.items.append(

@@ -1,0 +1,77 @@
+# Aufgabe
+Du hast Zugriff auf das Projekt-Repository. Erstelle eine maschinenlesbare
+Liste der RISIKEN als JSON. Dieses JSON wird von einem lokalen Assistenzsystem
+(Hermes) eingelesen — es wird NICHT von Menschen gelesen und NICHT ausgeführt.
+Gib ausschliesslich gültiges JSON nach dem Schema hermes.risks/v1 aus.
+
+## Scope
+Projekt: {{PROJECT_TITLE}}
+Quellen: {{REPO_SCOPE}} (nur diese Quellen; keine anderen Projekte, keine
+privaten Mails, keine Screenshots, keine Bilder)
+Stichtag: {{AS_OF_DATE}}
+
+## Ausgabe-Regeln (strikt)
+1. Gib AUSSCHLIESSLICH ein einzelnes JSON-Objekt aus. Keine Einleitung, keine
+   Erklärung, keine Markdown-Code-Fences. Erstes Zeichen "{", letztes "}".
+2. Halte dich EXAKT an das Schema. Keine zusätzlichen, keine umbenannten Felder.
+3. Nicht belegbare Information: Feld weglassen. Rate niemals Verantwortliche
+   oder Eintrittswahrscheinlichkeiten. Ein fehlendes optionales Feld ist
+   korrekt — ein erfundener Wert ist ein Fehler.
+4. external_ref DETERMINISTISCH aus dem Titel bilden (damit wiederholte
+   Exporte keine Duplikate anlegen):
+   - Präfix "rk/", danach der Titel in Kleinbuchstaben, Umlaute ausgeschrieben
+     (ä→ae, ö→oe, ü→ue, ß→ss), nur a–z 0–9 -, Leerzeichen → -, max. 60 Zeichen.
+   - Beispiel: „Zahlungsanbieter verzögert" → rk/zahlungsanbieter-verzoegert
+   - IMMER aus dem Titel ableiten, nie aus Position oder Reihenfolge.
+5. Erlaubte Enum-Werte (jeder andere Wert ist ungültig):
+   - impact:     gering | mittel | hoch     ← "gering" ist die niedrigste Stufe
+   - likelihood: tief   | mittel | hoch     ← "tief" NUR hier, nie bei impact
+6. Ein Risiko ist ein UNSICHERES zukünftiges Ereignis mit negativer Wirkung.
+   Bereits eingetretene Probleme und offene Aufgaben gehören NICHT hierher —
+   die erfasst der separate Pendenzen-Export.
+7. Obergrenze: max. 100 Risiken. Bei mehr: die wichtigsten auswählen.
+
+## Schema
+{
+  "schema": "hermes.risks/v1",
+  "meta": { "generated_at": "<ISO-8601>", "source": "m365_copilot",
+            "repo_scope": "{{REPO_SCOPE}}" },
+  "risks": [
+    { "external_ref": "rk/<slug>",
+      "title": "<kurzer Risikotitel>",
+      "description": "<1-2 Sätze, optional>",
+      "impact": "gering|mittel|hoch",
+      "likelihood": "tief|mittel|hoch",
+      "owner": "<Rolle oder Name, optional>" }
+  ]
+}
+
+## Beispiel (gültig — validiere deine Struktur dagegen)
+{
+  "schema": "hermes.risks/v1",
+  "meta": { "generated_at": "2026-08-22T10:00:00Z", "source": "m365_copilot",
+            "repo_scope": "Webshop-Relaunch" },
+  "risks": [
+    { "external_ref": "rk/zahlungsanbieter-integration-verzoegert",
+      "title": "Zahlungsanbieter-Integration verzögert sich",
+      "description": "Die Schnittstelle ist noch nicht freigegeben.",
+      "impact": "hoch", "likelihood": "mittel", "owner": "Technik" },
+    { "external_ref": "rk/unklare-migrationsdaten",
+      "title": "Unklare Migrationsdaten aus Altsystem",
+      "impact": "gering", "likelihood": "hoch" }
+  ]
+}
+
+## Checkliste (vor der Ausgabe abarbeiten)
+[ ] Ausgabe ist EIN JSON-Objekt, beginnt mit { und endet mit }.
+[ ] "schema" ist exakt "hermes.risks/v1".
+[ ] Jedes impact ist gering|mittel|hoch (NICHT "tief").
+[ ] Jedes likelihood ist tief|mittel|hoch.
+[ ] Jedes external_ref beginnt mit "rk/" und ist aus dem Titel abgeleitet.
+[ ] Keine Aufgaben oder bereits eingetretenen Probleme in der Liste.
+
+## Häufige Fehler (unbedingt vermeiden)
+- KEINE Markdown-Code-Fences (``` ) um das JSON.
+- KEINE erklärenden Sätze vor oder nach dem JSON.
+- KEIN "tief" als impact — dort ist "gering" die niedrigste Stufe.
+- KEINE Pendenzen/Aufgaben als Risiko deklarieren.

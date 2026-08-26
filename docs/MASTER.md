@@ -909,7 +909,33 @@ SQLite task/job stores + schedule.json files
 
 **Routing:** screens are hash-routed (`#/overview`, `#/pendenzen`, `#/detail/<project_id>`), so a view survives reload and can be linked to.
 
-**JSON import:** a two-step wizard in the topbar — step 1 hands over the ready-to-copy M365 Copilot prompt (`static/prompts/copilot_state_export.txt`), step 2 accepts the resulting JSON by paste, file picker or drag-and-drop, with live validation and a pre-import preview of the row counts.
+**JSON import:** a two-step wizard in the topbar — step 1 hands over a ready-to-copy M365 Copilot prompt, step 2 accepts the resulting JSON by paste, file picker or drag-and-drop, with live validation and a pre-import preview of the row counts.
+
+### Per-tool Copilot prompts
+
+Step 1 offers one prompt per screen instead of a single whole-project export. Copilot answers a small, single-view schema much faster and with far fewer schema mistakes than the ~7.7 k-character monolith; each per-tool prompt is roughly half that size. Failure is also isolated — a malformed risk list no longer sinks the whole import.
+
+**Format: JSON**, not XML or YAML. The importer already parses JSON and validates with Pydantic; JSON is the shape LLMs emit most reliably; XML roughly doubles the token count (working against the speed goal) and buys nothing here, and YAML's significant whitespace is a common LLM failure mode.
+
+| Prompt file | Schema | Feeds | Lands in |
+|---|---|---|---|
+| `copilot_wbs.txt` | `hermes.wbs/v1` | **WBS + Kanban** | `tasks` → TaskStore |
+| `copilot_timeline.txt` | `hermes.timeline/v1` | Timeline | `schedule` → `<projects_root>/<id>/schedule.json` |
+| `copilot_risks.txt` | `hermes.risks/v1` | Risks | `risks` → RiskRegistry |
+| `copilot_pendenzen.txt` | `hermes.pendenzen/v1` | Pendenzen | `pendenzen` → TaskStore |
+| `copilot_state_export.txt` | `hermes.project_state/v1` | one-shot bootstrap | all of the above except tasks/schedule |
+
+**There is deliberately no Kanban prompt.** Kanban and WBS are two renderings of one task tree — Kanban groups it by `status`, WBS nests it by `parent_id` — so a separate export would create two competing sources of truth for the same tasks. One work-breakdown export feeds both screens.
+
+**Reviews are not importable** and no prompt exists for them: they are the output of the local review engine, and accepting a Copilot-authored verdict would corrupt the audit trail.
+
+**Two importer entity types were added** to make this work. Before, `project_state/v1`'s `wbs` section mapped to `plans` → plans.db, *which no dashboard screen reads* — so an import reported success while WBS, Kanban and Timeline all stayed empty:
+- `tasks` → TaskStore, the tree the WBS and Kanban screens render. Hierarchy travels as a flat list with `parent_ref`; the importer topologically orders it so parents are created before children (`TaskStore.create` derives `wbs_number` from the parent and `update` does not keep the indexed `parent_id` column in sync, so create-in-order is the only safe build). A cycle or a `parent_ref` naming an absent node aborts the batch rather than flattening the tree — a silently flattened WBS looks plausible but is wrong.
+- `schedule` → writes `schedule.json` whole, the only source the Timeline screen reads. Each import **replaces** that project's schedule, so the prompt instructs Copilot to emit all known dates, not just new ones.
+
+**Lossy mapping to know about:** `Task.status` has only `open`/`closed`/`blocked`, so a WBS node marked `in_progress` is stored as `open`. Nothing is lost on screen (the Kanban board has no in-progress lane), but a round-trip will not return `in_progress`.
+
+`tests/test_copilot_tool_prompts.py` extracts the worked `## Beispiel` block out of each prompt file and runs it through the real adapter and importer, so a prompt that drifts from the schema fails the suite instead of silently producing an unimportable export.
 
 **Security:** same-origin only (no CORS); CSP headers on every response (`default-src 'none'`, scripts/styles are served from `'self'` — the CDN allowance is no longer exercised now that Vue is vendored); `_validate_safe_json()` on every API response (forbidden fields `raw_notes`, `evidence_quote`, `rationale`, `assumptions`, etc. → HTTP 500); Pydantic `extra="forbid"` on all view models; no authentication (trusted LAN assumption; Phase 5 adds SSO); localhost bind by default.
 

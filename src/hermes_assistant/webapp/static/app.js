@@ -193,11 +193,41 @@ const importPreview = ref(null);
 const copilotPrompt = ref('');
 const isDragOver = ref(false);
 
+// One prompt per screen. Asking Copilot for a single view is much faster than
+// the whole-project export and yields far fewer schema mistakes, because the
+// schema it has to honour is a fraction of the size. Kanban is deliberately
+// absent: it and the WBS are two renderings of one task tree, so a single
+// work-breakdown export feeds both.
+const PROMPT_KINDS = [
+  { key: 'wbs', label: 'Strukturplan & Kanban', file: 'copilot_wbs',
+    hint: 'Arbeitspakete als Baum — speist WBS und Kanban' },
+  { key: 'timeline', label: 'Termine', file: 'copilot_timeline',
+    hint: 'Meilensteine und Fristen — ersetzt den Terminplan' },
+  { key: 'risks', label: 'Risiken', file: 'copilot_risks',
+    hint: 'Risikoregister' },
+  { key: 'pendenzen', label: 'Pendenzen', file: 'copilot_pendenzen',
+    hint: 'Offene Punkte und Action Items' },
+  { key: 'full', label: 'Alles (Gesamtexport)', file: 'copilot_state_export',
+    hint: 'Einmaliger Rundum-Export — langsamer, fehleranfälliger' },
+];
+
+const promptKind = ref('wbs');
+const _promptCache = new Map();
+
 async function loadCopilotPrompt() {
-  if (copilotPrompt.value) return;
+  const kind = PROMPT_KINDS.find((k) => k.key === promptKind.value) || PROMPT_KINDS[0];
+  if (_promptCache.has(kind.key)) {
+    copilotPrompt.value = _promptCache.get(kind.key);
+    return;
+  }
+  copilotPrompt.value = '';
   try {
-    const resp = await fetch('/static/prompts/copilot_state_export.txt');
-    if (resp.ok) copilotPrompt.value = await resp.text();
+    const resp = await fetch(`/static/prompts/${kind.file}.txt`);
+    if (!resp.ok) return;
+    const text = await resp.text();
+    _promptCache.set(kind.key, text);
+    // Guard against a slow fetch landing after the user picked another kind.
+    if (promptKind.value === kind.key) copilotPrompt.value = text;
   } catch {
     /* prompt is a convenience — the paste step works without it */
   }
@@ -463,12 +493,23 @@ const App = {
       focusTextarea();
     }
 
+    function selectPromptKind(key) {
+      promptKind.value = key;
+      loadCopilotPrompt();
+    }
+
+    const activePromptHint = computed(() => {
+      const kind = PROMPT_KINDS.find((k) => k.key === promptKind.value);
+      return kind ? kind.hint : '';
+    });
+
     return {
       state, theme, toast, navItems, shortcuts, counts, version,
       toggleTheme, refresh, goTo, selectProject, clearProject,
       // Import wizard
       openImport, closeImport, clearImportForm, onImportFile, onDrop,
       runImport, copyPrompt, goToPasteStep,
+      promptKind, promptKinds: PROMPT_KINDS, selectPromptKind, activePromptHint,
       importStep, importMode, importText, importFilename, importLoading,
       importResult, importError, importPreview, copilotPrompt, isDragOver,
     };
@@ -647,9 +688,23 @@ const App = {
           <!-- ── Step 1: hand over the Copilot prompt ── -->
           <template v-if="importStep === 1">
             <p class="text-sm" style="color:var(--c-text-muted)">
-              Copy this prompt into <strong style="color:var(--c-text)">M365 Copilot</strong>.
-              It replies with a JSON export of your project, which you paste back here in step 2.
+              Pick what to export, then copy the prompt into
+              <strong style="color:var(--c-text)">M365 Copilot</strong>. It replies
+              with JSON you paste back here in step 2. One view at a time is
+              faster and far more reliable than the whole-project export.
             </p>
+
+            <div class="prompt-kinds" role="group" aria-label="What to export">
+              <button v-for="kind in promptKinds"
+                      :key="kind.key"
+                      class="prompt-kind"
+                      :class="{ active: promptKind === kind.key }"
+                      :aria-pressed="promptKind === kind.key"
+                      :data-testid="'prompt-kind-' + kind.key"
+                      @click="selectPromptKind(kind.key)">{{ kind.label }}</button>
+            </div>
+            <div class="text-xs mt-1" style="color:var(--c-text-faint)"
+                 data-testid="prompt-kind-hint">{{ activePromptHint }}</div>
 
             <pre data-testid="copilot-prompt-text"
                  class="prompt-block mt-3">{{ copilotPrompt || 'Loading prompt…' }}</pre>

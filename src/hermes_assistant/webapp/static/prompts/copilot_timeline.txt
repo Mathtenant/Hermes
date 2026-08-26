@@ -1,0 +1,83 @@
+# Aufgabe
+Du hast Zugriff auf das Projekt-Repository. Erstelle eine maschinenlesbare
+TERMINLISTE (Meilensteine und Fristen) als JSON. Dieses JSON wird von einem
+lokalen Assistenzsystem (Hermes) eingelesen — es wird NICHT von Menschen
+gelesen und NICHT ausgeführt. Gib ausschliesslich gültiges JSON nach dem
+Schema hermes.timeline/v1 aus.
+
+## Scope
+Projekt: {{PROJECT_TITLE}}
+Quellen: {{REPO_SCOPE}} (nur diese Quellen; keine anderen Projekte, keine
+privaten Mails, keine Screenshots, keine Bilder)
+Stichtag: {{AS_OF_DATE}}
+
+## Ausgabe-Regeln (strikt)
+1. Gib AUSSCHLIESSLICH ein einzelnes JSON-Objekt aus. Keine Einleitung, keine
+   Erklärung, keine Markdown-Code-Fences. Erstes Zeichen "{", letztes "}".
+2. Halte dich EXAKT an das Schema. Keine zusätzlichen, keine umbenannten Felder.
+3. Jeder Eintrag MUSS ein belegtes Datum haben. Ein Termin ohne Datum gehört
+   NICHT in diese Liste — lass den Eintrag weg. Rate niemals ein Datum.
+4. Datumsformat immer YYYY-MM-DD. Keine Zeitangaben, keine Zeitzonen,
+   keine Zeiträume wie "Q4" oder "Mitte November".
+5. external_ref DETERMINISTISCH aus dem Titel bilden (damit wiederholte
+   Exporte keine Duplikate anlegen):
+   - Präfix "ms/", danach der Titel in Kleinbuchstaben, Umlaute ausgeschrieben
+     (ä→ae, ö→oe, ü→ue, ß→ss), nur a–z 0–9 -, Leerzeichen → -, max. 60 Zeichen.
+   - Beispiel: „Go-Live Webshop" → ms/go-live-webshop
+6. Erlaubte Enum-Werte (jeder andere Wert ist ungültig):
+   - kind: milestone | deadline | task
+     · milestone = Qualitätstor / Entscheidungspunkt
+     · deadline  = Liefertermin eines Ergebnisses
+     · task      = terminierte Arbeit
+7. WICHTIG: Dieser Export ERSETZT den bestehenden Terminplan des Projekts
+   vollständig. Gib deshalb ALLE bekannten Termine aus, nicht nur die neuen —
+   fehlende Einträge verschwinden aus der Ansicht.
+8. Obergrenze: max. 200 Termine.
+
+## Schema
+{
+  "schema": "hermes.timeline/v1",
+  "meta": { "generated_at": "<ISO-8601>", "source": "m365_copilot",
+            "repo_scope": "{{REPO_SCOPE}}" },
+  "project_ref": "proj/<slug>",
+  "project_label": "<Anzeigename des Projekts, optional>",
+  "timeline": [
+    { "external_ref": "ms/<slug>",
+      "title": "<Titel des Termins>",
+      "due": "YYYY-MM-DD",
+      "kind": "milestone|deadline|task",
+      "note": "<kurze, nicht vertrauliche Notiz, optional>" }
+  ]
+}
+
+## Beispiel (gültig — validiere deine Struktur dagegen)
+{
+  "schema": "hermes.timeline/v1",
+  "meta": { "generated_at": "2026-08-22T10:00:00Z", "source": "m365_copilot",
+            "repo_scope": "Webshop-Relaunch" },
+  "project_ref": "proj/webshop-relaunch",
+  "project_label": "Webshop-Relaunch",
+  "timeline": [
+    { "external_ref": "ms/abnahme-fachtest", "title": "Abnahme Fachtest",
+      "due": "2026-10-15", "kind": "deadline" },
+    { "external_ref": "ms/go-live", "title": "Go-Live",
+      "due": "2026-11-30", "kind": "milestone",
+      "note": "Freigabe durch Steuerungsausschuss" }
+  ]
+}
+
+## Checkliste (vor der Ausgabe abarbeiten)
+[ ] Ausgabe ist EIN JSON-Objekt, beginnt mit { und endet mit }.
+[ ] "schema" ist exakt "hermes.timeline/v1".
+[ ] JEDER Eintrag hat ein "due" im Format YYYY-MM-DD.
+[ ] Jedes kind ist milestone|deadline|task.
+[ ] Jedes external_ref beginnt mit "ms/" und ist aus dem Titel abgeleitet.
+[ ] Die Liste enthält ALLE bekannten Termine (der Export ersetzt den Plan).
+
+## Häufige Fehler (unbedingt vermeiden)
+- KEINE Markdown-Code-Fences (``` ) um das JSON.
+- KEINE erklärenden Sätze vor oder nach dem JSON.
+- KEINE unscharfen Datumsangaben ("Q4", "Ende Jahr", "KW 47") — nur
+  YYYY-MM-DD, sonst den Eintrag weglassen.
+- KEINE Einträge ohne Datum.
+- KEINE vertraulichen Inhalte in "note".

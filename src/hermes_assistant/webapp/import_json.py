@@ -10,11 +10,16 @@ transaction (risks) or via sequential public-API calls (plans, pendenzen).
 """
 from __future__ import annotations
 
+import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+# Schedule due dates must be plain calendar dates — the Timeline screen
+# compares them as strings against today, so any other shape sorts wrongly.
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Maximum import payload size: 10 MB
 MAX_IMPORT_BYTES = 10 * 1024 * 1024
@@ -23,7 +28,9 @@ MAX_IMPORT_BYTES = 10 * 1024 * 1024
 # NOTE: "reviews" is intentionally absent — review import is not implemented
 # in this phase (only review export).  Payloads that include a "reviews" key
 # will be rejected by validate_import_payload with a clear error message.
-_VALID_ENTITY_TYPES = frozenset({"risks", "plans", "pendenzen", "projects"})
+_VALID_ENTITY_TYPES = frozenset(
+    {"risks", "plans", "pendenzen", "projects", "tasks", "schedule"}
+)
 
 # Required fields per entity type
 _REQUIRED_FIELDS: dict[str, list[str]] = {
@@ -31,7 +38,21 @@ _REQUIRED_FIELDS: dict[str, list[str]] = {
     "plans": ["plan_id", "items"],
     "pendenzen": ["title"],
     "projects": ["project_id"],
+    # "tasks" feeds the TaskStore tree that the WBS and Kanban screens render.
+    # (The older "plans" type writes to plans.db, which no dashboard screen
+    # reads — so a work breakdown must arrive as "tasks" to become visible.)
+    "tasks": ["title"],
+    # "schedule" writes <projects_root>/<project_id>/schedule.json, the only
+    # source the Timeline screen reads.
+    "schedule": ["project_id", "items"],
 }
+
+# Enum domains for the task tree, mirroring hermes_assistant.tasks.model.Task.
+_TASK_STATUSES = ("open", "closed", "blocked")
+_TASK_NODE_KINDS = (
+    "milestone", "deliverable", "task", "decision", "pendenz", "assumption",
+)
+_SCHEDULE_ITEM_KINDS = ("milestone", "deadline", "task")
 
 # Maximum items per entity list per import request
 _MAX_ITEMS_PER_TYPE = 10_000
@@ -136,6 +157,44 @@ def validate_entity(entity_type: str, obj: Any) -> list[str]:
             errors.append(
                 "Invalid priority value; must be low/medium/high/blocker"
             )
+
+    elif entity_type == "tasks":
+        status = obj.get("status")
+        if status is not None and status not in _TASK_STATUSES:
+            errors.append(
+                f"Invalid status value; must be {'/'.join(_TASK_STATUSES)}"
+            )
+        node_kind = obj.get("node_kind")
+        if node_kind is not None and node_kind not in _TASK_NODE_KINDS:
+            errors.append(
+                f"Invalid node_kind value; must be {'/'.join(_TASK_NODE_KINDS)}"
+            )
+
+    elif entity_type == "schedule":
+        items = obj.get("items")
+        if items is not None:
+            if not isinstance(items, list):
+                errors.append("'items' must be a list")
+            else:
+                for i, item in enumerate(items):
+                    if not isinstance(item, dict):
+                        errors.append(f"items[{i}] must be a JSON object")
+                        continue
+                    if not item.get("title"):
+                        errors.append(f"items[{i}] missing required field 'title'")
+                    due = item.get("due")
+                    if not due:
+                        errors.append(f"items[{i}] missing required field 'due'")
+                    elif not _DATE_RE.match(str(due)):
+                        errors.append(
+                            f"items[{i}] 'due' must be YYYY-MM-DD, got {due!r}"
+                        )
+                    kind = item.get("kind")
+                    if kind is not None and kind not in _SCHEDULE_ITEM_KINDS:
+                        errors.append(
+                            f"items[{i}] invalid kind; must be "
+                            f"{'/'.join(_SCHEDULE_ITEM_KINDS)}"
+                        )
 
     return errors
 
@@ -516,6 +575,264 @@ def _import_pendenzen(
         store.close()
 
 
+def _topo_order_tasks(
+    tasks_data: list[dict[str, Any]]
+) -> tuple[list[tuple[int, dict[str, Any]]], list[str]]:
+    """Order tasks parents-first, so a child is never created before its parent.
+
+    ``TaskStore.create`` computes ``wbs_number`` from the parent and registers
+    the child in the parent's ``children_ids``; ``update`` does not keep the
+    indexed ``parent_id`` column in sync. Creating in dependency order is
+    therefore the only way to build a correct tree in one pass.
+
+    Returns ``(ordered, errors)``. ``ordered`` holds ``(original_index, raw)``
+    pairs. A cycle, or a ``parent_ref`` naming a node absent from this payload,
+    is reported as an error rather than silently flattening the tree — a
+    silently flattened WBS looks plausible but is wrong.
+    """
+    by_ref: dict[str, int] = {}
+    for i, raw in enumerate(tasks_data):
+        ref = str(raw.get("external_ref") or "").strip()
+        if ref:
+            by_ref[ref] = i
+
+    ordered: list[tuple[int, dict[str, Any]]] = []
+    errors: list[str] = []
+    # 0 = unvisited, 1 = on current path (cycle marker), 2 = emitted
+    state: dict[int, int] = {}
+
+    def visit(i: int, path: list[str]) -> bool:
+        mark = state.get(i, 0)
+        if mark == 2:
+            return True
+        raw = tasks_data[i]
+        own_ref = str(raw.get("external_ref") or "").strip()
+        if mark == 1:
+            errors.append(
+                f"tasks[{i}]: cycle in parent_ref chain "
+                f"({' -> '.join([*path, own_ref or f'#{i}'])})"
+            )
+            return False
+        state[i] = 1
+        parent_ref = str(raw.get("parent_ref") or "").strip()
+        if parent_ref:
+            parent_idx = by_ref.get(parent_ref)
+            if parent_idx is None:
+                errors.append(
+                    f"tasks[{i}]: parent_ref {parent_ref!r} is not an "
+                    "external_ref of any task in this payload"
+                )
+                state[i] = 0
+                return False
+            if not visit(parent_idx, [*path, own_ref or f"#{i}"]):
+                state[i] = 0
+                return False
+        state[i] = 2
+        ordered.append((i, raw))
+        return True
+
+    for i in range(len(tasks_data)):
+        visit(i, [])
+
+    return ordered, errors
+
+
+def _import_tasks(
+    tasks_data: list[dict[str, Any]],
+    *,
+    db_path: str,
+    result: ImportResult,
+    start_idx: int,
+) -> None:
+    """Import a work-breakdown tree into the TaskStore.
+
+    This is what the WBS and Kanban screens render: both are views over the
+    same task tree (Kanban groups it by ``status``, WBS nests it by
+    ``parent_id``), which is why one payload feeds both.
+
+    Two-pass strategy, matching the other importers: validate everything —
+    including tree structure — before any write, so a broken payload never
+    leaves a half-built tree behind.
+
+    Idempotency: ``external_ref`` is the dedup key. An existing task is
+    updated in place; its parent is left alone, because re-parenting cannot be
+    done safely through the public API.
+    """
+    from hermes_assistant.tasks.model import Task
+    from hermes_assistant.tasks.store import TaskStore
+
+    store = TaskStore(db_path)
+    try:
+        # --- Pass 1: per-item validation ---
+        had_errors = False
+        for i, raw in enumerate(tasks_data):
+            idx = start_idx + i
+            errs = validate_entity("tasks", raw)
+            if errs:
+                result.items.append(
+                    ImportItemResult(
+                        index=idx,
+                        entity_type="tasks",
+                        action="skipped",
+                        error="; ".join(errs),
+                    )
+                )
+                result.skipped += 1
+                result.errors.append(f"tasks[{i}]: {'; '.join(errs)}")
+                had_errors = True
+
+        # --- Pass 1b: tree structure (cycles, dangling parent_ref) ---
+        ordered, tree_errors = _topo_order_tasks(tasks_data)
+        if tree_errors:
+            for msg in tree_errors:
+                result.errors.append(msg)
+            result.skipped += len(tree_errors)
+            had_errors = True
+
+        if had_errors:
+            return
+
+        # --- Pass 2: create parents before children ---
+        ref_to_id: dict[str, str] = {}
+        for i, raw in ordered:
+            idx = start_idx + i
+            external_ref = str(raw.get("external_ref") or "").strip() or None
+            parent_ref = str(raw.get("parent_ref") or "").strip() or None
+            parent_id = ref_to_id.get(parent_ref) if parent_ref else None
+
+            existing = (
+                store.find_by_external_ref(external_ref) if external_ref else None
+            )
+            if existing is not None:
+                store.update(
+                    existing.id,
+                    title=raw["title"],
+                    status=raw.get("status", existing.status),
+                    owner=raw.get("owner", existing.owner),
+                )
+                if external_ref:
+                    ref_to_id[external_ref] = existing.id
+                result.items.append(
+                    ImportItemResult(
+                        index=idx,
+                        entity_type="tasks",
+                        id=existing.id,
+                        action="updated",
+                    )
+                )
+                result.updated += 1
+                continue
+
+            task = Task(
+                id="",
+                title=raw["title"],
+                description=raw.get("description", ""),
+                owner=raw.get("owner"),
+                status=raw.get("status", "open"),
+                node_kind=raw.get("node_kind", "task"),
+                parent_id=parent_id,
+                external_ref=external_ref,
+            )
+            new_id = store.create(task)
+            if external_ref:
+                ref_to_id[external_ref] = new_id
+            result.items.append(
+                ImportItemResult(
+                    index=idx, entity_type="tasks", id=new_id, action="created"
+                )
+            )
+            result.created += 1
+    finally:
+        store.close()
+
+
+def _import_schedule(
+    schedule_data: list[dict[str, Any]],
+    *,
+    projects_root: str,
+    result: ImportResult,
+    start_idx: int,
+) -> None:
+    """Write ``<projects_root>/<project_id>/schedule.json`` per project.
+
+    That file is the only source the Timeline screen reads, so a schedule has
+    to land on disk as a whole document rather than in a database. Each entry
+    replaces the project's schedule outright — a partial merge would leave
+    stale dates that look current.
+    """
+    from pathlib import Path
+
+    from hermes_assistant.scheduling.model import ItemKind, ScheduledItem
+    from hermes_assistant.scheduling.model import Schedule as _Schedule
+
+    root = Path(projects_root)
+
+    # --- Pass 1: validate every schedule before writing any file ---
+    had_errors = False
+    for i, raw in enumerate(schedule_data):
+        idx = start_idx + i
+        errs = validate_entity("schedule", raw)
+        if errs:
+            result.items.append(
+                ImportItemResult(
+                    index=idx,
+                    entity_type="schedule",
+                    action="skipped",
+                    error="; ".join(errs),
+                )
+            )
+            result.skipped += 1
+            result.errors.append(f"schedule[{i}]: {'; '.join(errs)}")
+            had_errors = True
+
+    if had_errors:
+        return
+
+    # --- Pass 2: write ---
+    for i, raw in enumerate(schedule_data):
+        idx = start_idx + i
+        project_id = str(raw["project_id"])
+        label = str(raw.get("project_label") or project_id)
+        items: list[ScheduledItem] = []
+        for n, item in enumerate(raw.get("items") or []):
+            item_id = str(item.get("item_id") or item.get("external_ref") or f"item-{n}")
+            items.append(
+                ScheduledItem(
+                    uid=f"hermes-{project_id}-{item_id}@local",
+                    project_id=project_id,
+                    project_label=label,
+                    item_id=item_id,
+                    title=str(item["title"]),
+                    kind=ItemKind(str(item.get("kind", "milestone"))),
+                    due=date.fromisoformat(str(item["due"])),
+                    note=item.get("note"),
+                )
+            )
+        schedule = _Schedule(
+            project_id=project_id,
+            generated_at=datetime.now(UTC),
+            items=items,
+        )
+        proj_dir = root / project_id
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        existed = (proj_dir / "schedule.json").is_file()
+        (proj_dir / "schedule.json").write_text(
+            schedule.model_dump_json(indent=2), encoding="utf-8"
+        )
+        result.items.append(
+            ImportItemResult(
+                index=idx,
+                entity_type="schedule",
+                id=project_id,
+                action="updated" if existed else "created",
+            )
+        )
+        if existed:
+            result.updated += 1
+        else:
+            result.created += 1
+
+
 def _import_projects(
     projects_data: list[dict[str, Any]],
     *,
@@ -644,6 +961,22 @@ def import_payload(
         lst = payload["projects"] or []
         counts["projects"] = len(lst)
         _import_projects(
+            lst, projects_root=_proj_root, result=result, start_idx=idx
+        )
+        idx += len(lst)
+
+    # "tasks" must run after "projects" so a project stub exists for the tree,
+    # and before "schedule" so a schedule can reference the same project id.
+    if "tasks" in payload:
+        lst = payload["tasks"] or []
+        counts["tasks"] = len(lst)
+        _import_tasks(lst, db_path=tasks_db, result=result, start_idx=idx)
+        idx += len(lst)
+
+    if "schedule" in payload:
+        lst = payload["schedule"] or []
+        counts["schedule"] = len(lst)
+        _import_schedule(
             lst, projects_root=_proj_root, result=result, start_idx=idx
         )
         idx += len(lst)

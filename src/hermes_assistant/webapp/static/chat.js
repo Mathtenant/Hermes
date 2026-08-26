@@ -114,6 +114,67 @@
     state.messages.push({ role: "system", content: text });
   }
 
+  // ── Tab title flash ──────────────────────────────────────────────────────
+  // Local inference can take a while, so people tab away mid-question. When a
+  // reply lands while the tab is hidden, alternate the tab title with a notice
+  // until they come back. Nothing is shown while the tab is visible — the
+  // streamed bubble is already the signal there.
+  var FLASH_INTERVAL_MS = 1200;
+  var baseTitle = null; // real page title, captured when a flash cycle starts
+  var flashTimer = null;
+  var unreadReplies = 0;
+
+  function noticeTitle() {
+    var count = unreadReplies > 1 ? "(" + unreadReplies + ") " : "";
+    var plural = unreadReplies > 1 ? "replies" : "reply";
+    return count + "💬 Hermes " + plural + " ready";
+  }
+
+  function startTitleFlash() {
+    if (flashTimer) {
+      // Already flashing: refresh the notice so the count stays current.
+      document.title = noticeTitle();
+      return;
+    }
+    // Safe to read the live title: the guard above means we are not flashing,
+    // so document.title is the page's own, not a notice we wrote.
+    baseTitle = document.title;
+    var showingNotice = true;
+    document.title = noticeTitle();
+    flashTimer = setInterval(function () {
+      showingNotice = !showingNotice;
+      document.title = showingNotice ? noticeTitle() : baseTitle;
+    }, FLASH_INTERVAL_MS);
+  }
+
+  function stopTitleFlash() {
+    if (flashTimer) {
+      clearInterval(flashTimer);
+      flashTimer = null;
+    }
+    if (baseTitle !== null) {
+      document.title = baseTitle;
+      baseTitle = null;
+    }
+    unreadReplies = 0;
+  }
+
+  /** Called when a turn finishes (reply or error) — the inference is done. */
+  function notifyReplyReady() {
+    if (!document.hidden) return; // they are watching; the bubble suffices
+    unreadReplies += 1;
+    startTitleFlash();
+  }
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) stopTitleFlash();
+    });
+    // Covers the case where the tab was never hidden but the window lost focus
+    // (separate monitor, other app) and is clicked back into.
+    window.addEventListener("focus", stopTitleFlash);
+  }
+
   function render(root) {
     var msgs = state.messages
       .map(function (m) {
@@ -403,11 +464,22 @@
         return pump();
       })
       .catch(function (err) {
-        state.messages[assistantIdx].content = "Error: " + err.message;
+        // Name the likely cause rather than surfacing a bare "Failed to fetch":
+        // the usual reason is the local server being down, which the user can
+        // act on. The raw message is kept for anything less obvious.
+        var detail = String((err && err.message) || err);
+        var unreachable = /failed to fetch|networkerror|load failed/i.test(detail);
+        state.messages[assistantIdx].content = unreachable
+          ? "Error: the Hermes server is unreachable — is it still running? (" +
+            detail + ")"
+          : "Error: " + detail;
       })
       .then(function () {
         state.isLoading = false;
         render(root);
+        // Fires for both a completed reply and an error — either way the wait
+        // is over, which is what someone who tabbed away wants to know.
+        notifyReplyReady();
       });
   }
 

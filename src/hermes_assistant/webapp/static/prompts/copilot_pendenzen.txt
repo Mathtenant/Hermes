@@ -1,0 +1,79 @@
+# Aufgabe
+Du hast Zugriff auf das Projekt-Repository. Erstelle eine maschinenlesbare
+Liste der PENDENZEN (offene Punkte / Action Items) als JSON. Dieses JSON wird
+von einem lokalen Assistenzsystem (Hermes) eingelesen — es wird NICHT von
+Menschen gelesen und NICHT ausgeführt. Gib ausschliesslich gültiges JSON nach
+dem Schema hermes.pendenzen/v1 aus.
+
+## Scope
+Projekt: {{PROJECT_TITLE}}
+Quellen: {{REPO_SCOPE}} (nur diese Quellen; keine anderen Projekte, keine
+privaten Mails, keine Screenshots, keine Bilder)
+Stichtag: {{AS_OF_DATE}}
+
+## Ausgabe-Regeln (strikt)
+1. Gib AUSSCHLIESSLICH ein einzelnes JSON-Objekt aus. Keine Einleitung, keine
+   Erklärung, keine Markdown-Code-Fences. Erstes Zeichen "{", letztes "}".
+2. Halte dich EXAKT an das Schema. Keine zusätzlichen, keine umbenannten Felder.
+3. Nicht belegbare Information: Feld weglassen. Rate niemals Termine oder
+   Verantwortliche. Ein fehlendes optionales Feld ist korrekt — ein erfundener
+   Wert ist ein Fehler.
+4. external_ref DETERMINISTISCH aus dem Titel bilden (damit wiederholte
+   Exporte keine Duplikate anlegen):
+   - Präfix "pd/", danach der Titel in Kleinbuchstaben, Umlaute ausgeschrieben
+     (ä→ae, ö→oe, ü→ue, ß→ss), nur a–z 0–9 -, Leerzeichen → -, max. 60 Zeichen.
+   - Beispiel: „Lasttest planen" → pd/lasttest-planen
+   - IMMER aus dem Titel ableiten, nie aus Position oder Reihenfolge.
+5. Erlaubte Enum-Werte (jeder andere Wert ist ungültig):
+   - source:   meeting | review | decision_log | manual
+   - priority: low | medium | high | blocker
+6. Eine Pendenz ist eine KONKRETE offene Handlung mit einer verantwortlichen
+   Person oder Rolle. Unsichere zukünftige Ereignisse gehören NICHT hierher —
+   die erfasst der separate Risiken-Export. Strukturelle Arbeitspakete gehören
+   in den Strukturplan-Export.
+7. source_hint: nur der Dateiname (kein Pfad, keine Zitate aus dem Inhalt).
+8. Obergrenze: max. 300 Pendenzen. Bei mehr: die wichtigsten auswählen.
+
+## Schema
+{
+  "schema": "hermes.pendenzen/v1",
+  "meta": { "generated_at": "<ISO-8601>", "source": "m365_copilot",
+            "repo_scope": "{{REPO_SCOPE}}" },
+  "pendenzen": [
+    { "external_ref": "pd/<slug>",
+      "title": "<kurze Handlungsbeschreibung>",
+      "description": "<1-2 Sätze, optional>",
+      "owner": "<Rolle oder Name, optional>",
+      "priority": "low|medium|high|blocker",
+      "source": "meeting|review|decision_log|manual",
+      "source_hint": "<Dateiname, optional>" }
+  ]
+}
+
+## Beispiel (gültig — validiere deine Struktur dagegen)
+{
+  "schema": "hermes.pendenzen/v1",
+  "meta": { "generated_at": "2026-08-22T10:00:00Z", "source": "m365_copilot",
+            "repo_scope": "Webshop-Relaunch" },
+  "pendenzen": [
+    { "external_ref": "pd/dsgvo-check-checkout", "title": "DSGVO-Check Checkout",
+      "owner": "Legal", "priority": "high", "source": "review",
+      "source_hint": "review-2026-08-12.docx" },
+    { "external_ref": "pd/lasttest-planen", "title": "Lasttest planen",
+      "owner": "DevOps", "priority": "medium", "source": "meeting" }
+  ]
+}
+
+## Checkliste (vor der Ausgabe abarbeiten)
+[ ] Ausgabe ist EIN JSON-Objekt, beginnt mit { und endet mit }.
+[ ] "schema" ist exakt "hermes.pendenzen/v1".
+[ ] Jede source ist meeting|review|decision_log|manual.
+[ ] Jede priority ist low|medium|high|blocker.
+[ ] Jedes external_ref beginnt mit "pd/" und ist aus dem Titel abgeleitet.
+[ ] Keine Risiken und keine Arbeitspakete in der Liste.
+
+## Häufige Fehler (unbedingt vermeiden)
+- KEINE Markdown-Code-Fences (``` ) um das JSON.
+- KEINE erklärenden Sätze vor oder nach dem JSON.
+- KEINE Prioritäten wie "hoch"/"mittel" — hier gilt low|medium|high|blocker.
+- KEINE erfundenen Verantwortlichen — im Zweifel owner weglassen.

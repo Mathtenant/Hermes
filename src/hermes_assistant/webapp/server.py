@@ -99,30 +99,61 @@ def _validate_safe_json(json_str: str, pii_json_str: str | None = None) -> list[
     removed so a user's own email/path in a chat message does not trip the
     guard. Field-name checks always run against the full ``json_str``.
     """
-    violations: list[str] = []
+    structural, content = _classify_violations(json_str, pii_json_str)
+    return structural + content
+
+
+def _classify_violations(
+    json_str: str, pii_json_str: str | None = None
+) -> tuple[list[str], list[str]]:
+    """Split confidentiality violations into (structural, content).
+
+    The distinction decides whether a response can be salvaged:
+
+    - **Structural** — a forbidden or internal_*/confidential_* *field name*
+      reached the serialiser. That is a programming error: a view model is
+      exposing something it never should. It must fail loudly.
+    - **Content** — an email address or absolute path appears in a *value*.
+      That is untrusted data, not a bug, and it arrives routinely in imported
+      material drawn from meeting minutes. Failing the whole response for it
+      lets one imported row disable a screen permanently.
+    """
+    structural: list[str] = []
+    content: list[str] = []
     lower = json_str.lower()
     pii_source = json_str if pii_json_str is None else pii_json_str
 
     # Exact forbidden field names from the shared allowlist
     for field in _FORBIDDEN_FIELDS:
         if f'"{field}"' in lower:
-            violations.append(f"Forbidden field {field!r} found in API response")
+            structural.append(f"Forbidden field {field!r} found in API response")
 
     # Pattern-matched forbidden field name prefixes
     if _INTERNAL_FIELD_RE.search(json_str):
-        violations.append(
+        structural.append(
             "Field matching internal_* or confidential_* pattern found in API response"
         )
 
     # Absolute filesystem paths (user-authored content excluded via pii_source)
     if _FS_RE.search(pii_source):
-        violations.append("Absolute filesystem path found in API response")
+        content.append("Absolute filesystem path found in API response")
 
     # Email addresses (user-authored content excluded via pii_source)
     if _EMAIL_RE.search(pii_source):
-        violations.append("Email address found in API response")
+        content.append("Email address found in API response")
 
-    return violations
+    return structural, content
+
+
+# Replacements carry no JSON-special characters, so substituting them inside a
+# serialised document cannot break its syntax.
+_PII_PLACEHOLDERS = (("[E-Mail entfernt]", "email"), ("[Pfad entfernt]", "path"))
+
+
+def _redact_pii(json_str: str) -> str:
+    """Blank emails and absolute paths in a serialised JSON document."""
+    redacted = _EMAIL_RE.sub("[E-Mail entfernt]", json_str)
+    return _FS_RE.sub("[Pfad entfernt]", redacted)
 
 
 def confidentiality_guard(func):  # type: ignore[no-untyped-def]
@@ -213,13 +244,28 @@ async def dashboard(project_id: str | None = Query(default=None)) -> Response:
         ) from exc
 
     json_str = data.model_dump_json()
-    violations = _validate_safe_json(json_str)
-    if violations:
+    structural, content = _classify_violations(json_str)
+
+    if structural:
+        # A view model is exposing a field it never should — a code bug.
         # H2: log detail server-side; send generic message to client.
         logger.warning(
-            "Confidentiality guard triggered on dashboard: %s", "; ".join(violations)
+            "Confidentiality guard triggered on dashboard: %s", "; ".join(structural)
         )
         raise HTTPException(status_code=500, detail="Internal error")
+
+    if content:
+        # An email or path in imported content must never leave the process,
+        # but it must not take the dashboard down either: rows are stored
+        # verbatim, so failing here would make the screen unreachable on every
+        # request until somebody edited the database by hand. Redact and serve.
+        # The importer already scrubs new rows; this covers anything stored
+        # before that existed, or written by another path.
+        logger.warning(
+            "Redacted content from dashboard response: %s", "; ".join(content)
+        )
+        json_str = _redact_pii(json_str)
+
     return Response(content=json_str, media_type="application/json")
 
 
@@ -257,8 +303,13 @@ async def import_json(request: Request) -> Response:
         MAX_IMPORT_BYTES,
         ImportResult,
         import_payload,
+        loads_forgiving,
         validate_import_payload,
     )
+
+    # Repairs applied to malformed-but-salvageable Copilot output; surfaced in
+    # the result so a sloppy export is visible rather than silently accepted.
+    json_repairs: list[str] = []
 
     content_type = request.headers.get("content-type", "")
 
@@ -274,9 +325,9 @@ async def import_json(request: Request) -> Response:
                     raise HTTPException(
                         status_code=413, detail="File exceeds 10 MB limit"
                     )
-                payload = _json.loads(content)
+                payload, json_repairs = loads_forgiving(content)
             elif raw_text is not None:
-                payload = _json.loads(str(raw_text))
+                payload, json_repairs = loads_forgiving(str(raw_text))
             else:
                 raise HTTPException(
                     status_code=422,
@@ -290,7 +341,7 @@ async def import_json(request: Request) -> Response:
                 )
             if not body:
                 raise HTTPException(status_code=422, detail="Empty request body")
-            payload = _json.loads(body)
+            payload, json_repairs = loads_forgiving(body)
     except HTTPException:
         raise
     except _json.JSONDecodeError as exc:
@@ -323,6 +374,8 @@ async def import_json(request: Request) -> Response:
         result.errors.append(
             f"Section {sec!r} is not supported by the importer and was skipped"
         )
+    for repair in json_repairs:
+        result.errors.append(f"JSON repariert: {repair}")
     json_str = result.model_dump_json()
     violations = _validate_safe_json(json_str)
     if violations:

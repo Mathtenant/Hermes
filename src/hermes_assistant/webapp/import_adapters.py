@@ -41,6 +41,44 @@ _PENDENZ_SOURCE_TABLE: dict[str, str] = {
     "manual": "manual",
 }
 
+# Copilot ``wbs.status`` → ``Task.status``.
+#
+# NOTE the lossy step: the Task model has only open/closed/blocked, so
+# ``in_progress`` collapses to ``open``. The Kanban board has three columns
+# (To Do / Blocked / Done) and no in-progress lane, so nothing is lost on
+# screen — but a round-trip will not return "in_progress". Synonyms are
+# accepted defensively because Copilot drifts between "done" and "closed".
+_TASK_STATUS_TABLE: dict[str, str] = {
+    "open": "open",
+    "in_progress": "open",
+    "done": "closed",
+    "closed": "closed",
+    "blocked": "blocked",
+}
+
+# Copilot ``wbs.node_kind`` → ``Task.node_kind``. "phase" has no direct
+# counterpart; it maps to "deliverable" because in a HERMES WBS a phase is the
+# grouping node that holds deliverables.
+_NODE_KIND_TABLE: dict[str, str] = {
+    "milestone": "milestone",
+    "deliverable": "deliverable",
+    "task": "task",
+    "subtask": "task",
+    "action": "task",
+    "decision": "decision",
+    "phase": "deliverable",
+}
+
+# Copilot ``timeline.kind`` → ``ItemKind``; German synonyms accepted.
+_TIMELINE_KIND_TABLE: dict[str, str] = {
+    "milestone": "milestone",
+    "meilenstein": "milestone",
+    "deadline": "deadline",
+    "frist": "deadline",
+    "task": "task",
+    "aufgabe": "task",
+}
+
 # Top-level sections in Copilot v1 that the importer cannot store.
 # These are noted in ``_skipped_sections``; never silently dropped.
 _COPILOT_V1_UNMAPPED_SECTIONS: tuple[str, ...] = ("open_assumptions", "decisions")
@@ -140,6 +178,183 @@ def _strip_prefix(ref: str, prefix: str) -> str:
 # ---------------------------------------------------------------------------
 # Copilot hermes.project_state/v1 adapter
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Per-tool Copilot schemas
+#
+# One prompt per dashboard screen keeps each Copilot request small, which is
+# both faster and markedly more schema-compliant than the monolithic
+# project_state export. Note that WBS and Kanban share a single schema on
+# purpose: they are two renderings of one task tree (Kanban groups it by
+# status, WBS nests it by parent), so separate payloads would create two
+# competing sources of truth for the same tasks.
+# ---------------------------------------------------------------------------
+
+
+@_register("hermes.risks/v1")
+def _adapt_risks_v1(payload: dict) -> dict:
+    """Map the risks-only Copilot export → native ``risks``."""
+    rows = payload.get("risks")
+    if rows is None:
+        return {"_skipped_sections": []}
+    if not isinstance(rows, list):
+        raise ValueError("'risks' must be a JSON array")
+
+    adapted: list[dict[str, Any]] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        risk: dict[str, Any] = {"title": str(r.get("title", ""))}
+        ext_ref = r.get("external_ref")
+        if ext_ref:
+            risk["id"] = str(ext_ref)
+        risk["likelihood"] = _LIKELIHOOD_TABLE.get(
+            str(r.get("likelihood", "")).lower(), 3
+        )
+        risk["severity"] = _IMPACT_TABLE.get(str(r.get("impact", "")).lower(), "medium")
+        description = r.get("description")
+        if description:
+            risk["description"] = str(description)
+        owner = r.get("owner")
+        if owner:
+            risk["owner"] = str(owner)
+        adapted.append(risk)
+    return {"risks": adapted, "_skipped_sections": []}
+
+
+@_register("hermes.pendenzen/v1")
+def _adapt_pendenzen_v1(payload: dict) -> dict:
+    """Map the pendenzen-only Copilot export → native ``pendenzen``."""
+    rows = payload.get("pendenzen")
+    if rows is None:
+        return {"_skipped_sections": []}
+    if not isinstance(rows, list):
+        raise ValueError("'pendenzen' must be a JSON array")
+
+    adapted: list[dict[str, Any]] = []
+    for p in rows:
+        if not isinstance(p, dict):
+            continue
+        pend: dict[str, Any] = {"title": str(p.get("title", ""))}
+        ext_ref = p.get("external_ref")
+        if ext_ref:
+            pend["id"] = str(ext_ref)
+            pend["external_ref"] = str(ext_ref)
+        pend["source"] = _PENDENZ_SOURCE_TABLE.get(
+            str(p.get("source", "manual")).lower(), "manual"
+        )
+        for src_key, dst_key in (
+            ("owner", "owner"),
+            ("priority", "priority"),
+            ("description", "description"),
+            ("source_hint", "source_ref"),
+        ):
+            value = p.get(src_key)
+            if value:
+                pend[dst_key] = str(value)
+        adapted.append(pend)
+    return {"pendenzen": adapted, "_skipped_sections": []}
+
+
+@_register("hermes.wbs/v1")
+def _adapt_wbs_v1(payload: dict) -> dict:
+    """Map the work-breakdown Copilot export → native ``tasks`` (+ project stub).
+
+    Feeds both the WBS and Kanban screens. Unlike the ``wbs`` section of
+    ``project_state/v1`` — which lands in plans.db, a store no dashboard screen
+    reads — this maps to ``tasks``, which is the tree those screens render.
+    """
+    nodes = payload.get("wbs")
+    if nodes is None:
+        return {"_skipped_sections": []}
+    if not isinstance(nodes, list):
+        raise ValueError("'wbs' must be a JSON array")
+
+    out: dict[str, Any] = {"_skipped_sections": []}
+
+    project_ref = str(payload.get("project_ref") or "").strip()
+    if project_ref:
+        out["projects"] = [{"project_id": _strip_prefix(project_ref, "proj/")}]
+
+    tasks: list[dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        task: dict[str, Any] = {
+            "title": str(node.get("title", "")),
+            "status": _TASK_STATUS_TABLE.get(
+                str(node.get("status", "open")).lower(), "open"
+            ),
+            "node_kind": _NODE_KIND_TABLE.get(
+                str(node.get("node_kind", "task")).lower(), "task"
+            ),
+        }
+        ext_ref = node.get("external_ref")
+        if ext_ref:
+            task["external_ref"] = str(ext_ref)
+        parent_ref = node.get("parent_ref")
+        if parent_ref:
+            task["parent_ref"] = str(parent_ref)
+        owner = node.get("owner")
+        if owner:
+            task["owner"] = str(owner)
+        tasks.append(task)
+    out["tasks"] = tasks
+    return out
+
+
+@_register("hermes.timeline/v1")
+def _adapt_timeline_v1(payload: dict) -> dict:
+    """Map the timeline Copilot export → native ``schedule``.
+
+    Produces one schedule document per project, which the importer writes to
+    ``<projects_root>/<project_id>/schedule.json`` — the only source the
+    Timeline screen reads.
+    """
+    entries = payload.get("timeline")
+    if entries is None:
+        return {"_skipped_sections": []}
+    if not isinstance(entries, list):
+        raise ValueError("'timeline' must be a JSON array")
+
+    project_ref = str(payload.get("project_ref") or "").strip()
+    project_id = _strip_prefix(project_ref, "proj/") or "imported-project"
+
+    items: list[dict[str, Any]] = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        title = str(e.get("title", ""))
+        item: dict[str, Any] = {
+            "title": title,
+            "due": str(e.get("due", "")),
+            "kind": _TIMELINE_KIND_TABLE.get(
+                str(e.get("kind", "milestone")).lower(), "milestone"
+            ),
+        }
+        ext_ref = e.get("external_ref")
+        item["item_id"] = _strip_prefix(str(ext_ref), "ms/") if ext_ref else _slug(title)
+        note = e.get("note")
+        if note:
+            item["note"] = str(note)
+        items.append(item)
+
+    # Deliberately no "projects" entry: _import_schedule already creates
+    # <projects_root>/<project_id>/ when it writes schedule.json. Emitting a
+    # project stub as well would mean a *rejected* timeline still reported
+    # "1 created", telling the user the import succeeded when the thing they
+    # actually asked for was thrown away.
+    return {
+        "schedule": [
+            {
+                "project_id": project_id,
+                "project_label": str(payload.get("project_label") or project_id),
+                "items": items,
+            }
+        ],
+        "_skipped_sections": [],
+    }
 
 
 @_register("hermes.project_state/v1")

@@ -99,6 +99,86 @@ def _gen_id() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Import-time safety
+#
+# Imported content is machine-generated from documents nobody vetted, so it is
+# the least trustworthy input the system takes. Two classes of damage have to
+# be stopped at this boundary, because neither is recoverable downstream.
+# ---------------------------------------------------------------------------
+
+# Free-text fields that end up rendered on the dashboard, per entity type.
+_TEXT_FIELDS: dict[str, tuple[str, ...]] = {
+    "risks": ("title", "description", "owner"),
+    "pendenzen": ("title", "description", "owner", "source_ref"),
+    "tasks": ("title", "description", "owner"),
+    "plans": ("title",),
+    "schedule": ("title", "note"),
+}
+
+
+def _guard_patterns() -> tuple[Any, Any]:
+    """Return the (email, filesystem-path) regexes the response guard uses.
+
+    Imported lazily and taken from the guard itself rather than re-declared
+    here: if the two ever drifted, content could pass import and then break
+    every dashboard response — the exact failure this is meant to prevent.
+    """
+    from hermes_assistant.webapp.server import _EMAIL_RE, _FS_RE
+
+    return _EMAIL_RE, _FS_RE
+
+
+def _redact_unsafe_text(value: str) -> tuple[str, list[str]]:
+    """Strip content that would later trip the confidentiality guard.
+
+    ``/api/dashboard`` runs every response through ``_validate_safe_json`` and
+    returns HTTP 500 if it finds an email address or an absolute filesystem
+    path. Because imported rows are stored verbatim, a single meeting-derived
+    pendenz titled "Klärung mit hans.muster@example.com" would make the whole
+    dashboard 500 on every request, permanently, until somebody edited the
+    database by hand.
+
+    Redacting is deliberate rather than rejecting the row: an export drawn
+    from meeting minutes will routinely mention people by address, and failing
+    the whole batch would leave the user hand-editing JSON. The substitution
+    is always reported back so nothing changes silently.
+    """
+    email_re, fs_re = _guard_patterns()
+    notes: list[str] = []
+    cleaned, n_mail = email_re.subn("[E-Mail entfernt]", value)
+    if n_mail:
+        notes.append(f"{n_mail} E-Mail-Adresse(n)")
+    cleaned, n_path = fs_re.subn("[Pfad entfernt]", cleaned)
+    if n_path:
+        notes.append(f"{n_path} Dateipfad(e)")
+    return cleaned, notes
+
+
+def _sanitise_entity(entity_type: str, raw: dict[str, Any]) -> list[str]:
+    """Redact guard-tripping text in place; return human-readable notes."""
+    notes: list[str] = []
+    for field in _TEXT_FIELDS.get(entity_type, ()):
+        value = raw.get(field)
+        if isinstance(value, str) and value:
+            cleaned, found = _redact_unsafe_text(value)
+            if found:
+                raw[field] = cleaned
+                notes.append(f"{field}: {', '.join(found)} entfernt")
+    return notes
+
+
+# A project id becomes a directory name under projects_root. Anything with a
+# separator, a parent reference, or a drive letter can escape that root — a
+# "project_ref" of "proj/../../x" wrote schedule.json two levels above it.
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+
+
+def _is_safe_path_segment(value: str) -> bool:
+    """True if *value* is safe to use as a single directory name."""
+    return bool(_SAFE_ID_RE.match(value)) and value not in (".", "..")
+
+
+# ---------------------------------------------------------------------------
 # Entity-level validators
 # ---------------------------------------------------------------------------
 
@@ -171,6 +251,12 @@ def validate_entity(entity_type: str, obj: Any) -> list[str]:
             )
 
     elif entity_type == "schedule":
+        project_id = obj.get("project_id")
+        if project_id is not None and not _is_safe_path_segment(str(project_id)):
+            errors.append(
+                f"Invalid project_id {project_id!r}: must be a single safe "
+                "directory name (letters, digits, . _ -)"
+            )
         items = obj.get("items")
         if items is not None:
             if not isinstance(items, list):
@@ -189,6 +275,17 @@ def validate_entity(entity_type: str, obj: Any) -> list[str]:
                         errors.append(
                             f"items[{i}] 'due' must be YYYY-MM-DD, got {due!r}"
                         )
+                    else:
+                        # Shape alone is not enough: "2026-02-30" matches the
+                        # pattern but is not a real date, and would raise
+                        # deep inside the writer as an uncaught HTTP 500.
+                        try:
+                            date.fromisoformat(str(due))
+                        except ValueError:
+                            errors.append(
+                                f"items[{i}] 'due' is not a valid calendar "
+                                f"date: {due!r}"
+                            )
                     kind = item.get("kind")
                     if kind is not None and kind not in _SCHEDULE_ITEM_KINDS:
                         errors.append(
@@ -268,6 +365,9 @@ def _import_risks(
 
         for i, raw in enumerate(risks_data):
             idx = start_idx + i
+            if isinstance(raw, dict):
+                for note in _sanitise_entity("risks", raw):
+                    result.errors.append(f"risks[{i}]: {note}")
             errs = validate_entity("risks", raw)
             if errs:
                 result.items.append(
@@ -499,6 +599,9 @@ def _import_pendenzen(
 
         for i, raw in enumerate(pend_data):
             idx = start_idx + i
+            if isinstance(raw, dict):
+                for note in _sanitise_entity("pendenzen", raw):
+                    result.errors.append(f"pendenzen[{i}]: {note}")
             errs = validate_entity("pendenzen", raw)
             if errs:
                 result.items.append(
@@ -576,7 +679,8 @@ def _import_pendenzen(
 
 
 def _topo_order_tasks(
-    tasks_data: list[dict[str, Any]]
+    tasks_data: list[dict[str, Any]],
+    known_refs: frozenset[str] = frozenset(),
 ) -> tuple[list[tuple[int, dict[str, Any]]], list[str]]:
     """Order tasks parents-first, so a child is never created before its parent.
 
@@ -585,54 +689,92 @@ def _topo_order_tasks(
     indexed ``parent_id`` column in sync. Creating in dependency order is
     therefore the only way to build a correct tree in one pass.
 
+    ``known_refs`` holds external_refs that already exist in the store. A
+    parent_ref matching one of those is legitimate — it is how an incremental
+    or subtree export attaches to a tree imported earlier — so it is treated
+    as a satisfied dependency rather than a dangling reference.
+
     Returns ``(ordered, errors)``. ``ordered`` holds ``(original_index, raw)``
-    pairs. A cycle, or a ``parent_ref`` naming a node absent from this payload,
-    is reported as an error rather than silently flattening the tree — a
-    silently flattened WBS looks plausible but is wrong.
+    pairs. A cycle, a duplicate external_ref, or a ``parent_ref`` naming a node
+    that is neither in this payload nor already stored is reported as an error
+    rather than silently flattening the tree — a silently flattened WBS looks
+    plausible but is wrong.
+
+    The walk is iterative on purpose. A recursive version overflowed the stack
+    at roughly 2 000 nodes when the payload listed children before parents,
+    which the prompt explicitly permits, turning a large but legal export into
+    an HTTP 500.
     """
+    ordered: list[tuple[int, dict[str, Any]]] = []
+    errors: list[str] = []
+
     by_ref: dict[str, int] = {}
     for i, raw in enumerate(tasks_data):
         ref = str(raw.get("external_ref") or "").strip()
-        if ref:
-            by_ref[ref] = i
+        if not ref:
+            continue
+        if ref in by_ref:
+            # Deterministic slugs are derived from titles and truncated to 60
+            # characters, so two long titles can collide. Overwriting would
+            # drop a row with no error at all.
+            errors.append(
+                f"tasks[{i}]: duplicate external_ref {ref!r} "
+                f"(also used by tasks[{by_ref[ref]}])"
+            )
+            continue
+        by_ref[ref] = i
 
-    ordered: list[tuple[int, dict[str, Any]]] = []
-    errors: list[str] = []
-    # 0 = unvisited, 1 = on current path (cycle marker), 2 = emitted
+    # 0 = unvisited, 1 = on the current path (cycle marker), 2 = emitted
     state: dict[int, int] = {}
 
-    def visit(i: int, path: list[str]) -> bool:
-        mark = state.get(i, 0)
-        if mark == 2:
-            return True
-        raw = tasks_data[i]
-        own_ref = str(raw.get("external_ref") or "").strip()
-        if mark == 1:
-            errors.append(
-                f"tasks[{i}]: cycle in parent_ref chain "
-                f"({' -> '.join([*path, own_ref or f'#{i}'])})"
-            )
-            return False
-        state[i] = 1
-        parent_ref = str(raw.get("parent_ref") or "").strip()
-        if parent_ref:
+    for start in range(len(tasks_data)):
+        if state.get(start, 0) == 2:
+            continue
+        # Explicit stack of (index, children_expanded?) frames.
+        stack: list[tuple[int, bool]] = [(start, False)]
+        path: list[str] = []
+        while stack:
+            i, expanded = stack.pop()
+            raw = tasks_data[i]
+            own_ref = str(raw.get("external_ref") or "").strip()
+
+            if expanded:
+                state[i] = 2
+                ordered.append((i, raw))
+                if path and path[-1] == (own_ref or f"#{i}"):
+                    path.pop()
+                continue
+
+            mark = state.get(i, 0)
+            if mark == 2:
+                continue
+            if mark == 1:
+                errors.append(
+                    f"tasks[{i}]: cycle in parent_ref chain "
+                    f"({' -> '.join([*path, own_ref or f'#{i}'])})"
+                )
+                stack.clear()
+                break
+
+            state[i] = 1
+            path.append(own_ref or f"#{i}")
+            stack.append((i, True))
+
+            parent_ref = str(raw.get("parent_ref") or "").strip()
+            if not parent_ref:
+                continue
             parent_idx = by_ref.get(parent_ref)
             if parent_idx is None:
+                if parent_ref in known_refs:
+                    continue  # already in the store — a valid attachment point
                 errors.append(
-                    f"tasks[{i}]: parent_ref {parent_ref!r} is not an "
-                    "external_ref of any task in this payload"
+                    f"tasks[{i}]: parent_ref {parent_ref!r} is neither an "
+                    "external_ref in this payload nor an already-imported task"
                 )
-                state[i] = 0
-                return False
-            if not visit(parent_idx, [*path, own_ref or f"#{i}"]):
-                state[i] = 0
-                return False
-        state[i] = 2
-        ordered.append((i, raw))
-        return True
-
-    for i in range(len(tasks_data)):
-        visit(i, [])
+                stack.clear()
+                break
+            if state.get(parent_idx, 0) != 2:
+                stack.append((parent_idx, False))
 
     return ordered, errors
 
@@ -667,6 +809,9 @@ def _import_tasks(
         had_errors = False
         for i, raw in enumerate(tasks_data):
             idx = start_idx + i
+            if isinstance(raw, dict):
+                for note in _sanitise_entity("tasks", raw):
+                    result.errors.append(f"tasks[{i}]: {note}")
             errs = validate_entity("tasks", raw)
             if errs:
                 result.items.append(
@@ -681,8 +826,17 @@ def _import_tasks(
                 result.errors.append(f"tasks[{i}]: {'; '.join(errs)}")
                 had_errors = True
 
-        # --- Pass 1b: tree structure (cycles, dangling parent_ref) ---
-        ordered, tree_errors = _topo_order_tasks(tasks_data)
+        # --- Pass 1b: tree structure (cycles, duplicates, dangling refs) ---
+        # Refs already in the store count as valid attachment points, so an
+        # incremental export can hang new work off an existing tree.
+        known_refs = frozenset(
+            ref
+            for ref in (
+                str(raw.get("parent_ref") or "").strip() for raw in tasks_data
+            )
+            if ref and store.find_by_external_ref(ref) is not None
+        )
+        ordered, tree_errors = _topo_order_tasks(tasks_data, known_refs)
         if tree_errors:
             for msg in tree_errors:
                 result.errors.append(msg)
@@ -698,7 +852,14 @@ def _import_tasks(
             idx = start_idx + i
             external_ref = str(raw.get("external_ref") or "").strip() or None
             parent_ref = str(raw.get("parent_ref") or "").strip() or None
-            parent_id = ref_to_id.get(parent_ref) if parent_ref else None
+            parent_id = None
+            if parent_ref:
+                parent_id = ref_to_id.get(parent_ref)
+                if parent_id is None:
+                    # Validated above as a known ref: attach to the stored tree.
+                    stored_parent = store.find_by_external_ref(parent_ref)
+                    if stored_parent is not None:
+                        parent_id = stored_parent.id
 
             existing = (
                 store.find_by_external_ref(external_ref) if external_ref else None
@@ -771,6 +932,11 @@ def _import_schedule(
     had_errors = False
     for i, raw in enumerate(schedule_data):
         idx = start_idx + i
+        if isinstance(raw, dict):
+            for item in raw.get("items") or []:
+                if isinstance(item, dict):
+                    for note in _sanitise_entity("schedule", item):
+                        result.errors.append(f"schedule[{i}]: {note}")
         errs = validate_entity("schedule", raw)
         if errs:
             result.items.append(
@@ -872,7 +1038,24 @@ def _import_projects(
             had_errors = True
             continue
 
-        pending.append((idx, str(raw["project_id"])))
+        project_id = str(raw["project_id"])
+        if not _is_safe_path_segment(project_id):
+            result.items.append(
+                ImportItemResult(
+                    index=idx,
+                    entity_type="projects",
+                    action="skipped",
+                    error=f"Unsafe project_id {project_id!r}",
+                )
+            )
+            result.skipped += 1
+            result.errors.append(
+                f"projects[{i}]: unsafe project_id {project_id!r} — must be a "
+                "single safe directory name (letters, digits, . _ -)"
+            )
+            had_errors = True
+            continue
+        pending.append((idx, project_id))
 
     # Atomicity: any validation failure aborts the entire entity-type batch.
     if had_errors:

@@ -34,11 +34,16 @@ Stichtag: {{AS_OF_DATE}}
    - status:    open | in_progress | done | blocked      ← NUR diese vier
 6. Baumstruktur über parent_ref:
    - Wurzelknoten: parent_ref weglassen oder null.
-   - Jedes parent_ref MUSS als external_ref eines anderen Knotens in DIESEM
-     Export vorkommen, sonst wird der Import abgelehnt.
+   - Jedes parent_ref MUSS entweder als external_ref eines anderen Knotens in
+     DIESEM Export vorkommen oder aus einem früheren Import bereits bekannt
+     sein. Zeigt es auf nichts davon, wird der Import abgelehnt.
    - KEINE Zyklen. Die Reihenfolge im Array ist egal — Kinder dürfen vor
      ihren Eltern stehen.
+   - Jedes external_ref darf im Export nur EINMAL vorkommen. Kürze lange Titel
+     so, dass keine zwei Knoten denselben Slug ergeben.
 7. Obergrenze: max. 500 Knoten. Bei mehr: die wichtigsten auswählen.
+8. Nachlieferungen sind erlaubt: Du darfst einen Teilbaum exportieren und ihn
+   über parent_ref an einen bereits importierten Knoten hängen.
 
 ## Schema
 {
@@ -80,15 +85,18 @@ Stichtag: {{AS_OF_DATE}}
 [ ] "schema" ist exakt "hermes.wbs/v1".
 [ ] Jeder status ist open|in_progress|done|blocked.
 [ ] Jeder node_kind ist phase|deliverable|task|subtask|action.
-[ ] Jedes parent_ref existiert als external_ref eines Knotens in diesem Export.
+[ ] Jedes parent_ref existiert in diesem Export oder ist bereits importiert.
 [ ] Keine Zyklen in parent_ref.
 [ ] Jedes external_ref ist eindeutig und aus dem Titel abgeleitet.
+[ ] Kein external_ref kommt zweimal vor.
 
 ## Häufige Fehler (unbedingt vermeiden)
 - KEINE Markdown-Code-Fences (``` ) um das JSON.
 - KEINE erklärenden Sätze vor oder nach dem JSON.
-- KEIN parent_ref auf einen Knoten, der nicht im selben Export steht — der
-  gesamte Import wird dann abgelehnt.
+- KEIN parent_ref auf einen Knoten, den es weder in diesem Export noch aus
+  einem früheren Import gibt — der gesamte Import wird dann abgelehnt.
+- KEIN doppeltes external_ref — der Import wird abgelehnt, damit kein Knoten
+  unbemerkt verloren geht.
 - KEINE Status-Werte wie "todo", "wip" oder "at_risk".
 - KEINE verschachtelten "children"-Arrays — die Hierarchie entsteht
   ausschliesslich über parent_ref in einer flachen Liste.

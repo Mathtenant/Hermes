@@ -9,13 +9,22 @@ import pytest
 from fastapi.testclient import TestClient
 
 from hermes_assistant import __version__
-from hermes_assistant.dashboard_html import DashboardData, RiskRow, load_dashboard_data
+from hermes_assistant.dashboard_html import (
+    DashboardData,
+    PendenzRow,
+    RiskRow,
+    load_dashboard_data,
+)
 from hermes_assistant.jobqueue.jobs import JobStore
 from hermes_assistant.risks.registry import RiskRegistry
 from hermes_assistant.tasks.model import Task
 from hermes_assistant.tasks.pendenzen import Pendenz, PendenzSource
 from hermes_assistant.tasks.store import TaskStore
-from hermes_assistant.webapp.server import _validate_safe_json, app
+from hermes_assistant.webapp.server import (
+    _classify_violations,
+    _validate_safe_json,
+    app,
+)
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -277,13 +286,17 @@ def test_validate_safe_json_catches_fs_path() -> None:
     assert any("filesystem path" in v.lower() for v in violations)
 
 
-def test_confidentiality_guard_causes_500() -> None:
-    """When _validate_safe_json returns violations the endpoint must return 500."""
+def test_structural_violation_causes_500() -> None:
+    """A forbidden *field name* is a code bug and must fail the response.
+
+    A view model exposing something it never should cannot be salvaged by
+    redaction, so this stays a hard failure.
+    """
     good_data = DashboardData(generated_at=_NOW_STR)
     with patch("hermes_assistant.webapp.server.load_dashboard_data", return_value=good_data):
         with patch(
-            "hermes_assistant.webapp.server._validate_safe_json",
-            return_value=["raw_notes leaked"],
+            "hermes_assistant.webapp.server._classify_violations",
+            return_value=(["raw_notes leaked"], []),
         ):
             r = client.get("/api/dashboard")
     assert r.status_code == 500
@@ -291,6 +304,45 @@ def test_confidentiality_guard_causes_500() -> None:
     detail = r.json().get("detail", "")
     assert detail == "Internal error"
     assert "raw_notes" not in detail
+
+
+def test_content_violation_is_redacted_not_fatal() -> None:
+    """An email in imported *content* must be scrubbed, not 500 the screen.
+
+    Rows are stored verbatim, so failing here would make the dashboard
+    unreachable on every request until the database was edited by hand — one
+    imported meeting note could disable the product.
+    """
+    poisoned = DashboardData(
+        generated_at=_NOW_STR,
+        pendenzen=[
+            PendenzRow(
+                id="p1",
+                title="Klaerung mit hans.muster@example.com",
+                source="meeting",
+                priority="medium",
+                status="open",
+            )
+        ],
+    )
+    with patch(
+        "hermes_assistant.webapp.server.load_dashboard_data", return_value=poisoned
+    ):
+        r = client.get("/api/dashboard")
+
+    assert r.status_code == 200
+    body = r.text
+    assert "hans.muster@example.com" not in body
+    assert "[E-Mail entfernt]" in body
+
+
+def test_classify_violations_separates_field_names_from_values() -> None:
+    structural, content = _classify_violations(
+        '{"raw_notes": "x", "title": "a@b.com"}'
+    )
+    assert any("raw_notes" in v for v in structural)
+    assert any("Email" in v for v in content)
+    assert not structural[0].startswith("Email")
 
 
 # ---------------------------------------------------------------------------

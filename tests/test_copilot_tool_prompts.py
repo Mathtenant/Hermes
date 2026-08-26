@@ -269,3 +269,178 @@ def test_task_status_enum_is_validated(tmp_path: Path):
     )
     assert result.created == 0
     assert any("status" in e for e in result.errors), result.errors
+
+
+# --------------------------------------------------------------------------- #
+# Hardening: edge cases that took the system down before, each verified
+# against the real pipeline rather than reasoned about.
+# --------------------------------------------------------------------------- #
+
+
+def test_poisoned_text_cannot_break_the_dashboard(tmp_path: Path):
+    """An email in imported text must not 500 /api/dashboard forever.
+
+    Rows are stored verbatim and every dashboard response is scanned by the
+    confidentiality guard, so one meeting-derived pendenz naming somebody by
+    address would make the whole screen unreachable until the DB was edited by
+    hand. The address is redacted at import and the change is reported.
+    """
+    from hermes_assistant.webapp.server import _validate_safe_json
+
+    payload = {
+        "schema": "hermes.pendenzen/v1",
+        "pendenzen": [
+            {"external_ref": "pd/a", "source": "meeting",
+             "title": "Klärung mit hans.muster@example.com"},
+            {"external_ref": "pd/b", "source": "review",
+             "title": "Ablage nach /Users/muster/geheim/plan.docx prüfen"},
+        ],
+    }
+    result = _run_import(payload, tmp_path)
+    assert result.created == 2
+
+    store = TaskStore(str(tmp_path / "tasks.db"))
+    try:
+        data = load_dashboard_data(
+            task_store=store,
+            job_store=JobStore(":memory:"),
+            risk_registry=None,
+            projects_root=tmp_path / "projects",
+        )
+    finally:
+        store.close()
+
+    # The dashboard payload must pass the very guard that would 500 it.
+    assert _validate_safe_json(data.model_dump_json()) == []
+    titles = " ".join(p.title for p in data.pendenzen)
+    assert "hans.muster@example.com" not in titles
+    assert "/Users/muster" not in titles
+    # Redaction is reported, never silent.
+    assert any("E-Mail" in e for e in result.errors), result.errors
+    assert any("Dateipfad" in e for e in result.errors), result.errors
+
+
+def test_schedule_rejects_path_traversal(tmp_path: Path):
+    """A project_ref must not be able to write outside the projects root."""
+    payload = {
+        "schema": "hermes.timeline/v1",
+        "project_ref": "proj/../../escaped",
+        "timeline": [{"external_ref": "ms/a", "title": "A",
+                      "due": "2026-01-01", "kind": "milestone"}],
+    }
+    native = adapt_payload(payload)
+    native.pop("_skipped_sections", None)
+    result = import_payload(
+        native,
+        tasks_db=str(tmp_path / "tasks.db"),
+        projects_root=str(tmp_path / "projects"),
+    )
+    assert result.created == 0
+    assert any("project_id" in e for e in result.errors), result.errors
+    assert list(tmp_path.rglob("schedule.json")) == []
+
+
+def test_projects_rejects_path_traversal(tmp_path: Path):
+    result = import_payload(
+        {"projects": [{"project_id": "../../escaped"}]},
+        projects_root=str(tmp_path / "projects"),
+    )
+    assert result.created == 0
+    assert any("project_id" in e for e in result.errors), result.errors
+    assert not (tmp_path / "escaped").exists()
+
+
+def test_schedule_rejects_impossible_calendar_date(tmp_path: Path):
+    """'2026-02-30' matches YYYY-MM-DD but is not a real date."""
+    payload = {
+        "schema": "hermes.timeline/v1",
+        "project_ref": "proj/webshop",
+        "timeline": [{"external_ref": "ms/a", "title": "A",
+                      "due": "2026-02-30", "kind": "milestone"}],
+    }
+    native = adapt_payload(payload)
+    native.pop("_skipped_sections", None)
+    # Must be a reported validation error, never an uncaught ValueError.
+    result = import_payload(
+        native,
+        tasks_db=str(tmp_path / "tasks.db"),
+        projects_root=str(tmp_path / "projects"),
+    )
+    assert result.created == 0
+    assert any("calendar date" in e for e in result.errors), result.errors
+
+
+def test_duplicate_external_ref_is_rejected_not_dropped(tmp_path: Path):
+    """Truncated slugs can collide; losing a row silently is worse than failing."""
+    payload = {
+        "schema": "hermes.wbs/v1",
+        "wbs": [
+            {"external_ref": "wp/dup", "title": "First",
+             "node_kind": "task", "status": "open"},
+            {"external_ref": "wp/dup", "title": "Second",
+             "node_kind": "task", "status": "open"},
+        ],
+    }
+    native = adapt_payload(payload)
+    native.pop("_skipped_sections", None)
+    result = import_payload(
+        native,
+        tasks_db=str(tmp_path / "tasks.db"),
+        projects_root=str(tmp_path / "projects"),
+    )
+    assert result.created == 0
+    assert any("duplicate external_ref" in e for e in result.errors), result.errors
+
+
+def test_child_can_attach_to_an_already_imported_parent(tmp_path: Path):
+    """Incremental exports are the normal workflow, not an edge case.
+
+    A second export carrying only new work must be able to hang it off a tree
+    imported earlier, rather than being rejected as a dangling parent_ref.
+    """
+    _run_import(
+        {"schema": "hermes.wbs/v1", "wbs": [
+            {"external_ref": "wp/root", "title": "Root",
+             "node_kind": "phase", "status": "open"}]},
+        tmp_path,
+    )
+    result = _run_import(
+        {"schema": "hermes.wbs/v1", "wbs": [
+            {"external_ref": "wp/kid", "parent_ref": "wp/root", "title": "Kid",
+             "node_kind": "task", "status": "open"}]},
+        tmp_path,
+    )
+    assert result.errors == []
+    assert result.created == 1
+
+    store = TaskStore(str(tmp_path / "tasks.db"))
+    try:
+        data = load_dashboard_data(
+            task_store=store,
+            job_store=JobStore(":memory:"),
+            risk_registry=None,
+            projects_root=tmp_path / "projects",
+        )
+    finally:
+        store.close()
+    assert [n.title for n in data.wbs] == ["Root"]
+    assert [c.title for c in data.wbs[0].children] == ["Kid"]
+
+
+def test_deep_child_first_tree_does_not_blow_the_stack(tmp_path: Path):
+    """The prompt allows children before parents, so depth must be iterative.
+
+    A recursive ordering pass overflowed at roughly 2 000 nodes, turning a
+    large but perfectly legal export into an HTTP 500.
+    """
+    depth = 3000
+    chain = [
+        {"external_ref": f"wp/n{i}",
+         "parent_ref": (f"wp/n{i - 1}" if i else None),
+         "title": f"N{i}", "node_kind": "task", "status": "open"}
+        for i in range(depth)
+    ]
+    chain.reverse()
+    result = _run_import({"schema": "hermes.wbs/v1", "wbs": chain}, tmp_path)
+    assert result.errors == []
+    assert result.created == depth

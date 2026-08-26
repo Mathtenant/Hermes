@@ -937,6 +937,26 @@ Step 1 offers one prompt per screen instead of a single whole-project export. Co
 
 `tests/test_copilot_tool_prompts.py` extracts the worked `## Beispiel` block out of each prompt file and runs it through the real adapter and importer, so a prompt that drifts from the schema fails the suite instead of silently producing an unimportable export.
 
+### Import hardening
+
+Imported content is machine-generated from documents nobody vetted, so it is the least-trusted input the system takes. Each case below was reproduced against the real pipeline before being fixed, and is covered by a regression test.
+
+| Failure | Was | Now |
+|---|---|---|
+| Email or absolute path in imported text | `/api/dashboard` returned **HTTP 500 on every request, permanently** — the guard scans every response and rows are stored verbatim | Redacted at import *and* on read; change reported to the user |
+| `project_ref: "proj/../../x"` | `schedule.json` written **two levels outside** the projects root | Rejected: project ids must be a single safe directory name |
+| `due: "2026-02-30"` | Matched the `YYYY-MM-DD` pattern, then raised an uncaught `ValueError` → HTTP 500 | Rejected as "not a valid calendar date" |
+| Duplicate `external_ref` in one payload | Second row silently overwrote the first — **data loss with no error** | Rejected; truncated 60-char slugs really can collide |
+| `parent_ref` to an already-imported node | Rejected as dangling, so **incremental exports were impossible** | Accepted — this is the normal workflow, not an edge case |
+| ~2 000+ nodes listed children-first | `RecursionError` → HTTP 500, on a payload the prompt explicitly permits | Ordering pass is iterative; 5 000-deep verified |
+
+**Two-layer defence for the poisoning case**, because the layers fail differently:
+
+1. **At import** — emails and absolute paths are redacted out of text fields, and every substitution is reported in `ImportResult.errors` so nothing changes silently. Redaction rather than rejection is deliberate: an export drawn from meeting minutes routinely names people by address, and failing the batch would leave the user hand-editing JSON.
+2. **On read** — `_classify_violations` splits guard hits into *structural* and *content*. A forbidden or `internal_*` **field name** means a view model is exposing something it never should: that is a code bug and still returns HTTP 500. An email or path in a **value** is untrusted data, so the dashboard redacts it and serves 200. Without this second layer the entry-point fix would not help data imported before it existed — verified by poisoning a live database, where the dashboard stayed 500 until the read-side guard was added.
+
+The importer's own guard patterns are imported from the response guard rather than re-declared, so the two cannot drift and let content pass import only to break every later response.
+
 **Security:** same-origin only (no CORS); CSP headers on every response (`default-src 'none'`, scripts/styles are served from `'self'` — the CDN allowance is no longer exercised now that Vue is vendored); `_validate_safe_json()` on every API response (forbidden fields `raw_notes`, `evidence_quote`, `rationale`, `assumptions`, etc. → HTTP 500); Pydantic `extra="forbid"` on all view models; no authentication (trusted LAN assumption; Phase 5 adds SSO); localhost bind by default.
 
 **Deps:** `pip install -e ".[webapp]"` (FastAPI + uvicorn). The `dev` extra already includes FastAPI + httpx. Tests: `pytest tests/test_webapp_endpoints.py tests/test_webapp_e2e.py -v`.

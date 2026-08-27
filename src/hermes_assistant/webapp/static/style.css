@@ -833,7 +833,12 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 }
 
 /* Each column scrolls on its own. A single long column used to stretch the
-   board so far that the short ones sat above a screenful of empty space. */
+   board so far that the short ones sat above a screenful of empty space.
+   The trailing padding is scroll-past room for the chat widget, which floats
+   over this corner of the page: without it the last cards in the rightmost
+   column sit permanently underneath the panel and cannot be clicked at all.
+   `--chat-clearance` is published by chat.js and tracks the panel's real
+   height, so a collapsed widget costs almost nothing. */
 .kanban-cards {
   overflow-y: auto;
   max-height: calc(100vh - 22rem);
@@ -841,7 +846,11 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
   /* Room for the card's hover ring so it isn't clipped by the scroll box. */
   padding: 2px;
   margin: -2px;
+  padding-bottom: calc(2px + var(--chat-clearance, 0px));
 }
+
+/* Fallback for the same occlusion in long tables. */
+.table-scroll { scroll-padding-bottom: var(--chat-clearance, 0px); }
 
 .kanban-col-header {
   font-weight: 600;
@@ -901,6 +910,67 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 .kanban-card.prio-high::before    { background: var(--c-prio-high); }
 .kanban-card.prio-medium::before  { background: var(--c-prio-medium); }
 .kanban-card.prio-low::before     { background: var(--c-prio-low); }
+
+.kanban-card-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4375rem;
+  min-width: 0;
+}
+
+.kanban-card-row .kanban-card-title { flex: 1; min-width: 0; }
+
+/* Done toggle on the card itself. An empty circle that fills with a tick —
+   the board was read-only before this, so a card could be opened and read
+   but never moved. */
+.card-check {
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.125rem;
+  padding: 0;
+  border: 1.5px solid var(--c-border);
+  border-radius: 50%;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.card-check svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  stroke: var(--c-text-faint);
+  stroke-width: 2.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.card-check:hover:not(:disabled) { border-color: var(--st-good); }
+.card-check:hover:not(:disabled) svg { opacity: 1; }
+
+.card-check.is-done {
+  background: var(--st-good);
+  border-color: var(--st-good);
+}
+.card-check.is-done svg { stroke: #fff; opacity: 1; }
+.card-check.is-done:hover:not(:disabled) { opacity: 0.75; }
+
+.card-check:disabled { cursor: progress; }
+
+/* While a move is in flight the card stays put but stops accepting clicks,
+   so a double-tap cannot queue two conflicting writes. */
+.kanban-card.is-busy { opacity: 0.55; pointer-events: none; }
+
+.modal-status {
+  margin-top: 1.125rem;
+  padding-top: 0.875rem;
+  border-top: 1px solid var(--c-border-soft);
+}
 
 .kanban-card-meta {
   display: flex;

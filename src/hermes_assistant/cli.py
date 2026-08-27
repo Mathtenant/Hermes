@@ -487,6 +487,48 @@ def worker(
     console.print(f"[green]worker[/green] processed {processed} job(s)")
 
 
+def _require_plan(project_dir: Path, plan_file: Path) -> None:
+    """Exit with an explanation when a command needs a plan.json and finds none.
+
+    There are two independent routes to a project's dates. The planner route
+    (``intake`` → ``plan`` → ``schedule``) *derives* schedule.json from a
+    plan.json. The import route writes schedule.json directly from a Copilot
+    timeline export and never produces a plan at all. Commands on the planner
+    route are therefore inapplicable — not broken — on an imported project,
+    but a bare "plan not found" reads as a malfunction. Say which route the
+    project is actually on.
+    """
+    if plan_file.is_file():
+        return
+
+    console.print(f"[red]error[/red] plan not found: {plan_file}")
+    if not project_dir.is_dir():
+        console.print(
+            f"[yellow]hint[/yellow] there is no project directory {project_dir} "
+            "either — check the id, or list the projects you have with "
+            "[bold]hermes deadlines --all[/bold]."
+        )
+    elif (project_dir / "schedule.json").is_file():
+        console.print(
+            "[yellow]hint[/yellow] this project already has a schedule.json from a "
+            "timeline import, and [bold]hermes deadlines[/bold] / [bold]hermes ics"
+            "[/bold] read it as-is. This command is the other route: it derives "
+            "dates from a planner-generated plan.json, so it needs one. Either keep "
+            "importing the Termine view from Copilot, or run [bold]hermes intake"
+            "[/bold] then [bold]hermes plan[/bold] — note that then re-running "
+            "[bold]hermes schedule[/bold] overwrites the imported schedule.json."
+        )
+    else:
+        console.print(
+            "[yellow]hint[/yellow] this command needs a planner-generated plan.json; "
+            "run [bold]hermes intake[/bold] then [bold]hermes plan[/bold] to produce "
+            "one. If the project came from a Copilot import instead, import the "
+            "Termine view — that writes schedule.json directly, which is what "
+            "[bold]hermes deadlines[/bold] and [bold]hermes ics[/bold] read."
+        )
+    raise typer.Exit(code=2)
+
+
 # --------------------------------------------------------------------------- #
 # Phase 3.5 — Scheduling & ICS export (§24–30)
 # --------------------------------------------------------------------------- #
@@ -509,9 +551,7 @@ def schedule(
 
     project_dir = Path(settings.projects_path) / plan_id
     plan_file = project_dir / "plan.json"
-    if not plan_file.is_file():
-        console.print(f"[red]error[/red] plan not found: {plan_file}")
-        raise typer.Exit(code=2)
+    _require_plan(project_dir, plan_file)
 
     plan_obj = ProjectPlan.model_validate_json(plan_file.read_text(encoding="utf-8"))
 
@@ -729,9 +769,7 @@ def premortem(
     """
     project_dir = Path(settings.projects_path) / plan_id
     plan_file = project_dir / "plan.json"
-    if not plan_file.is_file():
-        console.print(f"[red]error[/red] plan not found: {plan_file}")
-        raise typer.Exit(code=2)
+    _require_plan(project_dir, plan_file)
 
     plan_obj = ProjectPlan.model_validate_json(plan_file.read_text(encoding="utf-8"))
     result = run_premortem(
@@ -780,9 +818,7 @@ def consistency_check_cmd(
     """
     project_dir = Path(settings.projects_path) / plan_id
     plan_file = project_dir / "plan.json"
-    if not plan_file.is_file():
-        console.print(f"[red]error[/red] plan not found: {plan_file}")
-        raise typer.Exit(code=2)
+    _require_plan(project_dir, plan_file)
 
     plan_obj = ProjectPlan.model_validate_json(plan_file.read_text(encoding="utf-8"))
 

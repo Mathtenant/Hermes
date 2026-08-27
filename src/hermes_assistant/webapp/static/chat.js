@@ -372,11 +372,25 @@
     });
   }
 
+  // The widget is fixed to the bottom-right corner and floats above the app,
+  // so whatever sits under it cannot be clicked. Expanded, it covered well
+  // over half of the kanban board's third column — those cards were simply
+  // unreachable. Publishing the footprint lets the scrolling regions keep
+  // enough room below their content to bring anything out from under it.
+  function publishClearance(root) {
+    var panel = root && root.querySelector(".chat-panel, #chat-widget");
+    var height = panel ? panel.getBoundingClientRect().height : 0;
+    document.documentElement.style.setProperty(
+      "--chat-clearance", Math.round(height) + "px"
+    );
+  }
+
   function toggleOpen(root) {
     state.isOpen = !state.isOpen;
     // Persist so a page reload keeps the panel collapsed/expanded.
     writeCollapsed(!state.isOpen);
     render(root);
+    publishClearance(root);
     if (state.isOpen) loadModels(root);
   }
 
@@ -488,6 +502,10 @@
       var root = typeof el === "string" ? document.querySelector(el) : el;
       if (!root) return;
       render(root);
+      publishClearance(root);
+      // The panel's height also changes with the viewport, so keep the
+      // clearance honest rather than measuring it once at mount.
+      window.addEventListener("resize", function () { publishClearance(root); });
       // Only fetch the model list when the panel starts expanded; a collapsed
       // widget stays free until the user opens it.
       if (state.isOpen) loadModels(root);

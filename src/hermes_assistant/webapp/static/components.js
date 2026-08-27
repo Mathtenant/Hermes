@@ -54,10 +54,18 @@ const WbsTab = {
   props: ['nodes'],
   components: { WbsNodeItem },
   setup() {
+    // `expanded` holds only the nodes the user has explicitly toggled;
+    // everything else follows `defaultExpanded`. Keeping the default as its
+    // own piece of state is what makes "Collapse all" work on a tree nobody
+    // has touched yet: the old version wrote `false` for the ids already in
+    // the dict, which on a fresh render was none of them, so the button did
+    // nothing at all. It also means neither button has to walk the tree.
     const expanded = ref({});
+    const defaultExpanded = ref(true);
 
     function isExpanded(id) {
-      return expanded.value[id] !== false;  // default: expanded
+      const override = expanded.value[id];
+      return override === undefined ? defaultExpanded.value : override;
     }
 
     function toggle(id) {
@@ -69,17 +77,8 @@ const WbsTab = {
     }
 
     function setAll(val) {
-      // Reset dict to a fresh object — isExpanded defaults to true so
-      // passing val=false requires explicit false entries for each known id.
-      // For simplicity we toggle the default: if val===false, seed sentinel.
-      if (val) {
-        expanded.value = {};
-      } else {
-        const next = {};
-        // Collapse all currently-tracked nodes
-        for (const k of Object.keys(expanded.value)) { next[k] = false; }
-        expanded.value = next;
-      }
+      defaultExpanded.value = val;
+      expanded.value = {};  // drop per-node overrides so the default wins
     }
 
     return { toggle, isExpanded, statusIcon, setAll };

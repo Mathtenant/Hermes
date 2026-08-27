@@ -275,6 +275,54 @@ async def refresh(project_id: str | None = Query(default=None)) -> Response:
     return await dashboard(project_id)
 
 
+_TASK_STATUSES = ("open", "closed", "blocked")
+
+
+@app.post("/api/tasks/{task_id}/status")
+@confidentiality_guard
+async def set_task_status(task_id: str, request: Request) -> dict[str, Any]:
+    """Move a task between the kanban columns.
+
+    ``TaskStore.update()`` has always been able to do this — and logs every
+    change as a ``TaskUpdate`` for the audit trail — but nothing reachable
+    from the browser ever called it, so the board was read-only: cards could
+    be opened and read, never moved. This is that missing route.
+
+    Body: ``{"status": "open" | "closed" | "blocked"}``.
+    """
+    from hermes_assistant.tasks.store import TaskStore
+
+    try:
+        body = _json.loads(await request.body() or b"{}")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Body is not valid JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Body must be a JSON object")
+
+    status = body.get("status")
+    if status not in _TASK_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"status must be one of {', '.join(_TASK_STATUSES)}",
+        )
+
+    store = TaskStore(settings.tasks_db_path)
+    try:
+        task = store.update(task_id, changed_by="dashboard", status=status)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+
+    # Deliberately narrow: the board only needs to re-place the card. Echoing
+    # the whole task would put description and metadata — neither filtered by
+    # the dashboard's field allowlist — on a response that has no need of it.
+    return {
+        "id": task.id,
+        "status": task.status,
+        "wbs_number": task.wbs_number,
+        "updated_at": task.updated_at.isoformat(),
+    }
+
+
 def _get_import_paths() -> dict[str, str]:
     """Return database path kwargs for import_payload. Patched in tests."""
     data = Path(settings.data_dir)

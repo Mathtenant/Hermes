@@ -666,6 +666,7 @@ const App = {
           :error="state.error"
           :project-id="state.projectId"
           @back="clearProject"
+          @changed="refresh"
         />
         <pendenzen-screen
           v-else-if="state.screen === 'pendenzen'"

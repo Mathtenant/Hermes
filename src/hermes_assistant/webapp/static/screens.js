@@ -371,16 +371,58 @@ const TimelineTab = {
 // ── KanbanTab ──────────────────────────────────────────────────────────────
 const KanbanTab = {
   props: ['columns'],
-  setup() {
+  emits: ['changed'],
+  setup(props, { emit }) {
     const selectedCard = ref(null);
+    const busyId = ref(null);
+    const moveError = ref('');
+
+    // Cards arrive grouped by column and carry no status of their own, so the
+    // column they were opened from is what tells us where they currently sit.
+    function openCard(card, status) {
+      selectedCard.value = { ...card, status };
+    }
+
+    async function setStatus(card, status) {
+      if (!card || card.status === status || busyId.value) return;
+      busyId.value = card.id;
+      moveError.value = '';
+      try {
+        const resp = await fetch(
+          `/api/tasks/${encodeURIComponent(card.id)}/status`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status }),
+          }
+        );
+        if (!resp.ok) {
+          const detail = await resp.json().catch(() => ({}));
+          throw new Error(detail.detail || `Server returned ${resp.status}`);
+        }
+        if (selectedCard.value?.id === card.id) selectedCard.value = null;
+        // The board is derived server-side (a card's column *is* its status),
+        // so re-fetch rather than moving the card locally and risking a view
+        // that disagrees with the database.
+        emit('changed');
+      } catch (err) {
+        moveError.value = String(err.message || err);
+      } finally {
+        busyId.value = null;
+      }
+    }
+
+    const STATUS_LABELS = { open: 'To Do', blocked: 'Blocked', closed: 'Done' };
+
     return {
-      selectedCard,
-      openCard(card) { selectedCard.value = card; },
+      selectedCard, busyId, moveError, openCard, setStatus,
+      statusLabel: (s) => STATUS_LABELS[s] ?? s,
       closeCard() { selectedCard.value = null; },
     };
   },
   template: `
     <div>
+      <div v-if="moveError" class="notice notice-error mb-3">{{ moveError }}</div>
       <div v-if="!columns?.length" class="empty-state">
         <div class="empty-state-title">No kanban data</div>
       </div>
@@ -398,12 +440,31 @@ const KanbanTab = {
             <div v-for="card in col.cards"
                  :key="card.id"
                  class="kanban-card"
-                 :class="card.priority ? 'prio-' + card.priority : ''"
+                 :class="[card.priority ? 'prio-' + card.priority : '',
+                          busyId === card.id ? 'is-busy' : '']"
                  tabindex="0"
-                 @click="openCard(card)"
-                 @keydown.enter="openCard(card)">
-              <div class="kanban-card-title" :title="card.title">
-                <span v-if="card.wbs_number" class="kanban-card-wbs">{{ card.wbs_number }}</span>{{ card.title }}
+                 @click="openCard(card, col.status)"
+                 @keydown.enter="openCard(card, col.status)">
+              <div class="kanban-card-row">
+                <!-- Done toggle. Stops propagation so ticking a card off does
+                     not also open its detail modal. -->
+                <button
+                  class="card-check"
+                  :class="{ 'is-done': col.status === 'closed' }"
+                  :disabled="busyId === card.id"
+                  :aria-label="col.status === 'closed'
+                    ? 'Reopen ' + card.title : 'Mark ' + card.title + ' done'"
+                  :title="col.status === 'closed' ? 'Reopen' : 'Mark done'"
+                  @click.stop="setStatus({ ...card, status: col.status },
+                                         col.status === 'closed' ? 'open' : 'closed')"
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path d="M4 8.5l2.5 2.5L12 5.5" />
+                  </svg>
+                </button>
+                <div class="kanban-card-title" :title="card.title">
+                  <span v-if="card.wbs_number" class="kanban-card-wbs">{{ card.wbs_number }}</span>{{ card.title }}
+                </div>
               </div>
               <div v-if="card.owner || card.priority" class="kanban-card-meta">
                 <span v-if="card.owner" class="truncate">{{ card.owner }}</span>
@@ -438,6 +499,20 @@ const KanbanTab = {
               </tr>
             </tbody>
           </table>
+
+          <div class="modal-status">
+            <span class="stat-label mb-3" style="display:block">Status</span>
+            <div class="segmented" role="group" aria-label="Task status">
+              <button v-for="s in ['open', 'blocked', 'closed']"
+                      :key="s"
+                      :class="{ active: selectedCard.status === s }"
+                      :disabled="busyId === selectedCard.id"
+                      :aria-pressed="String(selectedCard.status === s)"
+                      @click="setStatus(selectedCard, s)">
+                {{ statusLabel(s) }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -448,7 +523,7 @@ const KanbanTab = {
 // WbsTab / WbsNodeItem are registered globally in app.js.
 const ProjectDetailScreen = {
   props: ['data', 'loading', 'error', 'projectId'],
-  emits: ['back'],
+  emits: ['back', 'changed'],
   components: { TimelineTab, KanbanTab },
   setup() {
     const activeTab = ref('timeline');
@@ -483,7 +558,8 @@ const ProjectDetailScreen = {
         </div>
         <div class="card">
           <timeline-tab v-if="activeTab === 'timeline'" :entries="data?.timeline ?? []" />
-          <kanban-tab v-else-if="activeTab === 'kanban'" :columns="data?.kanban ?? []" />
+          <kanban-tab v-else-if="activeTab === 'kanban'" :columns="data?.kanban ?? []"
+                      @changed="$emit('changed')" />
           <wbs-tab v-else :nodes="data?.wbs ?? []" />
         </div>
       </div>

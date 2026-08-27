@@ -429,3 +429,100 @@ def test_dashboard_risks_no_owner_email(mock_load: None) -> None:
     """Owner email from confidential risk must not appear in the response."""
     text = client.get("/api/dashboard").text
     assert "admin@example.com" not in text
+
+
+# ---------------------------------------------------------------------------
+# POST /api/tasks/{id}/status — moving a card between kanban columns
+#
+# TaskStore.update() could always do this, but no route reached it, so the
+# board was read-only: a card could be opened and read, never moved.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def status_db(tmp_path: Path):
+    """A real on-disk TaskStore the route can reopen by path."""
+    db = tmp_path / "tasks.db"
+    store = TaskStore(str(db))
+    task_id = store.create(Task(id="", title="Movable", node_kind="task"))
+    store.close()
+    # Patch the binding the route actually reads. `server.py` does
+    # `from hermes_assistant.config import settings` at import time, so after
+    # anything reloads the config module the two names refer to different
+    # objects and patching the config one has no effect on the route.
+    with patch("hermes_assistant.webapp.server.settings.tasks_db_path", str(db)):
+        yield str(db), task_id
+
+
+def test_set_task_status_moves_the_task(status_db) -> None:
+    db, task_id = status_db
+    resp = client.post(f"/api/tasks/{task_id}/status", json={"status": "closed"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "closed"
+
+    store = TaskStore(db)
+    try:
+        assert store.get(task_id).status == "closed"
+    finally:
+        store.close()
+
+
+def test_set_task_status_records_an_audit_entry(status_db) -> None:
+    """The change must be attributable, not a silent overwrite."""
+    db, task_id = status_db
+    client.post(f"/api/tasks/{task_id}/status", json={"status": "blocked"})
+
+    store = TaskStore(db)
+    try:
+        updates = [u for u in store.get(task_id).updates if u.field == "status"]
+    finally:
+        store.close()
+    assert len(updates) == 1
+    assert updates[0].old_value == "open"
+    assert updates[0].new_value == "blocked"
+    assert updates[0].changed_by == "dashboard"
+
+
+@pytest.mark.parametrize("status", ["open", "closed", "blocked"])
+def test_set_task_status_accepts_every_column(status_db, status: str) -> None:
+    _, task_id = status_db
+    resp = client.post(f"/api/tasks/{task_id}/status", json={"status": status})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == status
+
+
+@pytest.mark.parametrize(
+    "body", [{"status": "done"}, {"status": ""}, {"status": None}, {}, {"other": "x"}]
+)
+def test_set_task_status_rejects_unknown_status(status_db, body: dict) -> None:
+    """Only the three real statuses; anything else is a 422, never a write."""
+    db, task_id = status_db
+    assert client.post(f"/api/tasks/{task_id}/status", json=body).status_code == 422
+
+    store = TaskStore(db)
+    try:
+        assert store.get(task_id).status == "open"  # untouched
+    finally:
+        store.close()
+
+
+def test_set_task_status_rejects_a_non_object_body(status_db) -> None:
+    _, task_id = status_db
+    resp = client.post(f"/api/tasks/{task_id}/status", json=["closed"])
+    assert resp.status_code == 422
+
+
+def test_set_task_status_unknown_task_is_404(status_db) -> None:
+    resp = client.post("/api/tasks/no-such-task/status", json={"status": "closed"})
+    assert resp.status_code == 404
+
+
+def test_set_task_status_response_carries_no_extra_fields(status_db) -> None:
+    """Echoing the whole task would put description/metadata on the wire.
+
+    Neither is filtered by the dashboard's field allowlist, and the board only
+    needs enough to re-place the card.
+    """
+    _, task_id = status_db
+    body = client.post(f"/api/tasks/{task_id}/status", json={"status": "closed"}).json()
+    assert set(body) == {"id", "status", "wbs_number", "updated_at"}

@@ -885,6 +885,7 @@ SQLite task/job stores + schedule.json files
 | `/api/dashboard` | GET | Full DashboardData JSON (all projects) |
 | `/api/dashboard?project_id=X` | GET | Scoped DashboardData for project X |
 | `/api/refresh` | GET | Same as `/api/dashboard` — fresh disk read |
+| `/api/tasks/{id}/status` | POST | Move a task between kanban columns. Body `{"status": "open"\|"closed"\|"blocked"}`; 422 on any other value, 404 on an unknown id. Returns `{id, status, wbs_number, updated_at}` — deliberately narrow, since echoing the whole task would put `description`/`metadata` (neither covered by the dashboard's field allowlist) on the wire. Writes through `TaskStore.update()`, so every move lands in the task's `updates` audit trail as `changed_by="dashboard"`. |
 | `/` and `/*` | GET | Serves `index.html` (SPA fallback) |
 | `/static/*` | GET | CSS, JS, HTML static assets |
 
@@ -911,6 +912,12 @@ SQLite task/job stores + schedule.json files
 **`/api/dashboard` — DashboardData fields:** `generated_at`, `scope`, `range_start`, `range_end`, `projects`, `timeline`, `kanban`, `wbs`, `pendenzen`, `reviews`, `risks`. The `risks` array carries only safe fields per `RiskRow` (`id`, `title`, `severity`, `likelihood`, `status`, `score`, `updated_at`) — confidential risks and the `owner` field are excluded.
 
 **Keyboard shortcuts:** `1`–`6` switch screens · `r` refresh · `i` import JSON · `d` toggle dark/light · `?` help · `Esc` close dialog. Theme persisted in `localStorage`.
+
+**Kanban is writable.** Each card carries a done toggle, and its detail modal a three-way status control (To Do / Blocked / Done). Both `POST /api/tasks/{id}/status` and then re-fetch the dashboard rather than moving the card locally — a card's column *is* its status, derived server-side, so a local move could disagree with the database. The card is disabled while its write is in flight, so a double-tap cannot queue two conflicting writes.
+
+**Chat widget clearance.** The chat panel is `position: fixed` in the bottom-right and floats above the app; expanded it is 380×500 and covered over half of the kanban board's third column, making those cards unclickable. `chat.js` publishes the panel's measured height as `--chat-clearance` on `:root` (re-measured on toggle and on resize) and the internally-scrolling regions reserve that much trailing room, so nothing is ever stranded underneath it. Any new fixed overlay or scroll container needs the same treatment.
+
+**Two routes to a schedule.** `intake` → `plan` → `schedule` *derives* `schedule.json` from a planner-generated `plan.json`. The dashboard's Termine/timeline import writes `schedule.json` **directly** and never produces a plan. `hermes deadlines` and `hermes ics` read `schedule.json` either way, but `schedule`, `premortem` and `consistency-check` need the plan and are therefore inapplicable — not broken — on an imported project. `_require_plan()` in `cli.py` detects which route a project is on and says so, because the bare "plan not found" reads as a malfunction to someone whose project is working fine by the other route.
 
 **Version display:** the running version is shown as a small muted pill in the top-left corner of the topbar, next to the brand (`data-testid="app-version"`). The frontend never hard-codes it — it reads `version` from `/api/health`, which serves `hermes_assistant.__version__`. That module attribute is the single source of truth; `test_version_matches_pyproject` fails the build if `pyproject.toml` drifts from it. To cut a new version, edit `__version__` in `src/hermes_assistant/__init__.py` and the matching `version` in `pyproject.toml`.
 

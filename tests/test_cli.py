@@ -187,3 +187,52 @@ def test_show_not_found_exit_code(
     result = runner.invoke(app, ["show", "does-not-exist"])
     assert result.exit_code == 1
     assert "not found" in result.stdout.lower()
+
+
+# ---------------------------------------------------------------------------
+# Missing plan.json — the planner route vs the import route
+#
+# `schedule`/`critique`/`mece` derive from a planner-generated plan.json. A
+# project imported from Copilot never has one (the timeline import writes
+# schedule.json directly), so the old bare "plan not found" read as a
+# malfunction on a project that was working fine by the other route.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", ["schedule", "premortem", "consistency-check"])
+def test_missing_plan_names_the_command_that_makes_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    proj = tmp_path / "proj"
+    (proj / "widget").mkdir(parents=True)
+    monkeypatch.setattr(settings, "projects_path", str(proj))
+
+    result = runner.invoke(app, [command, "widget"])
+    assert result.exit_code == 2
+    assert "hermes plan" in result.output
+
+
+def test_missing_plan_explains_an_imported_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A schedule.json but no plan.json means the import route, not a fault."""
+    proj = tmp_path / "proj"
+    (proj / "widget").mkdir(parents=True)
+    (proj / "widget" / "schedule.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(settings, "projects_path", str(proj))
+
+    result = runner.invoke(app, ["schedule", "widget"])
+    assert result.exit_code == 2
+    # Must say the project already has a schedule and that overwriting it is
+    # the consequence of taking the planner route instead.
+    assert "schedule.json" in result.output
+    assert "overwrite" in result.output
+
+
+def test_missing_plan_flags_a_wrong_project_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "projects_path", str(tmp_path / "proj"))
+    result = runner.invoke(app, ["schedule", "typo-in-the-id"])
+    assert result.exit_code == 2
+    assert "no project directory" in result.output

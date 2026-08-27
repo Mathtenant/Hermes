@@ -9,7 +9,31 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _restore_config_module():
+    """Undo the module reloads these tests perform.
+
+    ``_fresh_settings`` calls ``importlib.reload`` on the config module, which
+    rebinds ``config.settings`` to a brand-new object. Every module that did
+    ``from hermes_assistant.config import settings`` at import time keeps the
+    *old* object, so from then on the two names disagree — and a later test
+    patching ``hermes_assistant.config.settings`` silently fails to affect the
+    code under test. Putting the original object back on the way out realigns
+    the two names, so the divergence stays inside this file. (Reloading again
+    would not do it — that just mints a third object.)
+    """
+    import hermes_assistant.config as config_module
+
+    original = config_module.settings
+    try:
+        yield
+    finally:
+        config_module.settings = original
 
 
 def _fresh_settings(monkeypatch, **env: str):

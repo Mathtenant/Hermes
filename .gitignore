@@ -38,6 +38,8 @@ data/**/*.jsonl
 # this per project. It is a function of the plan, so tracking it only ever
 # produces conflicts against whatever each machine last regenerated.
 data/projects/*/schedule.json
+# Likewise: `hermes ics` regenerates this from schedule.json on demand.
+data/projects/*/*.ics
 src/hermes_assistant/data/*.db
 src/hermes_assistant/data/*.db-wal
 src/hermes_assistant/data/*.db-shm

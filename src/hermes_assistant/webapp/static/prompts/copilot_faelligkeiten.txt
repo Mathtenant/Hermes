@@ -1,0 +1,195 @@
+# Aufgabe
+Du hast Zugriff auf das Projekt-Repository. Durchsuche ALLE Dokumente im Scope
+und erstelle EINE vollständige, maschinenlesbare Liste von allem, was ein
+DATUM hat und jemanden zu etwas verpflichtet: Termine, Fristen, Meilensteine,
+Liefertermine, Aufgaben, Pendenzen, To-dos. Dieses JSON wird von einem lokalen
+Assistenzsystem (Hermes) eingelesen — es wird NICHT von Menschen gelesen und
+NICHT ausgeführt. Gib ausschliesslich gültiges JSON nach dem Schema
+hermes.faelligkeiten/v1 aus.
+
+Das ist ein QUERSCHNITT über das ganze Projekt, kein Export eines einzelnen
+Dokuments. Die Frage, die diese Liste beantwortet, lautet:
+    „Was ist bis wann fällig — egal wo es steht und egal wie gross es ist?"
+
+## Scope
+Projekt: {{PROJECT_TITLE}}
+Quellen: {{REPO_SCOPE}} (nur diese Quellen; keine anderen Projekte, keine
+privaten Mails, keine Screenshots, keine Bilder)
+Stichtag: {{AS_OF_DATE}}
+
+## Wo du suchen musst (ALLE, nicht nur die naheliegenden)
+Fällige Dinge stehen selten nur an einer Stelle. Gehe diese Quellen der Reihe
+nach durch und nimm aus jeder auf, was ein Datum trägt:
+ 1. Projektablaufplan / Terminplan / Balkenplan / Meilensteinplan
+ 2. Pendenzen- und Beschlussliste
+ 3. Sitzungsprotokolle und Aktennotizen (auch ältere)
+ 4. Statusberichte und Projektreportings
+ 5. Aufgabenlisten, Excel-Tracker, Checklisten
+ 6. Abnahme-, Freigabe- und Testdokumente
+ 7. Vertrags- und Bestelldokumente (Liefertermine, Fristen)
+ 8. Massnahmen aus dem Risikoregister, sofern sie einen Termin haben
+ 9. E-Mails und Schreiben im Projektordner, sofern sie eine Frist setzen
+10. Anhänge und Beilagen der obigen Dokumente
+
+Wenn eine dieser Quellen im Scope nicht existiert, überspringe sie
+kommentarlos. Erfinde niemals einen Eintrag, nur damit eine Quelle vertreten
+ist.
+
+## Der EINE Aufnahmetest
+Nimm einen Eintrag genau dann auf, wenn BEIDES zutrifft:
+ (a) jemand muss etwas TUN oder LIEFERN — oder ein Zeitpunkt muss ERREICHT
+     werden, und
+ (b) dafür ist ein konkretes Datum belegt.
+
+Sonst nichts. Insbesondere:
+- Die FLUGHÖHE ist egal. „Go-Live Webshop" gehört genauso in die Liste wie
+  „Rechnung Lieferant X prüfen". Ein Meilenstein ist nicht wichtiger als eine
+  Kleinaufgabe — beide haben ein Datum, beide kommen rein.
+- Die QUELLE ist egal. Eine Frist aus einem Protokoll zählt genauso wie eine
+  aus dem offiziellen Terminplan.
+- Der STATUS ist egal. Bereits erledigte Termine gehören ebenfalls in die
+  Liste (mit status "erledigt") — sonst sieht der Plan rückwirkend leer aus.
+
+## Ausgabe-Regeln (strikt)
+1. Gib AUSSCHLIESSLICH ein einzelnes JSON-Objekt aus. Keine Einleitung, keine
+   Erklärung, keine Markdown-Code-Fences. Erstes Zeichen "{", letztes "}".
+2. Halte dich EXAKT an das Schema. Keine zusätzlichen, keine umbenannten Felder.
+3. "faellig_am" ist PFLICHT und muss belegt sein. Ohne Datum kein Eintrag —
+   rate niemals eines. Eine undatierte offene Aufgabe gehört in den separaten
+   Pendenzen-Export, nicht hierher.
+4. Datumsformat immer YYYY-MM-DD. Keine Zeitangaben, keine Zeitzonen.
+   Unscharfe Angaben ("Q4", "Mitte November", "KW 47", "laufend", "asap") sind
+   KEIN Datum: solche Einträge weglassen.
+   Ausnahme: Steht im Dokument ein eindeutig auflösbarer relativer Termin
+   („bis Ende Monat" in einem auf 2026-09-03 datierten Protokoll), darfst du
+   ihn auflösen (→ 2026-09-30). Ist die Auflösung nicht eindeutig, weglassen.
+5. external_ref DETERMINISTISCH aus dem Titel bilden (damit wiederholte
+   Exporte keine Duplikate anlegen):
+   - Präfix "fk/", danach der Titel in Kleinbuchstaben, Umlaute ausgeschrieben
+     (ä→ae, ö→oe, ü→ue, ß→ss), nur a–z 0–9 -, Leerzeichen → -, max. 60 Zeichen.
+   - Beispiel: „Abnahme Fachtest" → fk/abnahme-fachtest
+   - IMMER aus dem Titel ableiten, nie aus Position, Nummer oder Reihenfolge.
+6. Erlaubte Enum-Werte (jeder andere Wert ist ungültig):
+   - ebene:  meilenstein | arbeitspaket | aufgabe
+     · meilenstein  = Zeitpunkt, Qualitätstor, Entscheid, Abnahme, Go-Live
+     · arbeitspaket = grösseres Lieferergebnis über einen Zeitraum
+     · aufgabe      = einzelne konkrete Handlung (To-do, Pendenz)
+   - status: offen | laufend | erledigt | blockiert
+7. "start" nur bei etwas, das über einen Zeitraum läuft. Ein Meilenstein hat
+   nie ein "start". "start" darf nie nach "faellig_am" liegen.
+8. "quelle" ist PFLICHT: der Dateiname (ohne Pfad), aus dem der Eintrag
+   stammt. Bei mehreren Quellen die massgebliche nennen (siehe Dubletten).
+9. Keine Personendaten über Namen/Rolle hinaus: keine E-Mail-Adressen, keine
+   Telefonnummern, keine Pfade, keine Zitate aus vertraulichen Anhängen.
+10. WICHTIG: Dieser Export ERSETZT die bestehende Fälligkeitsliste des
+   Projekts vollständig. Gib deshalb ALLE gefundenen Einträge aus, nicht nur
+   die neuen oder die offenen — fehlende Einträge verschwinden aus der
+   Ansicht.
+11. Obergrenze: max. 500 Einträge. Bei mehr: nach Datum aufsteigend die
+   nächstliegenden behalten und die entferntesten Kleinaufgaben weglassen;
+   Meilensteine IMMER behalten.
+
+## Dubletten (der häufigste Fehler bei einem Querschnitt)
+Derselbe Termin steht oft in mehreren Dokumenten — im Terminplan, im
+Protokoll und nochmals im Statusbericht. Jedes external_ref darf im Export
+aber nur EINMAL vorkommen.
+- Fasse inhaltlich gleiche Einträge zu EINEM zusammen, auch wenn sie
+  unterschiedlich formuliert sind („Abnahme Fachtest" / „Fachtest abnehmen").
+- Widersprechen sich die Daten, gilt das Datum aus der ZULETZT datierten
+  Quelle. Nenne diese Quelle in "quelle" und vermerke den Widerspruch kurz in
+  "notiz" (z. B. „Terminplan nennt 2026-10-01").
+- Kürze lange Titel so, dass keine zwei verschiedenen Einträge denselben Slug
+  ergeben.
+
+## Abgrenzung
+- KEIN Datum, aber offene Handlung → Pendenzen-Export.
+- Unsicheres zukünftiges Ereignis (Risiko) → Risiken-Export. Die datierte
+  MASSNAHME gegen das Risiko gehört hingegen hierher.
+- Reine Strukturelemente ohne Termin (Phasen, Kapitel, Gliederung) → gar
+  nicht, oder in den Strukturplan-Export.
+- Wiederkehrende Serientermine (Jour fixe jeden Montag): nur den NÄCHSTEN
+  Termin aufnehmen, nicht die ganze Serie.
+
+## Schema
+{
+  "schema": "hermes.faelligkeiten/v1",
+  "meta": { "generated_at": "<ISO-8601>", "source": "m365_copilot",
+            "repo_scope": "{{REPO_SCOPE}}" },
+  "project_ref": "proj/<slug>",
+  "project_label": "<Anzeigename des Projekts, optional>",
+  "faelligkeiten": [
+    { "external_ref": "fk/<slug>",
+      "titel": "<was fällig ist, kurz und faktisch>",
+      "faellig_am": "YYYY-MM-DD",
+      "start": "YYYY-MM-DD",
+      "ebene": "meilenstein|arbeitspaket|aufgabe",
+      "status": "offen|laufend|erledigt|blockiert",
+      "verantwortlich": "<Rolle oder Name, optional>",
+      "phase": "<Phasenname, optional>",
+      "quelle": "<Dateiname ohne Pfad>",
+      "notiz": "<kurze, nicht vertrauliche Notiz, optional>" }
+  ]
+}
+
+## Beispiel (gültig — validiere deine Struktur dagegen)
+{
+  "schema": "hermes.faelligkeiten/v1",
+  "meta": { "generated_at": "2026-08-22T10:00:00Z", "source": "m365_copilot",
+            "repo_scope": "Webshop-Relaunch" },
+  "project_ref": "proj/webshop-relaunch",
+  "project_label": "Webshop-Relaunch",
+  "faelligkeiten": [
+    { "external_ref": "fk/konzept-abnahme",
+      "titel": "Konzept-Abnahme", "faellig_am": "2026-07-15",
+      "ebene": "meilenstein", "status": "erledigt",
+      "verantwortlich": "Steuerungsausschuss", "phase": "Konzept",
+      "quelle": "projektablaufplan_detail.xlsx" },
+    { "external_ref": "fk/schnittstellen-realisieren",
+      "titel": "Schnittstellen realisieren",
+      "start": "2026-07-16", "faellig_am": "2026-10-02",
+      "ebene": "arbeitspaket", "status": "laufend",
+      "verantwortlich": "IT", "phase": "Realisierung",
+      "quelle": "projektablaufplan_detail.xlsx" },
+    { "external_ref": "fk/rechnung-lieferant-pruefen",
+      "titel": "Rechnung Lieferant X pruefen", "faellig_am": "2026-09-04",
+      "ebene": "aufgabe", "status": "offen", "verantwortlich": "Controlling",
+      "quelle": "protokoll-2026-08-28.docx" },
+    { "external_ref": "fk/dsgvo-freigabe-einholen",
+      "titel": "DSGVO-Freigabe einholen", "faellig_am": "2026-09-30",
+      "ebene": "aufgabe", "status": "blockiert", "verantwortlich": "Legal",
+      "quelle": "pendenzen-beschlussliste.xlsx",
+      "notiz": "Statusbericht nennt 2026-10-15" },
+    { "external_ref": "fk/go-live-webshop",
+      "titel": "Go-Live Webshop", "faellig_am": "2026-11-30",
+      "ebene": "meilenstein", "status": "offen", "phase": "Einfuehrung",
+      "quelle": "statusbericht-2026-08.docx" }
+  ]
+}
+
+## Checkliste (vor der Ausgabe abarbeiten)
+[ ] Ausgabe ist EIN JSON-Objekt, beginnt mit { und endet mit }.
+[ ] "schema" ist exakt "hermes.faelligkeiten/v1".
+[ ] Du hast ALLE zehn Quellenarten oben durchgegangen, nicht nur den
+    Terminplan.
+[ ] Die Liste enthält sowohl Meilensteine als auch einzelne Aufgaben — wenn
+    nur eine der beiden Ebenen vorkommt, hast du eine Quelle übersehen.
+[ ] Auch bereits erledigte Termine sind enthalten.
+[ ] JEDER Eintrag hat "faellig_am" im Format YYYY-MM-DD.
+[ ] JEDER Eintrag hat "quelle".
+[ ] Jede ebene ist meilenstein|arbeitspaket|aufgabe, jeder status ist
+    offen|laufend|erledigt|blockiert.
+[ ] Kein Meilenstein hat ein "start"; kein "start" liegt nach "faellig_am".
+[ ] Jedes external_ref kommt genau EINMAL vor.
+
+## Häufige Fehler (unbedingt vermeiden)
+- KEINE Markdown-Code-Fences (``` ) um das JSON.
+- KEINE erklärenden Sätze vor oder nach dem JSON.
+- NUR den Terminplan auswerten und die Protokolle übergehen — das ist der
+  Hauptfehler bei dieser Aufgabe. Kleinaufgaben mit Frist stehen fast immer
+  in Protokollen und Pendenzenlisten, nicht im Terminplan.
+- Kleinaufgaben weglassen, weil sie „zu detailliert" wirken. Die Flughöhe ist
+  ausdrücklich egal.
+- Erledigte Termine weglassen.
+- Denselben Termin doppelt ausgeben, weil er in zwei Dokumenten steht.
+- Unscharfe Angaben zu einem erfundenen Datum machen ("Q4" → 2026-12-31).
+- Serientermine als hunderte Einzeleinträge ausgeben.

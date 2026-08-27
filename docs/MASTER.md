@@ -936,12 +936,31 @@ Step 1 offers one prompt per screen instead of a single whole-project export. Co
 | Prompt file | Schema | Feeds | Lands in |
 |---|---|---|---|
 | `copilot_wbs.txt` | `hermes.wbs/v1` | **WBS + Kanban** | `tasks` → TaskStore |
-| `copilot_timeline.txt` | `hermes.timeline/v1` | Timeline | `schedule` → `<projects_root>/<id>/schedule.json` |
+| `copilot_faelligkeiten.txt` | `hermes.faelligkeiten/v1` | **Termine & Fristen** (default) | `schedule` → `<projects_root>/<id>/schedule.json` |
+| `copilot_timeline.txt` | `hermes.timeline/v1` | Timeline (narrow variant) | `schedule` → same file |
 | `copilot_risks.txt` | `hermes.risks/v1` | Risks | `risks` → RiskRegistry |
 | `copilot_pendenzen.txt` | `hermes.pendenzen/v1` | Pendenzen | `pendenzen` → TaskStore |
 | `copilot_beschluesse.txt` | `hermes.beschluesse/v1` | Pendenzen → **Beschlüsse** | `beschluesse` + `pendenzen` → TaskStore |
 | `copilot_ablaufplan.txt` | `hermes.ablaufplan/v1` | **Ablaufplan** (Gantt) | `schedule` → `<projects_root>/<id>/schedule.json` |
 | `copilot_state_export.txt` | `hermes.project_state/v1` | one-shot bootstrap | all of the above except tasks/schedule |
+
+#### The cross-source sweep — `hermes.faelligkeiten/v1`
+
+The default export, and the one that answers the question a lead actually has: **what is due by when, wherever it is written down and however big it is.** The per-document exports below each read one file; this one is a *Querschnitt* over the whole project.
+
+Three things make it work, and each maps to a failure it prevents:
+
+- **It enumerates where to look.** The dominant failure is Copilot reading only the Terminplan, because that is the document that looks like a deadline list. Small dated obligations almost never live there — they live in meeting minutes, status reports, Pendenzen lists, contracts and risk measures. The prompt lists ten source kinds and the checklist asks whether all of them were checked.
+- **It states that altitude is irrelevant, twice.** "Go-Live Webshop" and "Rechnung Lieferant X prüfen" are both rows. The second failure mode is dropping small items as "too detailed", so the anti-pattern list names it explicitly, and a checklist item flags a result containing only one altitude as evidence a source was missed.
+- **It handles duplicates.** A cross-document sweep meets the same deadline three times. `external_ref` is derived from the title so the importer dedupes by identity; where dates disagree, the most recently dated source wins and the conflict goes in `notiz`.
+
+Completed items are deliberately included — dropping them makes the plan look retroactively empty.
+
+Rows carry `level` (meilenstein / arbeitspaket / aufgabe) and `source_hint` (the originating file). Without the first, a Go-Live and an errand sit side by side with nothing to sort them; without the second there is no way back to the document a date came from when two disagree. `level` also maps onto the older `ItemKind` vocabulary, lossily (an *aufgabe* and an *arbeitspaket* both become work items), which is why it is stored verbatim alongside rather than reconstructed from `kind`.
+
+**Three marks, not two.** `_gantt_kind()` picks by `level` first: a gate is a diamond, a span is a bar, and a dated obligation with no span is an upright tick. A has-a-start test alone would render every dated to-do as a milestone diamond — and a sweep is full of them, so "check an invoice by Friday" would look like a Go-Live.
+
+**The time window.** A sweep reaches years out — a contract date, a parked item, a typo'd year — and fitting the axis to the full extent crushes everything real into a few pixels with no way back except deleting data. The view defaults to a window *centred on today* (3 months back, 12 forward), because the sweep includes what is already done. Nothing is hidden silently: whatever falls outside is counted in a notice with one click back to the full extent.
 
 #### The two documents these project folders actually contain
 

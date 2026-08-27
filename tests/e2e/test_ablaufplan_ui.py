@@ -138,6 +138,10 @@ def plan_page(page: Page) -> Page:
     page.wait_for_selector(".stat-tile", timeout=10000)
     page.click('[data-testid="nav-plan"]')
     page.wait_for_selector(".gantt", timeout=5000)
+    # The fixture deliberately uses far-future dates so it cannot collide with
+    # real data; the default time window excludes them.
+    page.select_option('select[aria-label="Zeitraum"]', "all")
+    page.wait_for_timeout(400)
     return page
 
 
@@ -195,7 +199,11 @@ def test_a_legend_names_every_status(plan_page: Page):
 
 
 def test_progress_fills_part_of_a_running_bar(plan_page: Page):
-    running = plan_page.locator(".gantt-bar.is-running").first
+    # Named rather than `.first`: a running bar whose plan states no progress
+    # correctly has no fill, and other fixtures contribute such bars.
+    running = plan_page.locator(".gantt-row").filter(
+        has_text="E2E Realisierung durchführen"
+    ).first.locator(".gantt-bar")
     fill = running.locator(".gantt-progress")
     assert fill.count() == 1
     bar_w = running.bounding_box()["width"]
@@ -329,3 +337,105 @@ def test_beschluesse_raise_no_console_errors(decisions_page: Page):
     decisions_page.click('[data-testid="tab-beschluesse"]')
     decisions_page.wait_for_timeout(300)
     assert not errors, errors
+
+
+# --------------------------------------------------------------------------- #
+# Cross-source sweep — the altitude and provenance the sweep carries
+# --------------------------------------------------------------------------- #
+
+_SWEEP = {
+    "schema": "hermes.faelligkeiten/v1",
+    "project_ref": "proj/e2e-sweep",
+    "project_label": "E2E Sweep",
+    "faelligkeiten": [
+        {
+            "external_ref": "fk/e2e-go-live", "titel": "E2E Go-Live",
+            "faellig_am": "2098-11-30", "ebene": "meilenstein",
+            "status": "offen", "quelle": "e2e-statusbericht.docx",
+        },
+        {
+            "external_ref": "fk/e2e-bau", "titel": "E2E Bau",
+            "start": "2098-07-16", "faellig_am": "2098-10-02",
+            "ebene": "arbeitspaket", "status": "laufend",
+            "verantwortlich": "IT", "quelle": "e2e-ablaufplan.xlsx",
+        },
+        {
+            "external_ref": "fk/e2e-rechnung", "titel": "E2E Rechnung pruefen",
+            "faellig_am": "2098-09-04", "ebene": "aufgabe",
+            "status": "offen", "verantwortlich": "Controlling",
+            "quelle": "e2e-protokoll.docx",
+        },
+    ],
+}
+
+
+@pytest.fixture
+def sweep_page(page: Page) -> Page:
+    _post(_SWEEP)
+    page.add_init_script(
+        "try{sessionStorage.setItem("
+        "'panel-collapsed-chat-widget-body','true')}catch(e){}"
+    )
+    page.goto(BASE_URL)
+    page.wait_for_selector(".stat-tile", timeout=10000)
+    page.click('[data-testid="nav-plan"]')
+    page.wait_for_selector(".gantt", timeout=5000)
+    page.select_option('select[aria-label="Zeitraum"]', "all")
+    page.wait_for_timeout(400)
+    return page
+
+
+def test_sweep_draws_all_three_marks(sweep_page: Page):
+    """A gate, a span and a dated errand each get their own shape."""
+    assert sweep_page.locator(".gantt-milestone").count() > 0
+    assert sweep_page.locator(".gantt-bar").count() > 0
+    assert sweep_page.locator(".gantt-termin").count() > 0
+
+
+def test_a_dated_todo_is_a_tick_not_a_diamond(sweep_page: Page):
+    row = sweep_page.locator(".gantt-row").filter(has_text="E2E Rechnung pruefen").first
+    assert row.locator(".gantt-termin").count() == 1
+    assert row.locator(".gantt-milestone").count() == 0
+    assert row.locator(".gantt-bar").count() == 0
+
+
+def test_the_legend_names_the_third_mark(sweep_page: Page):
+    assert "Termin ohne Dauer" in sweep_page.locator(".gantt-legend").inner_text()
+
+
+def test_altitude_can_be_filtered_down_to_the_gates(sweep_page: Page):
+    """The reason a lead can live with a list that holds every errand."""
+    before = sweep_page.locator(".gantt-row").count()
+    sweep_page.select_option('select[aria-label="Ebene filtern"]', "meilenstein")
+    sweep_page.wait_for_timeout(400)
+    assert sweep_page.locator(".gantt-row").count() < before
+    assert sweep_page.locator(".gantt-termin").count() == 0
+    assert sweep_page.locator(".gantt-bar").count() == 0
+
+
+def test_source_filter_appears_once_a_sweep_spans_documents(sweep_page: Page):
+    assert sweep_page.locator('select[aria-label="Quelle filtern"]').count() == 1
+
+
+def test_the_table_shows_altitude_and_source(sweep_page: Page):
+    sweep_page.click('button:has-text("Tabelle")')
+    sweep_page.wait_for_selector(".data-table", timeout=3000)
+    row = sweep_page.locator("tbody tr").filter(
+        has_text="E2E Rechnung pruefen"
+    ).first.inner_text()
+    assert "Aufgaben" in row
+    assert "e2e-protokoll.docx" in row
+
+
+def test_the_time_window_hides_nothing_silently(sweep_page: Page):
+    """One far-future date used to crush the axis with no way back."""
+    sweep_page.select_option('select[aria-label="Zeitraum"]', "12")
+    sweep_page.wait_for_timeout(400)
+    notice = sweep_page.locator(".notice-info")
+    assert notice.count() == 1
+    assert "ausserhalb" in notice.inner_text()
+
+    # And the way back is one click.
+    sweep_page.click('button:has-text("Ganzen Zeitraum zeigen")')
+    sweep_page.wait_for_timeout(400)
+    assert sweep_page.locator(".notice-info").count() == 0

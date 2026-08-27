@@ -32,6 +32,7 @@ _TOOL_PROMPTS = {
     "copilot_timeline": "hermes.timeline/v1",
     "copilot_beschluesse": "hermes.beschluesse/v1",
     "copilot_ablaufplan": "hermes.ablaufplan/v1",
+    "copilot_faelligkeiten": "hermes.faelligkeiten/v1",
 }
 
 
@@ -962,3 +963,159 @@ def test_a_plain_timeline_import_still_validates(tmp_path: Path):
     sched = Schedule.model_validate_json(sched_file.read_text(encoding="utf-8"))
     assert sched.items
     assert all(i.status == "offen" and i.phase == "" for i in sched.items)
+
+
+# --------------------------------------------------------------------------- #
+# Cross-source sweep — everything with a date, at any altitude
+#
+# The point of this export is that it is NOT scoped to one document: a Go-Live
+# from the plan, a to-do from a meeting minute and a contractual deadline all
+# land in one dated list. Losing either the altitude or the provenance makes
+# that list unusable, so both are covered here.
+# --------------------------------------------------------------------------- #
+
+
+def _sweep_payload(**over) -> dict:
+    payload = {
+        "schema": "hermes.faelligkeiten/v1",
+        "project_ref": "proj/webshop",
+        "project_label": "Webshop",
+        "faelligkeiten": [
+            {
+                "external_ref": "fk/go-live", "titel": "Go-Live Webshop",
+                "faellig_am": "2026-11-30", "ebene": "meilenstein",
+                "status": "offen", "phase": "Einfuehrung",
+                "quelle": "statusbericht-2026-08.docx",
+            },
+            {
+                "external_ref": "fk/schnittstellen",
+                "titel": "Schnittstellen realisieren",
+                "start": "2026-07-16", "faellig_am": "2026-10-02",
+                "ebene": "arbeitspaket", "status": "laufend",
+                "verantwortlich": "IT", "phase": "Realisierung",
+                "quelle": "projektablaufplan_detail.xlsx",
+            },
+            {
+                "external_ref": "fk/rechnung-pruefen",
+                "titel": "Rechnung Lieferant X pruefen",
+                "faellig_am": "2026-09-04", "ebene": "aufgabe",
+                "status": "offen", "verantwortlich": "Controlling",
+                "quelle": "protokoll-2026-08-28.docx",
+            },
+        ],
+    }
+    payload.update(over)
+    return payload
+
+
+def _sweep_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
+    return {r.title: r for r in _dashboard(tmp_path, monkeypatch).ablaufplan}
+
+
+def test_sweep_keeps_every_altitude_in_one_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A Go-Live and "check an invoice" belong to the same dated list."""
+    assert _run_import(_sweep_payload(), tmp_path).errors == []
+    rows = _sweep_rows(tmp_path, monkeypatch)
+    assert set(rows) == {
+        "Go-Live Webshop", "Schnittstellen realisieren",
+        "Rechnung Lieferant X pruefen",
+    }
+    assert {r.level for r in rows.values()} == {
+        "meilenstein", "arbeitspaket", "aufgabe",
+    }
+
+
+def test_a_dated_todo_is_not_drawn_as_a_milestone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The defect this mark exists to prevent.
+
+    A to-do with a deadline has no span, so a has-a-start test alone would
+    render it as a milestone diamond — indistinguishable from a Go-Live in a
+    sweep that is full of them.
+    """
+    _run_import(_sweep_payload(), tmp_path)
+    rows = _sweep_rows(tmp_path, monkeypatch)
+    assert rows["Rechnung Lieferant X pruefen"].kind == "termin"
+    assert rows["Go-Live Webshop"].kind == "meilenstein"
+    assert rows["Schnittstellen realisieren"].kind == "vorgang"
+
+
+def test_provenance_survives_to_the_dashboard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Without the source there is no way back when two documents disagree."""
+    _run_import(_sweep_payload(), tmp_path)
+    rows = _sweep_rows(tmp_path, monkeypatch)
+    assert rows["Rechnung Lieferant X pruefen"].source_hint == "protokoll-2026-08-28.docx"
+    assert rows["Go-Live Webshop"].source_hint == "statusbericht-2026-08.docx"
+
+
+def test_a_milestone_in_the_sweep_never_gets_a_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = _sweep_payload()
+    payload["faelligkeiten"][0]["start"] = "2026-11-01"
+    _run_import(payload, tmp_path)
+    assert _sweep_rows(tmp_path, monkeypatch)["Go-Live Webshop"].start == ""
+
+
+def test_sweep_keeps_completed_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Dropping them would make the plan look retroactively empty."""
+    payload = _sweep_payload()
+    payload["faelligkeiten"][1]["status"] = "erledigt"
+    _run_import(payload, tmp_path)
+    rows = _sweep_rows(tmp_path, monkeypatch)
+    assert rows["Schnittstellen realisieren"].status == "erledigt"
+
+
+@pytest.mark.parametrize(
+    "ebene,expected", [
+        ("meilenstein", "meilenstein"), ("milestone", "meilenstein"),
+        ("arbeitspaket", "arbeitspaket"), ("aufgabe", "aufgabe"),
+        ("todo", "aufgabe"), ("pendenz", "aufgabe"),
+        ("was-auch-immer", "arbeitspaket"),
+    ],
+)
+def test_altitude_synonyms_are_normalised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ebene: str, expected: str
+):
+    payload = _sweep_payload()
+    payload["faelligkeiten"] = [payload["faelligkeiten"][2]]
+    payload["faelligkeiten"][0]["ebene"] = ebene
+    _run_import(payload, tmp_path)
+    rows = _sweep_rows(tmp_path, monkeypatch)
+    assert rows["Rechnung Lieferant X pruefen"].level == expected
+
+
+def test_sweep_feeds_the_same_schedule_as_the_other_exports(tmp_path: Path):
+    """One store, so deadlines and ics keep working on a swept project."""
+    from hermes_assistant.scheduling.model import Schedule
+
+    _run_import(_sweep_payload(), tmp_path)
+    sched_file = tmp_path / "projects" / "webshop" / "schedule.json"
+    assert sched_file.is_file()
+    sched = Schedule.model_validate_json(sched_file.read_text(encoding="utf-8"))
+    assert len(sched.items) == 3
+    # The altitude also maps onto the older calendar vocabulary those consumers
+    # already speak.
+    kinds = {i.title: i.kind.value for i in sched.items}
+    assert kinds["Go-Live Webshop"] == "milestone"
+    assert kinds["Rechnung Lieferant X pruefen"] == "task"
+
+
+def test_sweep_prompt_tells_copilot_where_to_look(tmp_path: Path):
+    """The failure mode is reading only the Terminplan, so the prompt has to
+    enumerate the other places a dated obligation hides."""
+    text = (_PROMPT_DIR / "copilot_faelligkeiten.txt").read_text(encoding="utf-8")
+    for source in (
+        "Sitzungsprotokolle", "Statusberichte", "Pendenzen- und Beschlussliste",
+        "Risikoregister", "Vertrags-", "Checklisten",
+    ):
+        assert source in text, source
+    # And it must say the altitude does not matter, in as many words.
+    assert "Flughöhe" in text

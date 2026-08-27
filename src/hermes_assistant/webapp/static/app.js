@@ -217,8 +217,10 @@ const isDragOver = ref(false);
 const PROMPT_KINDS = [
   { key: 'wbs', label: 'Strukturplan & Kanban', file: 'copilot_wbs',
     hint: 'Arbeitspakete als Baum — speist WBS und Kanban' },
-  { key: 'timeline', label: 'Termine', file: 'copilot_timeline',
-    hint: 'Meilensteine und Fristen — ersetzt den Terminplan' },
+  { key: 'faelligkeiten', label: 'Alle Termine & To-dos', file: 'copilot_faelligkeiten',
+    hint: 'Querschnitt über ALLE Quellen — alles mit Datum, jede Flughöhe' },
+  { key: 'timeline', label: 'Nur Meilensteine', file: 'copilot_timeline',
+    hint: 'Schmaler Export: nur die grossen Termine' },
   { key: 'risks', label: 'Risiken', file: 'copilot_risks',
     hint: 'Risikoregister' },
   { key: 'pendenzen', label: 'Pendenzen', file: 'copilot_pendenzen',
@@ -231,7 +233,7 @@ const PROMPT_KINDS = [
     hint: 'Einmaliger Rundum-Export — langsamer, fehleranfälliger' },
 ];
 
-const promptKind = ref('wbs');
+const promptKind = ref('faelligkeiten');
 const _promptCache = new Map();
 
 async function loadCopilotPrompt() {
@@ -496,7 +498,7 @@ const App = {
       { key: 'projects',  label: 'Projects',  shortcut: '2', icon: NAV_ICONS.projects,  count: counts.value.projects },
       { key: 'detail',    label: 'Timeline & WBS', shortcut: '3', icon: NAV_ICONS.detail,
         count: counts.value.tasks + counts.value.timeline },
-      { key: 'plan',      label: 'Ablaufplan', shortcut: '4', icon: NAV_ICONS.plan,      count: counts.value.ablaufplan },
+      { key: 'plan',      label: 'Termine & Fristen', shortcut: '4', icon: NAV_ICONS.plan, count: counts.value.ablaufplan },
       { key: 'pendenzen', label: 'Pendenzen', shortcut: '5', icon: NAV_ICONS.pendenzen, count: counts.value.pendenzen },
       { key: 'risks',     label: 'Risks',     shortcut: '6', icon: NAV_ICONS.risks,     count: counts.value.risks },
       { key: 'reviews',   label: 'Reviews',   shortcut: '7', icon: NAV_ICONS.reviews,   count: counts.value.reviews },
@@ -506,7 +508,7 @@ const App = {
       ['1', 'Overview'],
       ['2', 'Projects'],
       ['3', 'Timeline & WBS'],
-      ['4', 'Ablaufplan'],
+      ['4', 'Termine & Fristen'],
       ['5', 'Pendenzen'],
       ['6', 'Risks'],
       ['7', 'Reviews'],
@@ -540,7 +542,7 @@ const App = {
     // on another screen.
     const ENTITY_DESTINATIONS = {
       tasks: { label: 'Arbeitspakete', screen: 'Strukturplan & Kanban' },
-      schedule: { label: 'Terminplan', screen: 'Timeline und Ablaufplan' },
+      schedule: { label: 'Termine & Fristen', screen: 'Termine & Fristen' },
       beschluesse: { label: 'Beschlüsse', screen: 'Pendenzen → Beschlüsse' },
       risks: { label: 'Risiken', screen: 'Risks' },
       pendenzen: { label: 'Pendenzen', screen: 'Pendenzen' },

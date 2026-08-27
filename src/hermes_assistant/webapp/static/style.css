@@ -1173,6 +1173,33 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 }
 .gantt-milestone.is-late    { box-shadow: 0 0 0 2px var(--st-critical); }
 
+/* A dated obligation with no span — a to-do with a deadline. Drawn as an
+   upright tick rather than a diamond so it cannot be mistaken for a project
+   gate: the cross-source sweep is full of these, and "check an invoice by
+   Friday" must not look like a Go-Live. */
+.gantt-termin {
+  position: absolute;
+  top: 50%;
+  width: 3px;
+  height: 14px;
+  margin-left: -1.5px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: var(--c-text-muted);
+}
+
+.gantt-termin.is-done    { background: var(--st-good); }
+.gantt-termin.is-blocked { background: var(--st-critical); }
+.gantt-termin.is-running { background: var(--seq-450); }
+.gantt-termin.is-late    { box-shadow: 0 0 0 2px var(--st-critical); }
+
+.gantt-key.is-termin {
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--c-text-muted);
+}
+
 /* Today: one vertical rule across the whole plot, drawn above the bars but
    under the tooltip. */
 .gantt-today {

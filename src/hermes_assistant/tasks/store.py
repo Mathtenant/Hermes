@@ -13,7 +13,7 @@ import json
 import sqlite3
 import threading
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,10 +21,20 @@ from hermes_assistant.tasks.model import Task, TaskUpdate
 
 
 class _ISOEncoder(json.JSONEncoder):
-    """JSON encoder that serialises datetime/date to ISO 8601 strings."""
+    """JSON encoder that serialises datetime/date to ISO 8601 strings.
+
+    The ``date`` arm is not redundant: ``datetime`` is a subclass of ``date``
+    but not the reverse, so a plain ``date`` — which is what ``Pendenz.due_date``
+    holds — fell through to ``super().default()`` and raised. Creation never hit
+    it (pydantic serialises the model itself); only ``update()``, which passes
+    raw field values straight to ``json.dumps``, did. Order matters here:
+    ``datetime`` must be tested first or its time component is silently lost.
+    """
 
     def default(self, obj: Any) -> Any:
         if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, date):
             return obj.isoformat()
         return super().default(obj)
 

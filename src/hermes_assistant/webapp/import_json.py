@@ -29,7 +29,7 @@ MAX_IMPORT_BYTES = 10 * 1024 * 1024
 # in this phase (only review export).  Payloads that include a "reviews" key
 # will be rejected by validate_import_payload with a clear error message.
 _VALID_ENTITY_TYPES = frozenset(
-    {"risks", "plans", "pendenzen", "projects", "tasks", "schedule"}
+    {"risks", "plans", "pendenzen", "projects", "tasks", "schedule", "beschluesse"}
 )
 
 # Required fields per entity type
@@ -43,8 +43,11 @@ _REQUIRED_FIELDS: dict[str, list[str]] = {
     # reads — so a work breakdown must arrive as "tasks" to become visible.)
     "tasks": ["title"],
     # "schedule" writes <projects_root>/<project_id>/schedule.json, the only
-    # source the Timeline screen reads.
+    # source the Timeline and Ablaufplan screens read.
     "schedule": ["project_id", "items"],
+    # "beschluesse" are decisions from a Pendenzen- und Beschlussliste. A
+    # decision without a date is a proposal, so decided_on is required.
+    "beschluesse": ["title", "decided_on"],
 }
 
 # Enum domains for the task tree, mirroring hermes_assistant.tasks.model.Task.
@@ -53,6 +56,7 @@ _TASK_NODE_KINDS = (
     "milestone", "deliverable", "task", "decision", "pendenz", "assumption",
 )
 _SCHEDULE_ITEM_KINDS = ("milestone", "deadline", "task")
+_BESCHLUSS_STATUSES = ("beschlossen", "umgesetzt", "aufgehoben", "vertagt")
 
 # Maximum items per entity list per import request
 _MAX_ITEMS_PER_TYPE = 10_000
@@ -110,6 +114,7 @@ def _gen_id() -> str:
 _TEXT_FIELDS: dict[str, tuple[str, ...]] = {
     "risks": ("title", "description", "owner"),
     "pendenzen": ("title", "description", "owner", "source_ref"),
+    "beschluesse": ("title", "decided_by", "rationale", "affects", "source_hint"),
     "tasks": ("title", "description", "owner"),
     "plans": ("title",),
     "schedule": ("title", "note"),
@@ -329,6 +334,27 @@ def validate_entity(entity_type: str, obj: Any) -> list[str]:
         ):
             errors.append(
                 "Invalid priority value; must be low/medium/high/blocker"
+            )
+
+    elif entity_type == "beschluesse":
+        decided_on = obj.get("decided_on")
+        if decided_on and not _DATE_RE.match(str(decided_on)):
+            errors.append(
+                f"'decided_on' must be YYYY-MM-DD, got {decided_on!r}"
+            )
+        elif decided_on:
+            # Shape is not enough — "2026-02-30" matches the pattern but is
+            # not a real date and would raise inside the writer.
+            try:
+                date.fromisoformat(str(decided_on))
+            except ValueError:
+                errors.append(
+                    f"'decided_on' is not a valid calendar date: {decided_on!r}"
+                )
+        status = obj.get("decision_status")
+        if status is not None and status not in _BESCHLUSS_STATUSES:
+            errors.append(
+                f"Invalid decision_status; must be {'/'.join(_BESCHLUSS_STATUSES)}"
             )
 
     elif entity_type == "tasks":
@@ -662,6 +688,116 @@ def _import_plans(
         editor.close()
 
 
+def _import_beschluesse(
+    beschluesse_data: list[dict[str, Any]],
+    *,
+    db_path: str,
+    result: ImportResult,
+    start_idx: int,
+) -> None:
+    """Import decisions into the TaskStore as node_kind="decision" nodes.
+
+    Same two-pass shape as the other importers: validate everything before
+    writing anything, so a single bad row cannot leave a half-imported list.
+    Idempotent on ``external_ref``, which the prompt derives from the title —
+    so re-exporting the same Beschlussliste updates rather than duplicates.
+    """
+    from hermes_assistant.tasks.beschluesse import Beschluss
+    from hermes_assistant.tasks.store import TaskStore
+
+    pending: list[tuple[int, str, dict[str, Any]]] = []
+    for i, raw in enumerate(beschluesse_data):
+        idx = start_idx + i
+        if isinstance(raw, dict):
+            for note in _sanitise_entity("beschluesse", raw):
+                result.errors.append(f"beschluesse[{idx}]: {note}")
+        errs = validate_entity("beschluesse", raw)
+        if errs:
+            result.items.append(
+                ImportItemResult(
+                    index=idx,
+                    entity_type="beschluesse",
+                    action="skipped",
+                    error="; ".join(errs),
+                )
+            )
+            result.skipped += 1
+            result.errors.append(f"beschluesse[{idx}]: {'; '.join(errs)}")
+            continue
+        pending.append((idx, str(raw.get("external_ref") or ""), raw))
+
+    if result.skipped and not pending:
+        return
+
+    store = TaskStore(db_path)
+    try:
+        for idx, external_ref, raw in pending:
+            decision_status = str(raw.get("decision_status") or "beschlossen")
+            fields: dict[str, Any] = {
+                "title": raw["title"],
+                "decision_status": decision_status,
+                # Keep the shared lifecycle in step with the decision
+                # vocabulary, so an "umgesetzt" Beschluss reads as closed
+                # everywhere that only knows open/closed/blocked.
+                "status": Beschluss.lifecycle_for(decision_status),
+                "decided_on": _parse_due(raw.get("decided_on")),
+            }
+            for key in ("decided_by", "rationale", "affects", "source_hint"):
+                if raw.get(key):
+                    fields[key] = str(raw[key])
+
+            existing = (
+                store.find_by_external_ref(external_ref) if external_ref else None
+            )
+            if existing is not None:
+                store.update(existing.id, **fields)
+                result.items.append(
+                    ImportItemResult(
+                        index=idx,
+                        entity_type="beschluesse",
+                        id=existing.id,
+                        action="updated",
+                    )
+                )
+                result.updated += 1
+                continue
+
+            new_id = store.create(
+                Beschluss(id="", external_ref=external_ref or None, **fields)
+            )
+            result.items.append(
+                ImportItemResult(
+                    index=idx,
+                    entity_type="beschluesse",
+                    id=new_id,
+                    action="created",
+                )
+            )
+            result.created += 1
+    finally:
+        store.close()
+
+
+def _parse_due(value: Any) -> date | None:
+    """Parse a YYYY-MM-DD due date, tolerating absence and rubbish alike.
+
+    A due date is optional on a Pendenz, and a Beschlussliste routinely carries
+    rows with no Termin or an unusable one ("laufend", "KW 47", "2026-02-30").
+    None of those should sink the whole import, so anything that is not a real
+    calendar date is dropped and the Pendenz is stored without a date — which
+    is what the source document actually says.
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    if not _DATE_RE.match(text):
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
 def _import_pendenzen(
     pend_data: list[dict[str, Any]],
     *,
@@ -735,8 +871,21 @@ def _import_pendenzen(
             elif raw_id:
                 existing = store.get(raw_id)
 
+            # A re-import is how a corrected list reaches the dashboard, so an
+            # update has to refresh the fields that were corrected. Rewriting
+            # only the title meant a re-import reported "n updated" and changed
+            # nothing anyone could see.
+            fields: dict[str, Any] = {"title": raw["title"]}
+            for key in ("description", "owner", "priority", "source_ref", "status"):
+                if raw.get(key) is not None:
+                    fields[key] = raw[key]
+            fields["source"] = source
+            due = _parse_due(raw.get("due_date"))
+            if due is not None:
+                fields["due_date"] = due
+
             if existing is not None:
-                store.update(existing.id, title=raw["title"])
+                store.update(existing.id, **fields)
                 result.items.append(
                     ImportItemResult(
                         index=idx,
@@ -753,6 +902,8 @@ def _import_pendenzen(
                     description=raw.get("description", ""),
                     owner=raw.get("owner"),
                     priority=raw.get("priority", "medium"),
+                    status=raw.get("status", "open"),
+                    due_date=due,
                     source=source,
                     source_ref=raw.get("source_ref"),
                     external_ref=external_ref,
@@ -1079,6 +1230,20 @@ def _import_schedule(
                     kind=ItemKind(str(item.get("kind", "milestone"))),
                     due=date.fromisoformat(str(item["due"])),
                     note=item.get("note"),
+                    # Ablaufplan extras. All optional, so a plain timeline
+                    # import writes exactly what it always did.
+                    start=_parse_due(item.get("start")),
+                    phase=str(item.get("phase") or ""),
+                    owner=(str(item["owner"]) if item.get("owner") else None),
+                    status=str(item.get("status") or "offen"),
+                    progress_pct=(
+                        int(item["progress_pct"])
+                        if isinstance(item.get("progress_pct"), (int, float))
+                        else None
+                    ),
+                    depends_on=[
+                        str(d) for d in (item.get("depends_on") or []) if d
+                    ],
                 )
             )
         schedule = _Schedule(
@@ -1245,6 +1410,12 @@ def import_payload(
         lst = payload["pendenzen"] or []
         counts["pendenzen"] = len(lst)
         _import_pendenzen(lst, db_path=tasks_db, result=result, start_idx=idx)
+        idx += len(lst)
+
+    if "beschluesse" in payload:
+        lst = payload["beschluesse"] or []
+        counts["beschluesse"] = len(lst)
+        _import_beschluesse(lst, db_path=tasks_db, result=result, start_idx=idx)
         idx += len(lst)
 
     if "projects" in payload:

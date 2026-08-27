@@ -633,17 +633,59 @@ const PendenzenScreen = {
       filterStatus.value = '';
     }
 
+    // ── Beschlüsse ───────────────────────────────────────────────────────
+    // Same source document as the Pendenzen, so the same screen — a decision
+    // and the actions it set in motion are read together or not at all.
+    const activeTab = ref('pendenzen');
+
+    const DECISION_STATUS = {
+      beschlossen: { label: 'Beschlossen', cls: 'chip-open',    mark: 'mark-ring' },
+      umgesetzt:   { label: 'Umgesetzt',   cls: 'chip-closed',  mark: 'mark-dot' },
+      aufgehoben:  { label: 'Aufgehoben',  cls: 'chip-blocked', mark: 'mark-square' },
+      vertagt:     { label: 'Vertagt',     cls: 'chip-mitigated', mark: 'mark-bar' },
+    };
+
+    const decisionQuery = ref('');
+
+    const decisions = computed(() => {
+      const q = decisionQuery.value.trim().toLowerCase();
+      const rows = props.data?.decisions ?? [];
+      if (!q) return rows;
+      return rows.filter(
+        d => String(d.title ?? '').toLowerCase().includes(q)
+          || String(d.decided_by ?? '').toLowerCase().includes(q)
+          || String(d.affects ?? '').toLowerCase().includes(q)
+      );
+    });
+
+    const openFollowUps = computed(
+      () => (props.data?.decisions ?? []).reduce((n, d) => n + d.pendenzen_open, 0)
+    );
+
+    function fmtDate(iso) {
+      if (!iso) return '—';
+      const [y, m, d] = iso.split('-');
+      return `${d}.${m}.${y}`;
+    }
+
     return {
       query, filterSource, filterPriority, filterStatus, sources, statuses,
       filtered, toggleSort, sortIcon, statusBadgeClass, statusMark, resetFilters,
+      activeTab, decisions, decisionQuery, openFollowUps, fmtDate,
+      decisionLabel: (s) => (DECISION_STATUS[s] || {}).label || s,
+      decisionClass: (s) => (DECISION_STATUS[s] || {}).cls || 'chip-open',
+      decisionMark: (s) => (DECISION_STATUS[s] || {}).mark || 'mark-ring',
     };
   },
   template: `
     <div>
       <div class="page-header">
         <div>
-          <h1 class="page-title">Pendenzen</h1>
-          <div class="page-subtitle">Open items gathered from meetings, reviews and the task tree.</div>
+          <h1 class="page-title">Pendenzen &amp; Beschlüsse</h1>
+          <div class="page-subtitle">
+            Offene Punkte aus Sitzungen und Reviews, und die Entscheide, aus
+            denen sie folgen.
+          </div>
         </div>
       </div>
 
@@ -651,6 +693,73 @@ const PendenzenScreen = {
         <span class="spinner"></span> Loading&hellip;
       </div>
       <div v-else-if="error" class="card notice-error">{{ error }}</div>
+      <div v-else>
+        <div class="tab-bar">
+          <button class="tab-btn" :class="{ active: activeTab === 'pendenzen' }"
+                  @click="activeTab = 'pendenzen'" data-testid="tab-pendenzen">
+            Pendenzen ({{ data?.pendenzen?.length ?? 0 }})
+          </button>
+          <button class="tab-btn" :class="{ active: activeTab === 'beschluesse' }"
+                  @click="activeTab = 'beschluesse'" data-testid="tab-beschluesse">
+            Beschlüsse ({{ data?.decisions?.length ?? 0 }})
+          </button>
+        </div>
+
+      <!-- ── Beschlüsse ────────────────────────────────────────────────── -->
+      <div v-if="activeTab === 'beschluesse'">
+        <div v-if="!(data?.decisions ?? []).length" class="card">
+          <div class="empty-state">
+            <span class="empty-state-icon" aria-hidden="true">◵</span>
+            <div class="empty-state-title">Keine Beschlüsse importiert</div>
+            <p class="text-sm">
+              Importiere die <code>Pendenzen- und Beschlussliste</code> über
+              <strong>Import JSON → Pendenzen &amp; Beschlüsse</strong>.
+            </p>
+          </div>
+        </div>
+        <template v-else>
+          <div class="filter-bar">
+            <input class="text-input" type="search" v-model="decisionQuery"
+                   placeholder="Beschluss, Gremium oder Bereich…"
+                   aria-label="Beschlüsse durchsuchen">
+            <span class="result-count">
+              {{ decisions.length }} Beschlüsse · {{ openFollowUps }} offene Pendenzen daraus
+            </span>
+          </div>
+
+          <!-- One row per decision: what was decided, by whom, when, and what
+               it still owes. The follow-up count is the reason the two lists
+               belong on one screen. -->
+          <ol class="decision-list">
+            <li v-for="d in decisions" :key="d.id" class="decision-item">
+              <div class="decision-date">
+                <span class="decision-day">{{ fmtDate(d.decided_on) }}</span>
+              </div>
+              <div class="decision-body">
+                <div class="decision-head">
+                  <span class="decision-title">{{ d.title }}</span>
+                  <span class="chip shrink-0" :class="decisionClass(d.decision_status)">
+                    <span class="chip-mark" :class="decisionMark(d.decision_status)"
+                          aria-hidden="true"></span>
+                    {{ decisionLabel(d.decision_status) }}
+                  </span>
+                </div>
+                <div class="decision-meta">
+                  <span v-if="d.decided_by">{{ d.decided_by }}</span>
+                  <span v-if="d.affects" class="decision-affects">{{ d.affects }}</span>
+                  <span v-if="d.pendenzen_total" class="decision-followups"
+                        :class="{ 'is-alert': d.pendenzen_open > 0 }">
+                    {{ d.pendenzen_open }} von {{ d.pendenzen_total }} Pendenzen offen
+                  </span>
+                  <span v-else class="text-gray-400">keine Pendenzen</span>
+                </div>
+              </div>
+            </li>
+          </ol>
+        </template>
+      </div>
+
+      <!-- ── Pendenzen ─────────────────────────────────────────────────── -->
       <div v-else>
         <div class="filter-bar">
           <input class="text-input" type="search" v-model="query"
@@ -714,6 +823,7 @@ const PendenzenScreen = {
             </tbody>
           </table>
         </div>
+      </div>
       </div>
     </div>
   `,
@@ -984,6 +1094,414 @@ const ReviewsScreen = {
   `,
 };
 
+// ── AblaufplanScreen ───────────────────────────────────────────────────────
+// The Projektablaufplan_Detail as a bar chart. Unlike the Timeline tab — which
+// plots points, one per due date — every activity here carries a real span, so
+// the question "what overlaps what, and what is late" is answerable at a
+// glance instead of by reading dates off a list.
+const AblaufplanScreen = {
+  props: ['data', 'loading', 'error'],
+  setup(props) {
+    const filterPhase = ref('');
+    const filterStatus = ref('');
+    const asTable = ref(false);
+    const hovered = ref(null);
+
+    const DAY_MS = 86400000;
+    const MONTHS_DE = [
+      'Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez',
+    ];
+
+    // Status is a state, so it gets a label and a legend entry, never colour
+    // alone. Only `erledigt` and `blockiert` take a status hue — those are the
+    // two that genuinely mean good and bad. "In flight" and "not started" are
+    // neither, so they take the accent and a neutral instead of borrowing a
+    // reserved colour to mean something it does not mean.
+    const STATUS = {
+      erledigt:  { label: 'Erledigt',  cls: 'is-done' },
+      laufend:   { label: 'Laufend',   cls: 'is-running' },
+      offen:     { label: 'Offen',     cls: 'is-open' },
+      blockiert: { label: 'Blockiert', cls: 'is-blocked' },
+    };
+    const STATUS_ORDER = ['laufend', 'offen', 'blockiert', 'erledigt'];
+
+    const rows = computed(() => props.data?.ablaufplan ?? []);
+
+    const phases = computed(() => {
+      const seen = [];
+      for (const r of rows.value) {
+        const name = r.phase || 'Ohne Phase';
+        if (!seen.includes(name)) seen.push(name);
+      }
+      return seen;
+    });
+
+    const filtered = computed(() => rows.value.filter(
+      r => (!filterPhase.value || (r.phase || 'Ohne Phase') === filterPhase.value)
+        && (!filterStatus.value || r.status === filterStatus.value)
+    ));
+
+    // Group the filtered rows under their phase, preserving phase order.
+    const groups = computed(() => {
+      const byPhase = new Map();
+      for (const r of filtered.value) {
+        const name = r.phase || 'Ohne Phase';
+        if (!byPhase.has(name)) byPhase.set(name, []);
+        byPhase.get(name).push(r);
+      }
+      return [...byPhase.entries()].map(([name, items]) => ({ name, items }));
+    });
+
+    function toMs(iso) {
+      const t = Date.parse(iso + 'T00:00:00Z');
+      return Number.isNaN(t) ? null : t;
+    }
+
+    // The time axis every bar is positioned against. Padded by a few days so a
+    // bar that starts on the first day of the plan is not flush against the
+    // frame, and floored to a non-zero span so a single-day plan cannot divide
+    // by zero.
+    const domain = computed(() => {
+      const points = [];
+      for (const r of filtered.value) {
+        const s = toMs(r.start || r.end);
+        const e = toMs(r.end);
+        if (s !== null) points.push(s);
+        if (e !== null) points.push(e);
+      }
+      if (!points.length) return null;
+      const pad = 3 * DAY_MS;
+      const min = Math.min(...points) - pad;
+      const max = Math.max(...points) + pad;
+      return { min, max, span: Math.max(max - min, DAY_MS) };
+    });
+
+    function pct(ms) {
+      const d = domain.value;
+      if (!d || ms === null) return 0;
+      return ((ms - d.min) / d.span) * 100;
+    }
+
+    // Month boundaries for the scale header and the background gridlines.
+    const ticks = computed(() => {
+      const d = domain.value;
+      if (!d) return [];
+      const out = [];
+      const cur = new Date(d.min);
+      cur.setUTCDate(1);
+      cur.setUTCHours(0, 0, 0, 0);
+      // Bounded rather than while(true): a corrupt date can otherwise spin
+      // here forever and take the whole page with it.
+      for (let i = 0; i < 240; i++) {
+        const ms = cur.getTime();
+        if (ms > d.max) break;
+        if (ms >= d.min) {
+          out.push({
+            left: pct(ms),
+            label: MONTHS_DE[cur.getUTCMonth()],
+            year: cur.getUTCFullYear(),
+            isYearStart: cur.getUTCMonth() === 0,
+          });
+        }
+        cur.setUTCMonth(cur.getUTCMonth() + 1);
+      }
+      return out;
+    });
+
+    const todayLeft = computed(() => {
+      const d = domain.value;
+      if (!d) return null;
+      const now = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+      if (now < d.min || now > d.max) return null;  // outside the plan — no marker
+      return pct(now);
+    });
+
+    function barStyle(r) {
+      const s = toMs(r.start || r.end);
+      const e = toMs(r.end);
+      if (s === null || e === null) return { display: 'none' };
+      const left = pct(s);
+      // +1 day so a task that starts and ends on the same date still shows a
+      // bar rather than a hairline.
+      const right = pct(e + DAY_MS);
+      return { left: left + '%', width: Math.max(right - left, 0.6) + '%' };
+    }
+
+    function milestoneStyle(r) {
+      const e = toMs(r.end);
+      return e === null ? { display: 'none' } : { left: pct(e) + '%' };
+    }
+
+    function fmt(iso) {
+      if (!iso) return '—';
+      const [y, m, d] = iso.split('-');
+      return `${d}.${m}.${y}`;
+    }
+
+    function duration(r) {
+      const s = toMs(r.start);
+      const e = toMs(r.end);
+      if (s === null || e === null) return '';
+      return Math.round((e - s) / DAY_MS) + 1 + ' Tage';
+    }
+
+    // A plan's own status is authoritative; "late" is a separate fact derived
+    // from the calendar, so an overdue task reads as late *and* still open
+    // rather than being silently recoloured.
+    function isLate(r) {
+      const today = new Date().toISOString().slice(0, 10);
+      return r.status !== 'erledigt' && r.end < today;
+    }
+
+    const lateCount = computed(() => filtered.value.filter(isLate).length);
+
+    const nextMilestone = computed(() => {
+      const today = new Date().toISOString().slice(0, 10);
+      return rows.value
+        .filter(r => r.kind === 'meilenstein' && r.status !== 'erledigt' && r.end >= today)
+        .sort((a, b) => a.end.localeCompare(b.end))[0] || null;
+    });
+
+    const daysToNext = computed(() => {
+      if (!nextMilestone.value) return null;
+      const now = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+      return Math.round((toMs(nextMilestone.value.end) - now) / DAY_MS);
+    });
+
+    const statusCounts = computed(() => {
+      const out = {};
+      for (const k of STATUS_ORDER) out[k] = 0;
+      for (const r of filtered.value) {
+        if (out[r.status] !== undefined) out[r.status] += 1;
+      }
+      return out;
+    });
+
+    return {
+      filterPhase, filterStatus, asTable, hovered, rows, phases, filtered,
+      groups, ticks, todayLeft, barStyle, milestoneStyle, fmt, duration,
+      isLate, lateCount, nextMilestone, daysToNext, statusCounts,
+      STATUS, STATUS_ORDER,
+      statusLabel: (s) => (STATUS[s] || {}).label || s,
+      statusClass: (s) => (STATUS[s] || {}).cls || 'is-open',
+      resetFilters() { filterPhase.value = ''; filterStatus.value = ''; },
+    };
+  },
+  template: `
+    <div>
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Ablaufplan</h1>
+          <div class="page-subtitle">
+            Projektablaufplan Detail — Phasen, Vorgänge und Meilensteine als Balkenplan.
+          </div>
+        </div>
+      </div>
+
+      <div v-if="loading && !data" class="flex items-center gap-2 py-8 text-gray-400">
+        <span class="spinner"></span> Loading&hellip;
+      </div>
+      <div v-else-if="error" class="card notice-error">{{ error }}</div>
+
+      <div v-else-if="!rows.length" class="card">
+        <div class="empty-state">
+          <span class="empty-state-icon" aria-hidden="true">◵</span>
+          <div class="empty-state-title">Kein Ablaufplan importiert</div>
+          <p class="text-sm">
+            Importiere den <code>Projektablaufplan_Detail</code> über
+            <strong>Import JSON → Ablaufplan</strong>.
+          </p>
+        </div>
+      </div>
+
+      <template v-else>
+        <!-- One hero figure: the next gate, and how long there is left. -->
+        <div class="overview-head">
+          <div class="hero-tile" style="cursor:default">
+            <span class="hero-label">
+              {{ nextMilestone ? 'Bis zum nächsten Meilenstein' : 'Meilensteine' }}
+            </span>
+            <span class="hero-value" v-if="daysToNext !== null">{{ daysToNext }}</span>
+            <span class="hero-value" v-else>—</span>
+            <span class="hero-hint" v-if="nextMilestone">
+              Tage · {{ nextMilestone.title }} am {{ fmt(nextMilestone.end) }}
+            </span>
+            <span class="hero-hint" v-else>keine offenen Meilensteine</span>
+          </div>
+
+          <div class="stat-grid" style="grid-template-columns:repeat(2,1fr)">
+            <div class="stat-tile" style="cursor:default">
+              <span class="stat-label">Vorgänge</span>
+              <span class="stat-value">{{ filtered.length }}</span>
+              <span class="stat-hint">in {{ phases.length }} Phasen</span>
+            </div>
+            <div class="stat-tile" style="cursor:default">
+              <span class="stat-label">Terminlage</span>
+              <span class="stat-value">{{ lateCount }}</span>
+              <span class="stat-hint" :class="{ 'is-alert': lateCount > 0 }">
+                {{ lateCount === 1 ? 'Vorgang überfällig' : 'Vorgänge überfällig' }}
+              </span>
+            </div>
+            <div v-for="s in STATUS_ORDER" :key="s"
+                 class="stat-tile" style="cursor:default; grid-column: span 1">
+              <span class="stat-label">{{ statusLabel(s) }}</span>
+              <span class="stat-value">{{ statusCounts[s] }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="filter-bar">
+          <select class="filter-select" v-model="filterPhase" aria-label="Phase filtern">
+            <option value="">Alle Phasen</option>
+            <option v-for="p in phases" :key="p" :value="p">{{ p }}</option>
+          </select>
+          <select class="filter-select" v-model="filterStatus" aria-label="Status filtern">
+            <option value="">Alle Status</option>
+            <option v-for="s in STATUS_ORDER" :key="s" :value="s">{{ statusLabel(s) }}</option>
+          </select>
+          <button v-if="filterPhase || filterStatus" class="btn btn-ghost" @click="resetFilters">
+            Filter zurücksetzen
+          </button>
+          <!-- The table view is the accessible equal of the chart, not a
+               fallback: every value the bars encode is readable as text. -->
+          <div class="segmented ml-auto" role="group" aria-label="Darstellung">
+            <button :class="{ active: !asTable }" @click="asTable = false">Balkenplan</button>
+            <button :class="{ active: asTable }" @click="asTable = true">Tabelle</button>
+          </div>
+        </div>
+
+        <!-- Legend — identity never rests on colour alone. -->
+        <div class="gantt-legend" v-if="!asTable">
+          <span v-for="s in STATUS_ORDER" :key="s" class="gantt-legend-item">
+            <span class="gantt-key" :class="statusClass(s)" aria-hidden="true"></span>
+            {{ statusLabel(s) }}
+          </span>
+          <span class="gantt-legend-item">
+            <span class="gantt-key is-milestone" aria-hidden="true"></span>
+            Meilenstein
+          </span>
+          <span class="gantt-legend-item">
+            <span class="gantt-key is-today" aria-hidden="true"></span>
+            Heute
+          </span>
+        </div>
+
+        <!-- ── Balkenplan ────────────────────────────────────────────── -->
+        <div v-if="!asTable" class="card card-flush gantt-scroll">
+          <div class="gantt">
+            <div class="gantt-head">
+              <div class="gantt-label-col">Vorgang</div>
+              <div class="gantt-track-col">
+                <span v-for="(t, i) in ticks" :key="i"
+                      class="gantt-tick-label" :style="{ left: t.left + '%' }">
+                  {{ t.label }}<template v-if="t.isYearStart"> {{ t.year }}</template>
+                </span>
+              </div>
+            </div>
+
+            <div v-for="g in groups" :key="g.name" class="gantt-group">
+              <div class="gantt-phase">
+                <div class="gantt-label-col">{{ g.name }}</div>
+                <div class="gantt-track-col"></div>
+              </div>
+
+              <div v-for="r in g.items" :key="r.id"
+                   class="gantt-row"
+                   @mouseenter="hovered = r.id" @mouseleave="hovered = null">
+                <div class="gantt-label-col" :title="r.title">
+                  <span class="gantt-row-title">{{ r.title }}</span>
+                  <span v-if="r.owner" class="gantt-row-owner">{{ r.owner }}</span>
+                </div>
+                <div class="gantt-track-col">
+                  <span v-for="(t, i) in ticks" :key="'g' + i"
+                        class="gantt-grid" :style="{ left: t.left + '%' }"></span>
+
+                  <template v-if="r.kind === 'meilenstein'">
+                    <span class="gantt-milestone"
+                          :class="[statusClass(r.status), { 'is-late': isLate(r) }]"
+                          :style="milestoneStyle(r)"
+                          :aria-label="r.title + ' — Meilenstein am ' + fmt(r.end)"></span>
+                  </template>
+                  <template v-else>
+                    <span class="gantt-bar"
+                          :class="[statusClass(r.status), { 'is-late': isLate(r) }]"
+                          :style="barStyle(r)"
+                          :aria-label="r.title + ' — ' + fmt(r.start) + ' bis ' + fmt(r.end)">
+                      <span v-if="r.progress_pct !== null && r.progress_pct !== undefined"
+                            class="gantt-progress"
+                            :style="{ width: r.progress_pct + '%' }"></span>
+                    </span>
+                  </template>
+
+                  <span v-if="hovered === r.id" class="gantt-tip"
+                        :style="{ left: barStyle(r).left }">
+                    <strong>{{ r.title }}</strong>
+                    <span>{{ statusLabel(r.status) }}<template v-if="isLate(r)"> · überfällig</template></span>
+                    <span v-if="r.kind === 'meilenstein'">{{ fmt(r.end) }}</span>
+                    <span v-else>{{ fmt(r.start) }} – {{ fmt(r.end) }} · {{ duration(r) }}</span>
+                    <span v-if="r.owner">{{ r.owner }}</span>
+                    <span v-if="r.progress_pct !== null && r.progress_pct !== undefined">
+                      {{ r.progress_pct }}% erledigt
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <span v-if="todayLeft !== null" class="gantt-today"
+                  :style="{ left: 'calc(var(--gantt-label-w) + ' + todayLeft + '% * var(--gantt-track-f))' }"
+                  aria-hidden="true"></span>
+          </div>
+        </div>
+
+        <!-- ── Tabelle ───────────────────────────────────────────────── -->
+        <div v-else class="card card-flush table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Phase</th><th>Vorgang</th><th>Art</th>
+                <th>Start</th><th>Ende</th><th>Verantwortlich</th>
+                <th>Status</th><th class="text-right">Fortschritt</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in filtered" :key="r.id">
+                <td class="text-gray-400">{{ r.phase || '—' }}</td>
+                <td class="max-w-xs truncate" :title="r.title">{{ r.title }}</td>
+                <td class="text-gray-400">{{ r.kind === 'meilenstein' ? 'Meilenstein' : 'Vorgang' }}</td>
+                <td class="font-mono text-xs">{{ fmt(r.start) }}</td>
+                <td class="font-mono text-xs">
+                  {{ fmt(r.end) }}
+                  <span v-if="isLate(r)" class="gantt-late-tag">überfällig</span>
+                </td>
+                <td class="text-gray-400">{{ r.owner || '—' }}</td>
+                <td>
+                  <span class="chip" :class="'chip-plan-' + r.status">
+                    <span class="chip-mark" :class="statusClass(r.status)" aria-hidden="true"></span>
+                    {{ statusLabel(r.status) }}
+                  </span>
+                </td>
+                <td class="text-right">
+                  <span v-if="r.progress_pct !== null && r.progress_pct !== undefined"
+                        class="score-bar">
+                    <span class="score-track">
+                      <span class="score-fill high" :style="{ width: r.progress_pct + '%' }"></span>
+                    </span>
+                    <span class="score-value">{{ r.progress_pct }}</span>
+                  </span>
+                  <span v-else class="text-gray-400">—</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+    </div>
+  `,
+};
+
+global.AblaufplanScreen = AblaufplanScreen;
 global.OverviewScreen = OverviewScreen;
 global.ProjectListScreen = ProjectListScreen;
 global.ProjectDetailScreen = ProjectDetailScreen;

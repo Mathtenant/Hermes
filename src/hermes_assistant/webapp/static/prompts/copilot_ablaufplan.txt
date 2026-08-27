@@ -1,0 +1,150 @@
+# Aufgabe
+Du hast Zugriff auf das Projekt-Repository. Werte den PROJEKTABLAUFPLAN
+(Detail) aus und gib ihn als maschinenlesbares JSON aus. Dieses JSON wird von
+einem lokalen Assistenzsystem (Hermes) eingelesen — es wird NICHT von Menschen
+gelesen und NICHT ausgeführt. Gib ausschliesslich gültiges JSON nach dem
+Schema hermes.ablaufplan/v1 aus.
+
+Hinweis: Anders als die einfache Terminliste erfasst dieser Export DAUERN,
+nicht nur Stichtage. Ein Vorgang hat einen Start UND ein Ende und wird als
+Balken dargestellt; ein Meilenstein ist ein Zeitpunkt und hat nur ein Datum.
+Genau diese Unterscheidung macht die Darstellung als Balkenplan möglich.
+
+## Scope
+Projekt: {{PROJECT_TITLE}}
+Quellen: {{REPO_SCOPE}} (nur diese Quellen; keine anderen Projekte, keine
+privaten Mails, keine Screenshots, keine Bilder)
+Stichtag: {{AS_OF_DATE}}
+
+## Ausgabe-Regeln (strikt)
+1. Gib AUSSCHLIESSLICH ein einzelnes JSON-Objekt aus. Keine Einleitung, keine
+   Erklärung, keine Markdown-Code-Fences. Erstes Zeichen "{", letztes "}".
+2. Halte dich EXAKT an das Schema. Keine zusätzlichen, keine umbenannten Felder.
+3. Datumsformat immer YYYY-MM-DD. Keine Zeitangaben, keine Zeitzonen, keine
+   unscharfen Angaben ("Q4", "Ende Jahr", "KW 47"). Rate niemals ein Datum.
+4. PFLICHTFELDER pro Eintrag:
+   - art "vorgang":     start UND ende
+   - art "meilenstein": nur ende (das Datum des Meilensteins), KEIN start
+   Fehlt ein Pflichtdatum, lass den Eintrag weg. Ein Balken ohne Anfang oder
+   Ende ist unbrauchbar.
+5. ende darf nie vor start liegen. Ein eintägiger Vorgang hat start == ende.
+6. external_ref DETERMINISTISCH aus dem Titel bilden (damit wiederholte
+   Exporte keine Duplikate anlegen):
+   - Phase: Präfix "ph/", Vorgang/Meilenstein: Präfix "vg/".
+   - Danach der Titel in Kleinbuchstaben, Umlaute ausgeschrieben
+     (ä→ae, ö→oe, ü→ue, ß→ss), nur a–z 0–9 -, Leerzeichen → -, max. 60 Zeichen.
+   - Beispiel: „Fachtest durchführen" → vg/fachtest-durchfuehren
+   - IMMER aus dem Titel ableiten, nie aus Position, Nummer oder Reihenfolge.
+7. Erlaubte Enum-Werte (jeder andere Wert ist ungültig):
+   - art:    vorgang | meilenstein
+   - status: offen | laufend | erledigt | blockiert
+8. phase_ref MUSS auf ein external_ref einer Phase in DIESEM Export zeigen.
+   Zeigt es auf nichts, lass das Feld weg — der Vorgang erscheint dann unter
+   „Ohne Phase". Erfinde niemals eine Phase.
+9. vorgaenger_refs: Liste von external_refs von Vorgängen in DIESEM Export.
+   Unbekannte Referenzen weglassen. KEINE Zyklen.
+10. fortschritt_prozent: ganze Zahl 0–100. Nur angeben, wenn im Plan belegt.
+   Rate niemals einen Fortschritt aus dem Datum — ein Vorgang in der
+   Vergangenheit ist nicht automatisch fertig.
+11. Keine Personendaten über Namen/Rolle hinaus: keine E-Mail-Adressen, keine
+   Telefonnummern, keine Pfade.
+12. Obergrenze: max. 40 Phasen und max. 400 Vorgänge. Bei mehr: die
+   detailliertesten Ebenen zusammenfassen, Phasen behalten.
+
+## Abgrenzung (häufigste Fehlerquelle)
+- Ein ARBEITSPAKET ohne Datum gehört in den Strukturplan-Export, nicht hierher.
+  Dieser Export enthält NUR terminierte Vorgänge.
+- Eine PENDENZ ist eine offene Handlung aus einer Sitzung → Pendenzen-Export.
+- Eine PHASE ist ein Container, kein Vorgang. Phasen stehen in "phasen",
+  niemals zusätzlich als Vorgang in "vorgaenge".
+
+## Schema
+{
+  "schema": "hermes.ablaufplan/v1",
+  "meta": { "generated_at": "<ISO-8601>", "source": "m365_copilot",
+            "repo_scope": "{{REPO_SCOPE}}" },
+  "project_ref": "proj/<slug>",
+  "project_label": "<Anzeigename des Projekts, optional>",
+  "phasen": [
+    { "external_ref": "ph/<slug>",
+      "titel": "<Phasenname>",
+      "reihenfolge": <ganze Zahl, kleinste zuerst, optional> }
+  ],
+  "vorgaenge": [
+    { "external_ref": "vg/<slug>",
+      "titel": "<Vorgangsname>",
+      "art": "vorgang|meilenstein",
+      "phase_ref": "ph/<slug>",
+      "start": "YYYY-MM-DD",
+      "ende": "YYYY-MM-DD",
+      "verantwortlich": "<Rolle oder Name, optional>",
+      "status": "offen|laufend|erledigt|blockiert",
+      "fortschritt_prozent": <0-100, optional>,
+      "vorgaenger_refs": ["vg/<slug>"],
+      "notiz": "<kurze, nicht vertrauliche Notiz, optional>" }
+  ]
+}
+
+## Beispiel (gültig — validiere deine Struktur dagegen)
+{
+  "schema": "hermes.ablaufplan/v1",
+  "meta": { "generated_at": "2026-08-22T10:00:00Z", "source": "m365_copilot",
+            "repo_scope": "Webshop-Relaunch" },
+  "project_ref": "proj/webshop-relaunch",
+  "project_label": "Webshop-Relaunch",
+  "phasen": [
+    { "external_ref": "ph/konzept", "titel": "Konzept", "reihenfolge": 1 },
+    { "external_ref": "ph/realisierung", "titel": "Realisierung",
+      "reihenfolge": 2 },
+    { "external_ref": "ph/einfuehrung", "titel": "Einfuehrung",
+      "reihenfolge": 3 }
+  ],
+  "vorgaenge": [
+    { "external_ref": "vg/detailkonzept-erstellen",
+      "titel": "Detailkonzept erstellen", "art": "vorgang",
+      "phase_ref": "ph/konzept",
+      "start": "2026-06-01", "ende": "2026-07-15",
+      "verantwortlich": "Fachbereich", "status": "erledigt",
+      "fortschritt_prozent": 100 },
+    { "external_ref": "vg/konzept-abnahme",
+      "titel": "Konzept-Abnahme", "art": "meilenstein",
+      "phase_ref": "ph/konzept",
+      "ende": "2026-07-15", "status": "erledigt",
+      "vorgaenger_refs": ["vg/detailkonzept-erstellen"] },
+    { "external_ref": "vg/schnittstellen-realisieren",
+      "titel": "Schnittstellen realisieren", "art": "vorgang",
+      "phase_ref": "ph/realisierung",
+      "start": "2026-07-16", "ende": "2026-10-02",
+      "verantwortlich": "IT", "status": "laufend",
+      "fortschritt_prozent": 60,
+      "vorgaenger_refs": ["vg/konzept-abnahme"] },
+    { "external_ref": "vg/go-live-webshop",
+      "titel": "Go-Live Webshop", "art": "meilenstein",
+      "phase_ref": "ph/einfuehrung",
+      "ende": "2026-11-30", "status": "offen",
+      "notiz": "Freigabe durch Steuerungsausschuss" }
+  ]
+}
+
+## Checkliste (vor der Ausgabe abarbeiten)
+[ ] Ausgabe ist EIN JSON-Objekt, beginnt mit { und endet mit }.
+[ ] "schema" ist exakt "hermes.ablaufplan/v1".
+[ ] Jeder Vorgang (art "vorgang") hat start UND ende.
+[ ] Jeder Meilenstein (art "meilenstein") hat ende und KEIN start.
+[ ] Kein ende liegt vor seinem start.
+[ ] Jede art ist vorgang|meilenstein, jeder status ist
+    offen|laufend|erledigt|blockiert.
+[ ] Jedes phase_ref und jedes vorgaenger_ref zeigt auf einen Eintrag in
+    DIESEM Export.
+[ ] Keine Phase steht zusätzlich als Vorgang in "vorgaenge".
+[ ] Die Liste enthält ALLE terminierten Vorgänge (der Export ersetzt den Plan).
+
+## Häufige Fehler (unbedingt vermeiden)
+- KEINE Markdown-Code-Fences (``` ) um das JSON.
+- KEINE erklärenden Sätze vor oder nach dem JSON.
+- KEIN Meilenstein mit "start" — ein Meilenstein ist ein Zeitpunkt.
+- KEIN Vorgang ohne "ende" — lieber weglassen als raten.
+- KEIN geschätzter Fortschritt. Nur übernehmen, was im Plan steht.
+- KEINE Dauer als Text ("3 Wochen") statt Datum — nur start/ende.
+- KEINE laufenden Nummern als external_ref („vg/1", „vg/2") — die ändern sich
+  zwischen Exporten und erzeugen Duplikate.

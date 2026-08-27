@@ -1002,6 +1002,371 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
   overflow: hidden;
 }
 
+/* ═══ 10b. Gantt (Ablaufplan) ═════════════════════════════════════════════
+ *
+ * A span chart, not a magnitude chart: position and length carry the dates,
+ * so the bars are deliberately quiet and the only loud thing on the row is
+ * where the bar sits. Status takes a hue *and* a legend entry *and* a label
+ * in the table view, so meaning never rests on colour. Only `erledigt` and
+ * `blockiert` draw on the reserved status palette — those are the two that
+ * actually mean good and bad; "laufend" and "offen" are neither, so they take
+ * the accent ramp and a neutral rather than borrowing a status colour to mean
+ * something it does not mean.
+ */
+.gantt {
+  --gantt-label-w: 240px;
+  /* The track is everything the label column leaves. Kept as a variable so
+     the today-marker can be positioned in the same coordinate space as the
+     bars, which live inside the track and measure their % against it. */
+  --gantt-track-f: calc((100% - var(--gantt-label-w)) / 100%);
+  position: relative;
+  min-width: 760px;
+}
+
+.gantt-scroll { overflow-x: auto; overflow-y: visible; }
+
+.gantt-head,
+.gantt-row,
+.gantt-phase {
+  display: grid;
+  grid-template-columns: var(--gantt-label-w) 1fr;
+  align-items: center;
+}
+
+.gantt-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 34px;
+  background: var(--c-bg-card);
+  border-bottom: 1px solid var(--c-border);
+}
+
+.gantt-label-col {
+  padding: 0 0.875rem;
+  min-width: 0;
+  font-size: 0.75rem;
+  color: var(--c-text-muted);
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.gantt-track-col { position: relative; height: 100%; }
+
+.gantt-tick-label {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  padding-left: 0.3125rem;
+  font-size: 0.6875rem;
+  color: var(--c-text-faint);
+  white-space: nowrap;
+}
+
+/* Hairline, solid, one step off the surface — recessive by construction. */
+.gantt-grid {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--c-border-soft);
+}
+
+.gantt-phase {
+  height: 28px;
+  background: var(--c-bg-subtle);
+  border-bottom: 1px solid var(--c-border-soft);
+}
+
+.gantt-phase .gantt-label-col {
+  font-weight: 650;
+  font-size: 0.75rem;
+  color: var(--c-text);
+}
+
+.gantt-row {
+  height: 30px;
+  border-bottom: 1px solid var(--c-border-soft);
+}
+
+.gantt-row:hover { background: var(--c-bg-subtle); }
+.gantt-row:last-child { border-bottom: none; }
+
+.gantt-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--c-text);
+}
+
+.gantt-row-owner {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  color: var(--c-text-faint);
+}
+
+/* 14px in a 30px row: the leftover is air, not a fatter bar. Both ends are
+   data ends here — a span has no baseline to sit square against — so both
+   are rounded. */
+.gantt-bar {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 14px;
+  border-radius: 4px;
+  display: block;
+  overflow: hidden;
+}
+
+.gantt-bar.is-open     { background: var(--c-fill-neutral); box-shadow: inset 0 0 0 1px var(--c-border); }
+.gantt-bar.is-running  { background: var(--seq-250); }
+.gantt-bar.is-done     { background: var(--st-good); }
+.gantt-bar.is-blocked  { background: var(--st-critical); }
+
+/* Progress rides *inside* the bar as a darker step of the bar's own hue, so
+   the bar reads as one scale end to end rather than as two stacked marks.
+   A darkening wash rather than a fixed colour: a blue step laid over the red
+   of a blocked bar produced a muddy third hue that belonged to neither the
+   status palette nor the ramp. */
+.gantt-progress {
+  display: block;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dark"] .gantt-progress { background: rgba(0, 0, 0, 0.42); }
+
+/* An "offen" bar is a near-empty track, so darkening it needs the ramp rather
+   than a wash to stay visible. */
+.gantt-bar.is-open .gantt-progress { background: var(--seq-250); }
+
+/* Nothing to show on a finished bar — the whole bar is the progress. */
+.gantt-bar.is-done .gantt-progress { background: transparent; }
+
+/* An overdue bar keeps its own status colour and gains a marker, so "late"
+   is added information rather than a silent recolouring. */
+.gantt-bar.is-late  { box-shadow: inset 0 0 0 2px var(--st-critical); }
+
+.gantt-milestone {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin-left: -5.5px;
+  transform: translateY(-50%) rotate(45deg);
+  border-radius: 2px;
+  background: var(--c-text);
+}
+
+.gantt-milestone.is-done    { background: var(--st-good); }
+.gantt-milestone.is-blocked { background: var(--st-critical); }
+.gantt-milestone.is-running { background: var(--seq-450); }
+
+/* A gate not yet reached is hollow. Filled-vs-hollow is a second channel on
+   top of the hue, so "still ahead" survives greyscale and reads as a shape
+   rather than a grey smudge. */
+.gantt-milestone.is-open {
+  background: var(--c-bg-card);
+  box-shadow: inset 0 0 0 2px var(--c-text-muted);
+}
+.gantt-milestone.is-late    { box-shadow: 0 0 0 2px var(--st-critical); }
+
+/* Today: one vertical rule across the whole plot, drawn above the bars but
+   under the tooltip. */
+.gantt-today {
+  position: absolute;
+  top: 34px;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--st-warning);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.gantt-tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 0.0625rem;
+  min-width: 180px;
+  max-width: 300px;
+  padding: 0.5rem 0.625rem;
+  background: var(--c-bg-card);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  font-size: 0.75rem;
+  color: var(--c-text-muted);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.gantt-tip strong { color: var(--c-text); font-weight: 600; }
+
+.gantt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--c-text-muted);
+}
+
+.gantt-legend-item { display: inline-flex; align-items: center; gap: 0.4375rem; }
+
+.gantt-key {
+  width: 14px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.gantt-key.is-open     { background: var(--c-fill-neutral); box-shadow: inset 0 0 0 1px var(--c-border); }
+.gantt-key.is-running  { background: var(--seq-250); }
+.gantt-key.is-done     { background: var(--st-good); }
+.gantt-key.is-blocked  { background: var(--st-critical); }
+
+.gantt-key.is-milestone {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  transform: rotate(45deg);
+  background: var(--c-text-muted);
+}
+
+.gantt-key.is-today { width: 2px; height: 14px; border-radius: 0; background: var(--st-warning); }
+
+.gantt-late-tag {
+  margin-left: 0.375rem;
+  font-family: var(--font-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--st-critical-ink);
+}
+
+/* Plan-status chips for the table view, matching the bar colours. */
+.chip-plan-erledigt  { background: var(--c-fill-green);   color: var(--st-good-ink); }
+.chip-plan-blockiert { background: var(--c-fill-red);     color: var(--st-critical-ink); }
+.chip-plan-laufend   { background: var(--c-primary-soft); color: var(--c-primary); }
+.chip-plan-offen     { background: var(--c-fill-neutral); color: var(--c-text-muted); }
+
+.chip .chip-mark.is-done     { background: var(--st-good); border-radius: 50%; }
+.chip .chip-mark.is-blocked  { background: var(--st-critical); border-radius: 1px; }
+.chip .chip-mark.is-running  { background: var(--seq-450); border-radius: 50%; }
+.chip .chip-mark.is-open     { background: none; border: 2px solid currentColor; border-radius: 50%; }
+
+/* ═══ 10c. Beschlüsse (decision list) ═════════════════════════════════════
+ *
+ * Read as a spine of dates rather than a table: a Beschlussliste is a record
+ * of when things were settled, and the follow-up count on each row is what
+ * turns it from an archive into something actionable.
+ */
+.decision-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--c-bg-card);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.decision-item {
+  display: grid;
+  grid-template-columns: 116px 1fr;
+  gap: 0.875rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--c-border-soft);
+}
+
+.decision-item:last-child { border-bottom: none; }
+.decision-item:hover { background: var(--c-bg-subtle); }
+
+.decision-date {
+  position: relative;
+  padding-left: 0.875rem;
+}
+
+/* The spine. One rule down the whole column, so the dates read as a sequence
+   rather than as an unrelated first cell. */
+.decision-date::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0.3125rem;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--seq-450);
+}
+
+.decision-item:not(:last-child) .decision-date::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 1rem;
+  bottom: -0.875rem;
+  width: 1px;
+  background: var(--c-border);
+}
+
+.decision-day {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--c-text-muted);
+  white-space: nowrap;
+}
+
+.decision-body { min-width: 0; }
+
+.decision-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 0.1875rem;
+}
+
+.decision-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 550;
+  line-height: 1.35;
+  color: var(--c-text);
+}
+
+.decision-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.875rem;
+  font-size: 0.75rem;
+  color: var(--c-text-faint);
+}
+
+.decision-affects {
+  padding: 0.0625rem 0.4375rem;
+  border-radius: var(--radius-sm);
+  background: var(--c-bg-subtle);
+  color: var(--c-text-muted);
+}
+
+/* The one number on the row worth acting on. Neutral when the decision has
+   been fully worked off; the alert colour rides beside a word, never alone. */
+.decision-followups { color: var(--c-text-muted); }
+.decision-followups.is-alert { color: var(--st-serious-ink); font-weight: 600; }
+
+@media (max-width: 640px) {
+  .decision-item { grid-template-columns: 1fr; gap: 0.25rem; }
+  .decision-date::after { display: none; }
+}
+
 /* ═══ 11. WBS tree ════════════════════════════════════════════════════════ */
 .wbs-tree { font-size: 0.8125rem; }
 
@@ -1427,7 +1792,11 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
   overflow: hidden;
 }
 
-#chat-widget.is-open { height: 500px; max-height: calc(100vh - 40px); }
+/* Capped against the viewport, not just the page: at a fixed 500px the panel
+   covered from y≈200 down on a 720px-tall laptop screen, taking the right-hand
+   end of every filter bar with it. 60vh keeps the top of the working area
+   clear whatever the screen height. */
+#chat-widget.is-open { height: min(500px, 60vh); }
 
 /* The entire header bar is the collapse/expand control. */
 .chat-header {

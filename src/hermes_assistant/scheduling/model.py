@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -53,6 +54,16 @@ class ScheduledItem(BaseModel):
     reminders: list[Reminder] = []
     note: str | None = None    # short, NON-confidential
     sequence: int = 0          # bump on change → ICS SEQUENCE for clean re-import
+
+    # --- Ablaufplan (Projektablaufplan_Detail import) ---------------------- #
+    # A detailed flow plan carries more than a date: which phase a task belongs
+    # to, who owns it, and how far along it is. All optional and defaulted, so
+    # every schedule.json written before these existed still validates, and the
+    # ICS exporter — which reads only title/dates/note — is unaffected.
+    phase: str = ""            # display name of the containing phase
+    owner: str | None = None   # role or name, NON-confidential
+    status: Literal["offen", "laufend", "erledigt", "blockiert"] = "offen"
+    progress_pct: int | None = None  # 0–100, only when the plan states it
 
 
 class Schedule(BaseModel):

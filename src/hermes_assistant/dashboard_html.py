@@ -124,6 +124,57 @@ class RiskRow(BaseModel):
     updated_at: str
 
 
+class GanttRow(BaseModel):
+    """One bar (or diamond) in the Projektablaufplan view.
+
+    Distinct from ``TimelineEntry``, which is a *point* derived from a due date
+    and whose ``status`` is inferred from whether that date has passed. A flow
+    plan carries a real span and a stated status, and conflating the two would
+    mean either losing the span or overwriting a plan's own "laufend" with a
+    date comparison.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    title: str
+    phase: str = ""
+    kind: Literal["vorgang", "meilenstein"] = "vorgang"
+    start: str = ""            # YYYY-MM-DD; empty for a milestone
+    end: str                   # YYYY-MM-DD; the milestone's date, or the bar's end
+    owner: str = ""
+    status: Literal["offen", "laufend", "erledigt", "blockiert"] = "offen"
+    progress_pct: int | None = None
+    depends_on: list[str] = Field(default_factory=list)
+    project_id: str = ""
+
+
+class DecisionRow(BaseModel):
+    """One Beschluss, plus how many Pendenzen it set in motion.
+
+    The decision's *Begründung* is deliberately absent. It is imported and
+    stored on the ``Beschluss`` node, but ``rationale`` is in the API guard's
+    ``_FORBIDDEN_FIELDS`` — where it guards the critic's internal reasoning —
+    and a field named that in any response is a structural violation, i.e. a
+    hard 500 rather than a redaction. Renaming it to slip past a name-based
+    blocklist would hollow the guard out, and the free-text justification is
+    also the part of a Beschlussliste most likely to quote confidential
+    material. The title, the deciding body, the date and the affected area are
+    what a lead reads at a glance; the reasoning stays in the source document.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    title: str
+    decided_on: str = ""       # YYYY-MM-DD
+    decided_by: str = ""
+    decision_status: Literal[
+        "beschlossen", "umgesetzt", "aufgehoben", "vertagt"
+    ] = "beschlossen"
+    affects: str = ""
+    pendenzen_total: int = 0
+    pendenzen_open: int = 0
+
+
 class ProjectSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: str
@@ -143,6 +194,8 @@ class DashboardData(BaseModel):
     pendenzen: list[PendenzRow] = Field(default_factory=list)
     reviews: list[ReviewSummaryRow] = Field(default_factory=list)
     risks: list[RiskRow] = Field(default_factory=list)
+    ablaufplan: list[GanttRow] = Field(default_factory=list)
+    decisions: list[DecisionRow] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +291,7 @@ def load_dashboard_data(
     from hermes_assistant.config import settings
     from hermes_assistant.jobqueue.jobs import JobStatus
     from hermes_assistant.jobqueue.jobs import JobStore as _JobStore
-    from hermes_assistant.scheduling.model import Schedule
+    from hermes_assistant.scheduling.model import ItemKind, Schedule
     from hermes_assistant.tasks.store import TaskStore as _TaskStore
 
     _now = now or datetime.now(UTC)
@@ -261,9 +314,15 @@ def load_dashboard_data(
             if child and child.id not in seen:
                 pending_q.append(child)
 
-    # "assumption" kind nodes hold internal planning notes — exclude from rendered output
-    tree_tasks = [t for t in all_tasks if t.node_kind not in ("pendenz", "assumption")]
+    # "assumption" kind nodes hold internal planning notes — exclude from rendered output.
+    # "decision" is excluded too: a Beschluss is a settled fact, not a work
+    # package, so it belongs on neither the board nor the structure tree.
+    tree_tasks = [
+        t for t in all_tasks
+        if t.node_kind not in ("pendenz", "assumption", "decision")
+    ]
     raw_pendenzen = [t for t in all_tasks if t.node_kind == "pendenz"]
+    raw_decisions = [t for t in all_tasks if t.node_kind == "decision"]
 
     # Kanban
     _kanban_cap = 50
@@ -289,8 +348,37 @@ def load_dashboard_data(
 
     pend_rows = [_to_pendenz_row(t) for t in sorted(raw_pendenzen, key=_pkey)]
 
+    # Decisions (Beschlüsse), with the Pendenzen each one set in motion.
+    # Pendenz.source_ref carries the raising decision's external_ref, which is
+    # what lets a Beschluss show its follow-up load instead of standing alone.
+    _pend_by_source: dict[str, list[Any]] = {}
+    for t in raw_pendenzen:
+        ref = getattr(t, "source_ref", None)
+        if ref:
+            _pend_by_source.setdefault(str(ref), []).append(t)
+
+    decisions: list[DecisionRow] = []
+    for t in raw_decisions:
+        spawned = _pend_by_source.get(str(t.external_ref or ""), [])
+        decided_on = getattr(t, "decided_on", None)
+        decisions.append(
+            DecisionRow(
+                id=t.id,
+                title=t.title,
+                decided_on=str(decided_on) if decided_on else "",
+                decided_by=str(getattr(t, "decided_by", "") or ""),
+                decision_status=getattr(t, "decision_status", "beschlossen") or "beschlossen",
+                affects=str(getattr(t, "affects", "") or ""),
+                pendenzen_total=len(spawned),
+                pendenzen_open=sum(1 for p in spawned if p.status != "closed"),
+            )
+        )
+    # Newest decision first — the recent ones are the ones still being acted on.
+    decisions.sort(key=lambda d: (d.decided_on or "0000-00-00", d.title), reverse=True)
+
     # Timeline from schedule.json
     timeline: list[TimelineEntry] = []
+    ablaufplan: list[GanttRow] = []
     today_str = str(_now.date())
     if _root.is_dir():
         for proj_dir in sorted(_root.iterdir()):
@@ -313,9 +401,48 @@ def load_dashboard_data(
                         tl_status = "future"
                     tl_kind: Literal["milestone", "deadline", "task"] = item.kind.value
                     timeline.append(TimelineEntry(date=str(item.due), label=item.title, kind=tl_kind, status=tl_status, project_id=sched.project_id))
+
+                    # Same items, read as spans rather than points. A bar needs
+                    # a start; a milestone deliberately has none, and the plan's
+                    # own status is kept rather than re-derived from the date —
+                    # an overdue task is late, not finished.
+                    ablaufplan.append(
+                        GanttRow(
+                            id=item.item_id,
+                            title=item.title,
+                            phase=getattr(item, "phase", "") or "",
+                            kind=(
+                                "meilenstein"
+                                if item.kind is ItemKind.milestone or not item.start
+                                else "vorgang"
+                            ),
+                            start=str(item.start) if item.start else "",
+                            end=str(item.due),
+                            owner=getattr(item, "owner", None) or "",
+                            status=getattr(item, "status", "offen") or "offen",
+                            progress_pct=getattr(item, "progress_pct", None),
+                            depends_on=list(item.depends_on or []),
+                            project_id=sched.project_id,
+                        )
+                    )
             except Exception:  # noqa: BLE001
                 pass
     timeline.sort(key=lambda e: (e.date, e.label))
+    # Phase first (in the order phases appear along the calendar), then by
+    # start, so a Gantt reads top-left to bottom-right without re-sorting.
+    _phase_first_seen: dict[str, str] = {}
+    for row in ablaufplan:
+        anchor = row.start or row.end
+        if row.phase not in _phase_first_seen or anchor < _phase_first_seen[row.phase]:
+            _phase_first_seen[row.phase] = anchor
+    ablaufplan.sort(
+        key=lambda r: (
+            _phase_first_seen.get(r.phase, "9999-99-99"),
+            r.phase,
+            r.start or r.end,
+            r.title,
+        )
+    )
 
     # Risks from registry (confidential risks excluded via export_public())
     risks: list[RiskRow] = []
@@ -371,6 +498,7 @@ def load_dashboard_data(
         scope=scope, range_start=range_start, range_end=range_end,
         projects=projects, timeline=timeline, kanban=kanban, wbs=wbs,
         pendenzen=pend_rows, reviews=reviews, risks=risks,
+        ablaufplan=ablaufplan, decisions=decisions,
     )
 
 

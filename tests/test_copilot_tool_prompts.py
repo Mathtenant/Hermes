@@ -30,6 +30,8 @@ _TOOL_PROMPTS = {
     "copilot_pendenzen": "hermes.pendenzen/v1",
     "copilot_wbs": "hermes.wbs/v1",
     "copilot_timeline": "hermes.timeline/v1",
+    "copilot_beschluesse": "hermes.beschluesse/v1",
+    "copilot_ablaufplan": "hermes.ablaufplan/v1",
 }
 
 
@@ -629,3 +631,334 @@ def test_full_export_also_populates_wbs_and_kanban(tmp_path: Path):
 
     tree = _tree(tmp_path)
     assert [t for t, _, _ in tree["Realisierung"]] == ["Checkout"]
+
+
+# --------------------------------------------------------------------------- #
+# Pendenzen- und Beschlussliste — one document, two entity types
+#
+# A Beschluss is a settled fact with a date and a deciding body; a Pendenz is
+# an open action. Conflating them loses the distinction the document exists to
+# make, so the split and the link between the two are what these cover.
+# --------------------------------------------------------------------------- #
+
+
+def _beschluss_payload(**over) -> dict:
+    payload = {
+        "schema": "hermes.beschluesse/v1",
+        "project_ref": "proj/webshop",
+        "beschluesse": [
+            {
+                "external_ref": "bs/standardloesung",
+                "titel": "Verzicht auf Eigenentwicklung",
+                "beschlossen_am": "2026-05-12",
+                "gremium": "Steuerungsausschuss",
+                "status": "beschlossen",
+                "betrifft": "Checkout",
+            }
+        ],
+        "pendenzen": [
+            {
+                "external_ref": "pd/vertrag",
+                "titel": "Vertrag pruefen",
+                "verantwortlich": "Legal",
+                "termin": "2026-09-30",
+                "prioritaet": "high",
+                "status": "open",
+                "beschluss_ref": "bs/standardloesung",
+            }
+        ],
+    }
+    payload.update(over)
+    return payload
+
+
+def _dashboard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from hermes_assistant.config import settings
+    from hermes_assistant.dashboard_html import load_dashboard_data
+
+    monkeypatch.setattr(settings, "tasks_db_path", str(tmp_path / "tasks.db"))
+    monkeypatch.setattr(settings, "projects_path", str(tmp_path / "projects"))
+    return load_dashboard_data()
+
+
+def test_beschlussliste_splits_decisions_from_pendenzen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result = _run_import(_beschluss_payload(), tmp_path)
+    assert result.errors == []
+    assert result.entity_counts == {"pendenzen": 1, "beschluesse": 1}
+
+    data = _dashboard(tmp_path, monkeypatch)
+    assert len(data.decisions) == 1
+    assert len(data.pendenzen) == 1
+    decision = data.decisions[0]
+    assert decision.title == "Verzicht auf Eigenentwicklung"
+    assert decision.decided_on == "2026-05-12"
+    assert decision.decided_by == "Steuerungsausschuss"
+    assert decision.affects == "Checkout"
+
+
+def test_a_decision_counts_the_pendenzen_it_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The follow-up count is why the two lists share a screen."""
+    payload = _beschluss_payload()
+    payload["pendenzen"].append({
+        "external_ref": "pd/lizenzen",
+        "titel": "Lizenzkosten nachfuehren",
+        "status": "closed",
+        "beschluss_ref": "bs/standardloesung",
+    })
+    _run_import(payload, tmp_path)
+
+    decision = _dashboard(tmp_path, monkeypatch).decisions[0]
+    assert decision.pendenzen_total == 2
+    assert decision.pendenzen_open == 1  # the closed one does not count
+
+
+def test_a_dangling_beschluss_ref_is_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A link to a decision not in the export must not inflate any count."""
+    payload = _beschluss_payload()
+    payload["pendenzen"][0]["beschluss_ref"] = "bs/gibt-es-nicht"
+    _run_import(payload, tmp_path)
+
+    data = _dashboard(tmp_path, monkeypatch)
+    assert len(data.pendenzen) == 1              # the Pendenz still imports
+    assert data.decisions[0].pendenzen_total == 0  # but counts towards nothing
+
+
+def test_decisions_are_not_kanban_cards_or_wbs_nodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A Beschluss is a settled fact, not a work package."""
+    _run_import(_beschluss_payload(), tmp_path)
+    data = _dashboard(tmp_path, monkeypatch)
+    assert sum(len(c.cards) for c in data.kanban) == 0
+    assert data.wbs == []
+
+
+def test_decision_status_maps_onto_the_task_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`umgesetzt` has to read as closed everywhere that only knows open/closed."""
+    from hermes_assistant.tasks.store import TaskStore
+
+    payload = _beschluss_payload()
+    payload["beschluesse"][0]["status"] = "umgesetzt"
+    _run_import(payload, tmp_path)
+
+    store = TaskStore(str(tmp_path / "tasks.db"))
+    try:
+        stored = store.find_by_external_ref("bs/standardloesung")
+    finally:
+        store.close()
+    assert stored.status == "closed"
+    assert stored.decision_status == "umgesetzt"
+
+
+def test_a_decision_without_a_date_is_rejected(tmp_path: Path):
+    """"Soll noch entschieden werden" is a proposal, not a Beschluss."""
+    payload = _beschluss_payload()
+    del payload["beschluesse"][0]["beschlossen_am"]
+    result = _run_import(payload, tmp_path)
+    assert result.created == 1        # the Pendenz still lands
+    assert result.skipped == 1
+    assert any("decided_on" in e for e in result.errors), result.errors
+
+
+def test_beschluss_rejects_an_impossible_calendar_date(tmp_path: Path):
+    payload = _beschluss_payload()
+    payload["beschluesse"][0]["beschlossen_am"] = "2026-02-30"
+    result = _run_import(payload, tmp_path)
+    assert result.skipped == 1
+    assert any("calendar date" in e for e in result.errors), result.errors
+
+
+def test_pendenz_termin_reaches_the_dashboard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The Due column was always empty: no adapter or importer read a date."""
+    _run_import(_beschluss_payload(), tmp_path)
+    row = _dashboard(tmp_path, monkeypatch).pendenzen[0]
+    assert row.due_date == "2026-09-30"
+
+
+def test_reimporting_a_corrected_pendenz_refreshes_its_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An update used to rewrite only the title, so corrections vanished."""
+    _run_import(_beschluss_payload(), tmp_path)
+
+    corrected = _beschluss_payload()
+    corrected["pendenzen"][0].update(
+        {"verantwortlich": "Einkauf", "prioritaet": "blocker", "termin": "2026-10-15"}
+    )
+    result = _run_import(corrected, tmp_path)
+    assert result.created == 0 and result.updated == 2
+
+    row = _dashboard(tmp_path, monkeypatch).pendenzen[0]
+    assert row.owner == "Einkauf"
+    assert row.priority == "blocker"
+    assert row.due_date == "2026-10-15"
+
+
+@pytest.mark.parametrize("termin", ["KW 47", "Q4", "2026-02-30", "laufend", ""])
+def test_an_unusable_termin_does_not_sink_the_import(tmp_path: Path, termin: str):
+    """A Beschlussliste routinely carries rows with no usable date."""
+    payload = _beschluss_payload()
+    payload["pendenzen"][0]["termin"] = termin
+    result = _run_import(payload, tmp_path)
+    assert result.errors == []
+    assert result.created == 2
+
+
+# --------------------------------------------------------------------------- #
+# Projektablaufplan_Detail — spans, not points
+# --------------------------------------------------------------------------- #
+
+
+def _ablauf_payload(**over) -> dict:
+    payload = {
+        "schema": "hermes.ablaufplan/v1",
+        "project_ref": "proj/webshop",
+        "project_label": "Webshop",
+        "phasen": [
+            {"external_ref": "ph/konzept", "titel": "Konzept"},
+            {"external_ref": "ph/bau", "titel": "Realisierung"},
+        ],
+        "vorgaenge": [
+            {
+                "external_ref": "vg/detailkonzept",
+                "titel": "Detailkonzept erstellen",
+                "art": "vorgang",
+                "phase_ref": "ph/konzept",
+                "start": "2026-06-01",
+                "ende": "2026-07-15",
+                "verantwortlich": "Fachbereich",
+                "status": "erledigt",
+                "fortschritt_prozent": 100,
+            },
+            {
+                "external_ref": "vg/abnahme",
+                "titel": "Konzept-Abnahme",
+                "art": "meilenstein",
+                "phase_ref": "ph/konzept",
+                "ende": "2026-07-15",
+                "status": "offen",
+                "vorgaenger_refs": ["vg/detailkonzept"],
+            },
+        ],
+    }
+    payload.update(over)
+    return payload
+
+
+def test_ablaufplan_produces_gantt_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result = _run_import(_ablauf_payload(), tmp_path)
+    assert result.errors == []
+
+    rows = {r.title: r for r in _dashboard(tmp_path, monkeypatch).ablaufplan}
+    assert set(rows) == {"Detailkonzept erstellen", "Konzept-Abnahme"}
+
+    bar = rows["Detailkonzept erstellen"]
+    assert bar.kind == "vorgang"
+    assert (bar.start, bar.end) == ("2026-06-01", "2026-07-15")
+    assert bar.phase == "Konzept"
+    assert bar.owner == "Fachbereich"
+    assert bar.status == "erledigt"
+    assert bar.progress_pct == 100
+
+
+def test_a_milestone_has_no_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A milestone is a point; a start would draw it as a bar."""
+    _run_import(_ablauf_payload(), tmp_path)
+    rows = {r.title: r for r in _dashboard(tmp_path, monkeypatch).ablaufplan}
+    ms = rows["Konzept-Abnahme"]
+    assert ms.kind == "meilenstein"
+    assert ms.start == ""
+    assert ms.end == "2026-07-15"
+
+
+def test_a_milestone_start_is_discarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Copilot sometimes emits one anyway; it must not become a bar."""
+    payload = _ablauf_payload()
+    payload["vorgaenge"][1]["start"] = "2026-07-01"
+    _run_import(payload, tmp_path)
+    rows = {r.title: r for r in _dashboard(tmp_path, monkeypatch).ablaufplan}
+    assert rows["Konzept-Abnahme"].start == ""
+
+
+def test_plan_status_is_not_overwritten_by_the_calendar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An overdue task is late, not finished — the plan's status is kept.
+
+    ``TimelineEntry`` derives status from the due date, which is right for a
+    point but would silently mark every past-dated activity "closed".
+    """
+    payload = _ablauf_payload()
+    payload["vorgaenge"][0]["status"] = "laufend"
+    payload["vorgaenge"][0]["ende"] = "2020-01-31"  # long past
+    _run_import(payload, tmp_path)
+
+    rows = {r.title: r for r in _dashboard(tmp_path, monkeypatch).ablaufplan}
+    assert rows["Detailkonzept erstellen"].status == "laufend"
+
+
+def test_phase_reference_to_an_unknown_phase_is_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Never invent a phase — the row groups under "no phase" instead."""
+    payload = _ablauf_payload()
+    payload["vorgaenge"][0]["phase_ref"] = "ph/gibt-es-nicht"
+    _run_import(payload, tmp_path)
+    rows = {r.title: r for r in _dashboard(tmp_path, monkeypatch).ablaufplan}
+    assert rows["Detailkonzept erstellen"].phase == ""
+
+
+def test_phases_do_not_become_bars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A phase is a container; emitting it as an item adds phantom bars."""
+    _run_import(_ablauf_payload(), tmp_path)
+    titles = {r.title for r in _dashboard(tmp_path, monkeypatch).ablaufplan}
+    assert "Konzept" not in titles
+    assert "Realisierung" not in titles
+
+
+def test_progress_is_clamped_to_a_percentage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = _ablauf_payload()
+    payload["vorgaenge"][0]["fortschritt_prozent"] = 250
+    _run_import(payload, tmp_path)
+    rows = {r.title: r for r in _dashboard(tmp_path, monkeypatch).ablaufplan}
+    assert rows["Detailkonzept erstellen"].progress_pct == 100
+
+
+def test_ablaufplan_still_feeds_deadlines_and_ics(tmp_path: Path):
+    """It writes the same schedule.json, so the CLI keeps working."""
+    from hermes_assistant.scheduling.model import Schedule
+
+    _run_import(_ablauf_payload(), tmp_path)
+    sched_file = tmp_path / "projects" / "webshop" / "schedule.json"
+    assert sched_file.is_file()
+    sched = Schedule.model_validate_json(sched_file.read_text(encoding="utf-8"))
+    assert {i.title for i in sched.items} == {
+        "Detailkonzept erstellen", "Konzept-Abnahme"
+    }
+
+
+def test_a_plain_timeline_import_still_validates(tmp_path: Path):
+    """The new ScheduledItem fields are optional, so old exports are unaffected."""
+    from hermes_assistant.scheduling.model import Schedule
+
+    _run_import(_extract_example("copilot_timeline"), tmp_path)
+    sched_file = tmp_path / "projects" / "webshop-relaunch" / "schedule.json"
+    sched = Schedule.model_validate_json(sched_file.read_text(encoding="utf-8"))
+    assert sched.items
+    assert all(i.status == "offen" and i.phase == "" for i in sched.items)

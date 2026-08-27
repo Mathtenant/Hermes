@@ -195,3 +195,40 @@ def test_all_paths_branching(store: TaskStore) -> None:
     assert len(paths) == 2  # two leaves → two paths
     for path in paths:
         assert path[0].id == root_id
+
+
+def test_update_accepts_a_plain_date_field() -> None:
+    """`update(due_date=date(...))` used to raise inside json.dumps.
+
+    ``_ISOEncoder`` handled ``datetime`` but not ``date``. ``datetime`` is a
+    subclass of ``date`` and not the reverse, so a plain ``date`` — what
+    ``Pendenz.due_date`` holds — fell through to the base encoder and raised
+    TypeError. Creation never hit it because pydantic serialises the model
+    itself; only ``update()``, which passes raw values to ``json.dumps``, did.
+    Nothing updated a due date until the Beschlussliste import did.
+    """
+    from datetime import date as _date
+
+    from hermes_assistant.tasks.pendenzen import Pendenz
+
+    store = TaskStore(":memory:")
+    try:
+        pid = store.create(Pendenz(id="", title="Vertrag prüfen"))
+        store.update(pid, due_date=_date(2026, 9, 30))
+        assert str(store.get(pid).due_date) == "2026-09-30"
+    finally:
+        store.close()
+
+
+def test_update_keeps_the_time_component_of_a_datetime() -> None:
+    """The date arm must not shadow datetime and truncate it."""
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    store = TaskStore(":memory:")
+    try:
+        tid = store.create(Task(id="", title="X"))
+        store.update(tid, raised_at=_dt(2026, 9, 30, 14, 25, tzinfo=_UTC))
+        assert "14:25" in str(store.get(tid).raised_at)
+    finally:
+        store.close()

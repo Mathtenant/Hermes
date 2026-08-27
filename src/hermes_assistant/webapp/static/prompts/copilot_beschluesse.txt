@@ -1,0 +1,156 @@
+# Aufgabe
+Du hast Zugriff auf das Projekt-Repository. Werte die PENDENZEN- UND
+BESCHLUSSLISTE aus und gib sie als maschinenlesbares JSON aus. Dieses JSON
+wird von einem lokalen Assistenzsystem (Hermes) eingelesen — es wird NICHT von
+Menschen gelesen und NICHT ausgeführt. Gib ausschliesslich gültiges JSON nach
+dem Schema hermes.beschluesse/v1 aus.
+
+Hinweis: Dieses eine Dokument enthält ZWEI verschiedene Dinge, die der Export
+sauber trennen muss:
+  - BESCHLÜSSE  = bereits gefallene Entscheide. Vergangenheit, abgeschlossen.
+  - PENDENZEN   = daraus folgende offene Handlungen. Zukunft, offen.
+Ein Beschluss ist KEINE Pendenz und eine Pendenz ist KEIN Beschluss. Wenn eine
+Zeile beides enthält („Es wurde entschieden X; Y erledigt das bis Z"), dann
+erzeuge BEIDES: einen Beschluss und eine Pendenz, und verknüpfe sie über
+beschluss_ref.
+
+## Scope
+Projekt: {{PROJECT_TITLE}}
+Quellen: {{REPO_SCOPE}} (nur diese Quellen; keine anderen Projekte, keine
+privaten Mails, keine Screenshots, keine Bilder)
+Stichtag: {{AS_OF_DATE}}
+
+## Ausgabe-Regeln (strikt)
+1. Gib AUSSCHLIESSLICH ein einzelnes JSON-Objekt aus. Keine Einleitung, keine
+   Erklärung, keine Markdown-Code-Fences. Erstes Zeichen "{", letztes "}".
+2. Halte dich EXAKT an das Schema. Keine zusätzlichen, keine umbenannten Felder.
+3. Nicht belegbare Information: Feld weglassen. Rate niemals Termine,
+   Gremien oder Verantwortliche. Ein fehlendes optionales Feld ist korrekt —
+   ein erfundener Wert ist ein Fehler.
+4. external_ref DETERMINISTISCH aus dem Titel bilden (damit wiederholte
+   Exporte keine Duplikate anlegen):
+   - Beschluss: Präfix "bs/", Pendenz: Präfix "pd/".
+   - Danach der Titel in Kleinbuchstaben, Umlaute ausgeschrieben
+     (ä→ae, ö→oe, ü→ue, ß→ss), nur a–z 0–9 -, Leerzeichen → -, max. 60 Zeichen.
+   - Beispiel: „Verzicht auf Eigenentwicklung" → bs/verzicht-auf-eigenentwicklung
+   - IMMER aus dem Titel ableiten, nie aus Position, Nummer oder Reihenfolge.
+5. Erlaubte Enum-Werte (jeder andere Wert ist ungültig):
+   - beschluss.status: beschlossen | umgesetzt | aufgehoben | vertagt
+   - pendenz.priority: low | medium | high | blocker
+   - pendenz.status:   open | closed | blocked
+6. Datumsformat immer YYYY-MM-DD. Keine Zeitangaben, keine Zeitzonen, keine
+   unscharfen Angaben ("Q4", "Ende Jahr", "KW 47"). Ist ein Datum unscharf,
+   lass das Feld weg — der Eintrag bleibt trotzdem gültig.
+7. beschlossen_am ist PFLICHT für jeden Beschluss. Ein Entscheid ohne
+   nachweisbares Datum ist kein Beschluss — lass ihn weg.
+8. beschluss_ref bei einer Pendenz MUSS auf ein external_ref eines Beschlusses
+   in DIESEM Export zeigen. Zeigt es auf nichts, lass das Feld weg.
+9. titel kurz und faktisch. Die Begründung gehört in "begruendung", nicht in
+   den Titel.
+10. Keine Personendaten über Namen/Rolle hinaus: keine E-Mail-Adressen, keine
+   Telefonnummern, keine Pfade, keine Zitate aus vertraulichen Anhängen.
+11. Obergrenze: max. 200 Beschlüsse und max. 300 Pendenzen. Bei mehr: die
+   wichtigsten auswählen (offene und jüngste zuerst).
+
+## Abgrenzung (häufigste Fehlerquelle)
+- Ein RISIKO ist ein unsicheres zukünftiges Ereignis → gehört in den
+  Risiken-Export, nicht hierher.
+- Ein ARBEITSPAKET ist ein struktureller Bestandteil des Projekts → gehört in
+  den Strukturplan-Export, nicht hierher.
+- Ein TERMIN ohne Handlung ist ein Meilenstein → gehört in den Ablaufplan.
+- Eine Pendenz ist eine KONKRETE offene Handlung mit einer verantwortlichen
+  Person oder Rolle.
+
+## Schema
+{
+  "schema": "hermes.beschluesse/v1",
+  "meta": { "generated_at": "<ISO-8601>", "source": "m365_copilot",
+            "repo_scope": "{{REPO_SCOPE}}" },
+  "project_ref": "proj/<slug>",
+  "project_label": "<Anzeigename des Projekts, optional>",
+  "beschluesse": [
+    { "external_ref": "bs/<slug>",
+      "titel": "<der Entscheid in einem Satz>",
+      "beschlossen_am": "YYYY-MM-DD",
+      "gremium": "<entscheidendes Gremium oder Rolle, optional>",
+      "status": "beschlossen|umgesetzt|aufgehoben|vertagt",
+      "begruendung": "<1-2 Sätze, optional>",
+      "betrifft": "<betroffener Bereich/Teilprojekt, optional>",
+      "quelle": "<Dateiname ohne Pfad, optional>" }
+  ],
+  "pendenzen": [
+    { "external_ref": "pd/<slug>",
+      "titel": "<kurze Handlungsbeschreibung>",
+      "verantwortlich": "<Rolle oder Name, optional>",
+      "termin": "YYYY-MM-DD",
+      "prioritaet": "low|medium|high|blocker",
+      "status": "open|closed|blocked",
+      "beschluss_ref": "bs/<slug>",
+      "beschreibung": "<1-2 Sätze, optional>",
+      "quelle": "<Dateiname ohne Pfad, optional>" }
+  ]
+}
+
+## Beispiel (gültig — validiere deine Struktur dagegen)
+{
+  "schema": "hermes.beschluesse/v1",
+  "meta": { "generated_at": "2026-08-22T10:00:00Z", "source": "m365_copilot",
+            "repo_scope": "Webshop-Relaunch" },
+  "project_ref": "proj/webshop-relaunch",
+  "project_label": "Webshop-Relaunch",
+  "beschluesse": [
+    { "external_ref": "bs/verzicht-auf-eigenentwicklung",
+      "titel": "Verzicht auf Eigenentwicklung des Checkout",
+      "beschlossen_am": "2026-06-15",
+      "gremium": "Steuerungsausschuss",
+      "status": "beschlossen",
+      "begruendung": "Time-to-Market und fehlende interne Kapazitaet.",
+      "betrifft": "Teilprojekt Checkout",
+      "quelle": "pendenzen-beschlussliste.xlsx" },
+    { "external_ref": "bs/einfuehrung-in-zwei-wellen",
+      "titel": "Einfuehrung in zwei Wellen statt Big Bang",
+      "beschlossen_am": "2026-07-31",
+      "gremium": "Projektausschuss",
+      "status": "umgesetzt" }
+  ],
+  "pendenzen": [
+    { "external_ref": "pd/vertrag-standardloesung-pruefen",
+      "titel": "Vertrag Standardloesung pruefen",
+      "verantwortlich": "Legal",
+      "termin": "2026-09-30",
+      "prioritaet": "high",
+      "status": "open",
+      "beschluss_ref": "bs/verzicht-auf-eigenentwicklung" },
+    { "external_ref": "pd/wellenplan-abstimmen",
+      "titel": "Wellenplan mit Fachbereich abstimmen",
+      "verantwortlich": "PL",
+      "termin": "2026-09-15",
+      "prioritaet": "medium",
+      "status": "open",
+      "beschluss_ref": "bs/einfuehrung-in-zwei-wellen" }
+  ]
+}
+
+## Checkliste (vor der Ausgabe abarbeiten)
+[ ] Ausgabe ist EIN JSON-Objekt, beginnt mit { und endet mit }.
+[ ] "schema" ist exakt "hermes.beschluesse/v1".
+[ ] Jeder Beschluss hat ein "beschlossen_am" im Format YYYY-MM-DD.
+[ ] Jeder beschluss.status ist beschlossen|umgesetzt|aufgehoben|vertagt.
+[ ] Jede prioritaet ist low|medium|high|blocker.
+[ ] Jedes beschluss_ref zeigt auf einen Beschluss in DIESEM Export.
+[ ] Jedes external_ref beginnt mit "bs/" bzw. "pd/" und ist aus dem Titel
+    abgeleitet.
+[ ] Keine Risiken, keine Arbeitspakete, keine reinen Termine in den Listen.
+
+## Häufige Fehler (unbedingt vermeiden)
+- KEINE Markdown-Code-Fences (``` ) um das JSON.
+- KEINE erklärenden Sätze vor oder nach dem JSON.
+- KEIN Beschluss, der eigentlich eine offene Pendenz ist („soll noch
+  entschieden werden" ist KEIN Beschluss — entweder weglassen oder als
+  Pendenz erfassen).
+- KEINE Prioritäten wie "hoch"/"mittel" — hier gilt low|medium|high|blocker.
+- KEIN Status wie "offen"/"erledigt" bei Pendenzen — hier gilt
+  open|closed|blocked.
+- KEINE erfundenen Gremien oder Verantwortlichen — im Zweifel Feld weglassen.
+- KEINE laufenden Nummern aus der Liste als external_ref („bs/1", „bs/2") —
+  die ändern sich zwischen Exporten und erzeugen Duplikate.

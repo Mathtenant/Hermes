@@ -56,6 +56,34 @@ _TASK_STATUS_TABLE: dict[str, str] = {
     "blocked": "blocked",
 }
 
+# Copilot ``vorgaenge.status`` → ``ScheduledItem.status``. Kept in German
+# because it is a *plan* vocabulary, not the task lifecycle: "laufend" has no
+# counterpart in open/closed/blocked, and collapsing it would lose exactly the
+# thing a flow plan is read for — what is in flight right now.
+_ABLAUF_STATUS_TABLE: dict[str, str] = {
+    "offen": "offen",
+    "laufend": "laufend",
+    "in_arbeit": "laufend",
+    "in_progress": "laufend",
+    "erledigt": "erledigt",
+    "abgeschlossen": "erledigt",
+    "done": "erledigt",
+    "blockiert": "blockiert",
+    "blocked": "blockiert",
+}
+
+# Copilot ``beschluesse.status`` → ``Beschluss.decision_status``.
+_BESCHLUSS_STATUS_TABLE: dict[str, str] = {
+    "beschlossen": "beschlossen",
+    "entschieden": "beschlossen",
+    "umgesetzt": "umgesetzt",
+    "erledigt": "umgesetzt",
+    "aufgehoben": "aufgehoben",
+    "widerrufen": "aufgehoben",
+    "vertagt": "vertagt",
+    "zurueckgestellt": "vertagt",
+}
+
 # Copilot ``wbs.node_kind`` → ``Task.node_kind``. "phase" has no direct
 # counterpart; it maps to "deliverable" because in a HERMES WBS a phase is the
 # grouping node that holds deliverables.
@@ -355,6 +383,188 @@ def _adapt_timeline_v1(payload: dict) -> dict:
         ],
         "_skipped_sections": [],
     }
+
+
+@_register("hermes.ablaufplan/v1")
+def _adapt_ablaufplan_v1(payload: dict) -> dict:
+    """Map the detailed flow plan (Projektablaufplan_Detail) → ``schedule``.
+
+    Lands in the same ``schedule.json`` the timeline export writes, so
+    ``hermes deadlines`` and ``hermes ics`` keep working unchanged. The extra
+    span fields — phase, owner, status, progress — ride along on
+    ``ScheduledItem``, which is what turns a list of dates into a Gantt.
+
+    Phases are a lookup table, not rows: they exist to give each activity a
+    display name to group under, and emitting them as items too would put
+    phantom bars on the chart.
+    """
+    activities = payload.get("vorgaenge")
+    if activities is None:
+        return {"_skipped_sections": []}
+    if not isinstance(activities, list):
+        raise ValueError("'vorgaenge' must be a JSON array")
+
+    project_ref = str(payload.get("project_ref") or "").strip()
+    project_id = _strip_prefix(project_ref, "proj/") or "imported-project"
+
+    phase_names: dict[str, str] = {}
+    raw_phases = payload.get("phasen")
+    if isinstance(raw_phases, list):
+        for ph in raw_phases:
+            if isinstance(ph, dict) and ph.get("external_ref"):
+                phase_names[str(ph["external_ref"])] = str(ph.get("titel", ""))
+
+    items: list[dict[str, Any]] = []
+    for a in activities:
+        if not isinstance(a, dict):
+            continue
+        title = str(a.get("titel", ""))
+        art = str(a.get("art", "vorgang")).lower()
+        ext_ref = a.get("external_ref")
+
+        item: dict[str, Any] = {
+            "title": title,
+            # A milestone is a point, so its date is the "due"; a task's due
+            # is the end of its bar. Both live in the same field because the
+            # ICS exporter and the deadline view only ever ask "when".
+            "due": str(a.get("ende", "")),
+            "kind": "milestone" if art == "meilenstein" else "task",
+            "item_id": _strip_prefix(str(ext_ref), "vg/") if ext_ref else _slug(title),
+            "status": _ABLAUF_STATUS_TABLE.get(
+                str(a.get("status", "offen")).lower(), "offen"
+            ),
+        }
+        # Only a real activity gets a start. A milestone with one would render
+        # as a zero-or-more-day bar instead of a diamond.
+        if art != "meilenstein" and a.get("start"):
+            item["start"] = str(a["start"])
+
+        phase_ref = a.get("phase_ref")
+        if phase_ref and str(phase_ref) in phase_names:
+            item["phase"] = phase_names[str(phase_ref)]
+
+        owner = a.get("verantwortlich")
+        if owner:
+            item["owner"] = str(owner)
+
+        progress = a.get("fortschritt_prozent")
+        if isinstance(progress, (int, float)):
+            item["progress_pct"] = max(0, min(100, int(progress)))
+
+        preds = a.get("vorgaenger_refs")
+        if isinstance(preds, list):
+            item["depends_on"] = [
+                _strip_prefix(str(p), "vg/") for p in preds if p
+            ]
+
+        note = a.get("notiz")
+        if note:
+            item["note"] = str(note)
+        items.append(item)
+
+    return {
+        "schedule": [
+            {
+                "project_id": project_id,
+                "project_label": str(payload.get("project_label") or project_id),
+                "items": items,
+            }
+        ],
+        "_skipped_sections": [],
+    }
+
+
+@_register("hermes.beschluesse/v1")
+def _adapt_beschluesse_v1(payload: dict) -> dict:
+    """Map a Pendenzen- und Beschlussliste → ``beschluesse`` + ``pendenzen``.
+
+    One source document, two entity types. The split matters: a Beschluss is a
+    settled fact with a date and a deciding body, a Pendenz is an open action
+    — and a row that states both produces one of each, linked through
+    ``source_ref`` so the decision can show its follow-up load.
+    """
+    decisions = payload.get("beschluesse")
+    pendenzen = payload.get("pendenzen")
+    if decisions is None and pendenzen is None:
+        return {"_skipped_sections": []}
+    if decisions is not None and not isinstance(decisions, list):
+        raise ValueError("'beschluesse' must be a JSON array")
+    if pendenzen is not None and not isinstance(pendenzen, list):
+        raise ValueError("'pendenzen' must be a JSON array")
+
+    out: dict[str, Any] = {"_skipped_sections": []}
+
+    adapted_decisions: list[dict[str, Any]] = []
+    known_refs: set[str] = set()
+    for d in decisions or []:
+        if not isinstance(d, dict):
+            continue
+        title = str(d.get("titel", ""))
+        ext_ref = str(d.get("external_ref") or "") or f"bs/{_slug(title)}"
+        known_refs.add(ext_ref)
+        row: dict[str, Any] = {
+            "external_ref": ext_ref,
+            "title": title,
+            "decision_status": _BESCHLUSS_STATUS_TABLE.get(
+                str(d.get("status", "beschlossen")).lower(), "beschlossen"
+            ),
+        }
+        for src, dst in (
+            ("beschlossen_am", "decided_on"),
+            ("gremium", "decided_by"),
+            ("begruendung", "rationale"),
+            ("betrifft", "affects"),
+            ("quelle", "source_hint"),
+        ):
+            value = d.get(src)
+            if value:
+                row[dst] = str(value)
+        adapted_decisions.append(row)
+    if decisions is not None:
+        out["beschluesse"] = adapted_decisions
+
+    adapted_pendenzen: list[dict[str, Any]] = []
+    for p in pendenzen or []:
+        if not isinstance(p, dict):
+            continue
+        title = str(p.get("titel", ""))
+        ext_ref = str(p.get("external_ref") or "") or f"pd/{_slug(title)}"
+        row = {
+            "id": ext_ref,
+            "external_ref": ext_ref,
+            "title": title,
+            # Everything on this list came off a decision log, whether or not
+            # the row names the decision it followed from.
+            "source": "decision",
+            "priority": str(p.get("prioritaet", "medium")).lower(),
+        }
+        status = _TASK_STATUS_TABLE.get(str(p.get("status", "open")).lower())
+        if status:
+            row["status"] = status
+        owner = p.get("verantwortlich")
+        if owner:
+            row["owner"] = str(owner)
+        due = p.get("termin")
+        if due:
+            row["due_date"] = str(due)
+        desc = p.get("beschreibung")
+        if desc:
+            row["description"] = str(desc)
+
+        # source_ref carries the link to the raising decision. A dangling
+        # reference is dropped rather than stored: a Pendenz pointing at a
+        # decision that is not in this export would count towards nothing and
+        # quietly misreport the follow-up load on some other Beschluss.
+        beschluss_ref = str(p.get("beschluss_ref") or "")
+        if beschluss_ref and beschluss_ref in known_refs:
+            row["source_ref"] = beschluss_ref
+        elif p.get("quelle"):
+            row["source_ref"] = str(p["quelle"])
+        adapted_pendenzen.append(row)
+    if pendenzen is not None:
+        out["pendenzen"] = adapted_pendenzen
+
+    return out
 
 
 @_register("hermes.project_state/v1")

@@ -3,7 +3,7 @@
  * Requires (in load order): vendor/vue.global.prod.js, components.js, screens.js
  */
 /* global Vue, OverviewScreen, ProjectListScreen, ProjectDetailScreen,
-          PendenzenScreen, ReviewsScreen, RisksScreen,
+          PendenzenScreen, ReviewsScreen, RisksScreen, AblaufplanScreen,
           WbsNodeItem, WbsTab, TimelineTab, KanbanTab */
 (function () {
 'use strict';
@@ -13,7 +13,9 @@ const {
 } = Vue;
 
 // Screens that can be reached from the sidebar / hash router.
-const SCREENS = ['overview', 'projects', 'detail', 'pendenzen', 'risks', 'reviews'];
+const SCREENS = [
+  'overview', 'projects', 'detail', 'plan', 'pendenzen', 'risks', 'reviews',
+];
 
 // Sidebar icons: SVG path data on a 24×24 grid, drawn as strokes so they
 // inherit the nav item's colour and stay optically consistent with each other
@@ -23,6 +25,7 @@ const NAV_ICONS = {
   overview:  'M4 5h7v6H4zM13 5h7v4h-7zM13 11h7v8h-7zM4 13h7v6H4z',
   projects:  'M4 6h16M4 12h16M4 18h16',
   detail:    'M4 6h9M4 12h13M4 18h7M19 5v4M17 7h4',
+  plan:      'M4 6h9M8 12h10M4 18h7M4 4v16',
   pendenzen: 'M5 21V4h11l-1.5 3.5L16 11H5',
   risks:     'M12 4l8.5 15h-17zM12 10v4M12 17.2v.1',
   reviews:   'M4.5 12.5l4.5 4.5 10.5-11',
@@ -220,6 +223,10 @@ const PROMPT_KINDS = [
     hint: 'Risikoregister' },
   { key: 'pendenzen', label: 'Pendenzen', file: 'copilot_pendenzen',
     hint: 'Offene Punkte und Action Items' },
+  { key: 'beschluesse', label: 'Pendenzen & Beschlüsse', file: 'copilot_beschluesse',
+    hint: 'Beschlussliste — Entscheide plus die Pendenzen daraus' },
+  { key: 'ablaufplan', label: 'Ablaufplan (Detail)', file: 'copilot_ablaufplan',
+    hint: 'Phasen und Vorgänge mit Start/Ende — speist den Balkenplan' },
   { key: 'full', label: 'Alles (Gesamtexport)', file: 'copilot_state_export',
     hint: 'Einmaliger Rundum-Export — langsamer, fehleranfälliger' },
 ];
@@ -429,6 +436,7 @@ const App = {
     PendenzenScreen,
     ReviewsScreen,
     RisksScreen,
+    AblaufplanScreen,
   },
   setup() {
     // Surface API errors as a toast
@@ -477,6 +485,8 @@ const App = {
       timeline: state.data?.timeline?.length ?? 0,
       tasks: countTree(state.data?.wbs),
       pendenzen: state.data?.pendenzen?.length ?? 0,
+      ablaufplan: state.data?.ablaufplan?.length ?? 0,
+      decisions: state.data?.decisions?.length ?? 0,
       risks: state.data?.risks?.length ?? 0,
       reviews: state.data?.reviews?.length ?? 0,
     }));
@@ -486,18 +496,20 @@ const App = {
       { key: 'projects',  label: 'Projects',  shortcut: '2', icon: NAV_ICONS.projects,  count: counts.value.projects },
       { key: 'detail',    label: 'Timeline & WBS', shortcut: '3', icon: NAV_ICONS.detail,
         count: counts.value.tasks + counts.value.timeline },
-      { key: 'pendenzen', label: 'Pendenzen', shortcut: '4', icon: NAV_ICONS.pendenzen, count: counts.value.pendenzen },
-      { key: 'risks',     label: 'Risks',     shortcut: '5', icon: NAV_ICONS.risks,     count: counts.value.risks },
-      { key: 'reviews',   label: 'Reviews',   shortcut: '6', icon: NAV_ICONS.reviews,   count: counts.value.reviews },
+      { key: 'plan',      label: 'Ablaufplan', shortcut: '4', icon: NAV_ICONS.plan,      count: counts.value.ablaufplan },
+      { key: 'pendenzen', label: 'Pendenzen', shortcut: '5', icon: NAV_ICONS.pendenzen, count: counts.value.pendenzen },
+      { key: 'risks',     label: 'Risks',     shortcut: '6', icon: NAV_ICONS.risks,     count: counts.value.risks },
+      { key: 'reviews',   label: 'Reviews',   shortcut: '7', icon: NAV_ICONS.reviews,   count: counts.value.reviews },
     ]);
 
     const shortcuts = [
       ['1', 'Overview'],
       ['2', 'Projects'],
       ['3', 'Timeline & WBS'],
-      ['4', 'Pendenzen'],
-      ['5', 'Risks'],
-      ['6', 'Reviews'],
+      ['4', 'Ablaufplan'],
+      ['5', 'Pendenzen'],
+      ['6', 'Risks'],
+      ['7', 'Reviews'],
       ['r', 'Refresh data'],
       ['i', 'Import JSON'],
       ['d', 'Toggle dark / light theme'],
@@ -528,7 +540,8 @@ const App = {
     // on another screen.
     const ENTITY_DESTINATIONS = {
       tasks: { label: 'Arbeitspakete', screen: 'Strukturplan & Kanban' },
-      schedule: { label: 'Terminplan', screen: 'Timeline' },
+      schedule: { label: 'Terminplan', screen: 'Timeline und Ablaufplan' },
+      beschluesse: { label: 'Beschlüsse', screen: 'Pendenzen → Beschlüsse' },
       risks: { label: 'Risiken', screen: 'Risks' },
       pendenzen: { label: 'Pendenzen', screen: 'Pendenzen' },
       projects: { label: 'Projekte', screen: 'Projects' },
@@ -667,6 +680,12 @@ const App = {
           :project-id="state.projectId"
           @back="clearProject"
           @changed="refresh"
+        />
+        <ablaufplan-screen
+          v-else-if="state.screen === 'plan'"
+          :data="state.data"
+          :loading="state.loading"
+          :error="state.error"
         />
         <pendenzen-screen
           v-else-if="state.screen === 'pendenzen'"

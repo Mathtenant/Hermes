@@ -911,7 +911,9 @@ SQLite task/job stores + schedule.json files
 
 **`/api/dashboard` — DashboardData fields:** `generated_at`, `scope`, `range_start`, `range_end`, `projects`, `timeline`, `kanban`, `wbs`, `pendenzen`, `reviews`, `risks`. The `risks` array carries only safe fields per `RiskRow` (`id`, `title`, `severity`, `likelihood`, `status`, `score`, `updated_at`) — confidential risks and the `owner` field are excluded.
 
-**Keyboard shortcuts:** `1`–`6` switch screens · `r` refresh · `i` import JSON · `d` toggle dark/light · `?` help · `Esc` close dialog. Theme persisted in `localStorage`.
+**Keyboard shortcuts:** `1`–`7` switch screens · `r` refresh · `i` import JSON · `d` toggle dark/light · `?` help · `Esc` close dialog. Theme persisted in `localStorage`.
+
+**Ablaufplan (Gantt).** Bars are 14px in a 30px row — the leftover is air, not a fatter bar — with both ends rounded, since a span has no baseline to sit square against. Progress rides *inside* the bar as a darkening wash rather than a fixed colour, so it reads as a darker step of whatever hue the bar already has (a blue step over a red blocked bar produced a muddy third hue belonging to neither palette). Only `erledigt` and `blockiert` draw on the reserved status palette — those are the two that genuinely mean good and bad; `laufend` and `offen` take the accent ramp and a neutral rather than borrowing a status colour to mean something it does not. A milestone not yet reached is a *hollow* diamond, so filled-vs-hollow carries "still ahead" even in greyscale. Every status appears in the legend and again as a word in the table view, which is the chart's accessible equal rather than a fallback.
 
 **Kanban is writable.** Each card carries a done toggle, and its detail modal a three-way status control (To Do / Blocked / Done). Both `POST /api/tasks/{id}/status` and then re-fetch the dashboard rather than moving the card locally — a card's column *is* its status, derived server-side, so a local move could disagree with the database. The card is disabled while its write is in flight, so a double-tap cannot queue two conflicting writes.
 
@@ -937,7 +939,23 @@ Step 1 offers one prompt per screen instead of a single whole-project export. Co
 | `copilot_timeline.txt` | `hermes.timeline/v1` | Timeline | `schedule` → `<projects_root>/<id>/schedule.json` |
 | `copilot_risks.txt` | `hermes.risks/v1` | Risks | `risks` → RiskRegistry |
 | `copilot_pendenzen.txt` | `hermes.pendenzen/v1` | Pendenzen | `pendenzen` → TaskStore |
+| `copilot_beschluesse.txt` | `hermes.beschluesse/v1` | Pendenzen → **Beschlüsse** | `beschluesse` + `pendenzen` → TaskStore |
+| `copilot_ablaufplan.txt` | `hermes.ablaufplan/v1` | **Ablaufplan** (Gantt) | `schedule` → `<projects_root>/<id>/schedule.json` |
 | `copilot_state_export.txt` | `hermes.project_state/v1` | one-shot bootstrap | all of the above except tasks/schedule |
+
+#### The two documents these project folders actually contain
+
+`Pendenzen- und Beschlussliste` and `Projektablaufplan_Detail` turn up in most project folders, and neither fitted an existing prompt.
+
+**Beschlussliste — one document, two entity types.** A *Beschluss* is a settled fact, identified by when it was taken and by whom; a *Pendenz* is an open action, often one a Beschluss set in motion. The prompt makes the split explicit and produces both from a row that states both, linked through `beschluss_ref` → `Pendenz.source_ref` — a field documented as "id of the review/decision/meeting that raised it" long before anything populated it. That link is what lets each decision show its follow-up load (`n von m Pendenzen offen`), which is the reason the two lists share a screen. A `beschluss_ref` pointing outside the export is dropped rather than stored, so it cannot inflate some other decision's count. A decision with no date is rejected: that is a proposal, not a Beschluss.
+
+Decisions are stored as `Task` nodes with `node_kind="decision"` and their own `decision_status` (beschlossen / umgesetzt / aufgehoben / vertagt), mapped onto the shared open/closed lifecycle by `Beschluss.lifecycle_for()`. The vocabulary could **not** override `Task.status`: `TaskStore._row_to_task` validates every row as a plain `Task`, so a stored `"beschlossen"` would raise on the next read of that row and take every listing with it. Decisions are excluded from `tree_tasks`, so they appear on neither the board nor the WBS — a settled fact is not a work package.
+
+The decision's *Begründung* is imported and stored but deliberately **not** in the API payload: `rationale` is in `_FORBIDDEN_FIELDS`, where it guards the critic's internal reasoning, and a field of that name in any response is a *structural* violation — a hard 500, not a redaction. Renaming it to slip past a name-based blocklist would hollow the guard out, and the free-text justification is also the part of a Beschlussliste most likely to quote confidential material.
+
+**Ablaufplan — spans, not points.** The Timeline screen plots one point per due date. A detailed flow plan carries a real start *and* end, a phase, an owner and a progress figure, so `ScheduledItem` gained four optional fields (`phase`, `owner`, `status`, `progress_pct`) and `DashboardData` a separate `ablaufplan: list[GanttRow]`. They are separate because `TimelineEntry.status` is *derived from the date* — right for a point, but it would silently mark every past-dated activity "closed". A flow plan's own status is authoritative: an overdue task is late, not finished, and the Gantt shows both facts. Phases are a lookup table rather than rows, so they never become phantom bars; a milestone deliberately carries no `start`, and one supplied anyway is discarded so it draws as a diamond rather than a bar. Everything still lands in the same `schedule.json`, so `hermes deadlines` and `hermes ics` are unaffected.
+
+**Two pendenzen-import bugs this surfaced.** No adapter or importer ever read a due date, so the Due column was empty on every row; and an update rewrote only `title`, so re-importing a corrected list reported "n updated" and changed nothing anyone could see. Both are fixed, and an unusable Termin ("KW 47", "2026-02-30") now drops the date rather than the row. Writing a date also exposed `_ISOEncoder` handling `datetime` but not `date` — `datetime` subclasses `date`, not the reverse — which had never fired because nothing updated a `date` field before.
 
 **There is deliberately no Kanban prompt.** Kanban and WBS are two renderings of one task tree — Kanban groups it by `status`, WBS nests it by `parent_id` — so a separate export would create two competing sources of truth for the same tasks. One work-breakdown export feeds both screens.
 

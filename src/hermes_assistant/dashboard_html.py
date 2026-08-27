@@ -138,7 +138,13 @@ class GanttRow(BaseModel):
     id: str
     title: str
     phase: str = ""
-    kind: Literal["vorgang", "meilenstein"] = "vorgang"
+    # Three marks, because the sweep produces three shapes of thing:
+    #   vorgang     — has a span, draws as a bar
+    #   meilenstein — a project gate, draws as a diamond
+    #   termin      — a dated obligation with no span (a to-do with a deadline).
+    # Without the third, every dated to-do rendered as a milestone diamond and
+    # became indistinguishable from a Go-Live.
+    kind: Literal["vorgang", "meilenstein", "termin"] = "vorgang"
     start: str = ""            # YYYY-MM-DD; empty for a milestone
     end: str                   # YYYY-MM-DD; the milestone's date, or the bar's end
     owner: str = ""
@@ -146,6 +152,10 @@ class GanttRow(BaseModel):
     progress_pct: int | None = None
     depends_on: list[str] = Field(default_factory=list)
     project_id: str = ""
+    # Altitude and provenance, for the cross-source sweep: which document a
+    # date came from, and whether the row is a gate or a single errand.
+    level: Literal["meilenstein", "arbeitspaket", "aufgabe"] = "arbeitspaket"
+    source_hint: str = ""
 
 
 class DecisionRow(BaseModel):
@@ -242,6 +252,24 @@ _PAGE = _DashTemplate("""\
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _gantt_kind(item: Any) -> str:
+    """Pick the mark for one scheduled item: bar, diamond or tick.
+
+    ``level`` decides first, because it is what the cross-source sweep actually
+    states. Falling back to "has a start?" alone would turn every dated to-do
+    into a milestone diamond — the sweep is full of them, and a Go-Live must
+    not look like "check an invoice by Friday".
+    """
+    from hermes_assistant.scheduling.model import ItemKind
+
+    level = getattr(item, "level", "arbeitspaket")
+    if level == "meilenstein" or item.kind is ItemKind.milestone:
+        return "meilenstein"
+    if item.start:
+        return "vorgang"
+    return "termin"
+
 
 def _to_kanban_card(t: Any) -> KanbanCard:
     prio = ""
@@ -411,11 +439,7 @@ def load_dashboard_data(
                             id=item.item_id,
                             title=item.title,
                             phase=getattr(item, "phase", "") or "",
-                            kind=(
-                                "meilenstein"
-                                if item.kind is ItemKind.milestone or not item.start
-                                else "vorgang"
-                            ),
+                            kind=_gantt_kind(item),
                             start=str(item.start) if item.start else "",
                             end=str(item.due),
                             owner=getattr(item, "owner", None) or "",
@@ -423,6 +447,8 @@ def load_dashboard_data(
                             progress_pct=getattr(item, "progress_pct", None),
                             depends_on=list(item.depends_on or []),
                             project_id=sched.project_id,
+                            level=getattr(item, "level", "arbeitspaket") or "arbeitspaket",
+                            source_hint=getattr(item, "source_hint", "") or "",
                         )
                     )
             except Exception:  # noqa: BLE001

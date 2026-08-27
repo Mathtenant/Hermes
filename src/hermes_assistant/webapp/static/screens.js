@@ -1104,6 +1104,14 @@ const AblaufplanScreen = {
   setup(props) {
     const filterPhase = ref('');
     const filterStatus = ref('');
+    const filterLevel = ref('');
+    const filterSource = ref('');
+    // A cross-source sweep reaches years out — a contract date, a parked
+    // item, a typo'd year. Fitting the axis to the full extent then crushes
+    // everything real into a few pixels at one end, with no way back except
+    // deleting data. The window is centred on today rather than starting
+    // there, because the sweep deliberately includes what is already done.
+    const filterWindow = ref('12');
     const asTable = ref(false);
     const hovered = ref(null);
 
@@ -1126,6 +1134,42 @@ const AblaufplanScreen = {
     };
     const STATUS_ORDER = ['laufend', 'offen', 'blockiert', 'erledigt'];
 
+    // Altitude, for the cross-source sweep. A Go-Live and "check an invoice"
+    // both belong in one dated list, but a lead needs to be able to collapse
+    // to just the gates.
+    const LEVELS = {
+      meilenstein: 'Meilensteine',
+      arbeitspaket: 'Arbeitspakete',
+      aufgabe: 'Aufgaben',
+    };
+    const LEVEL_ORDER = ['meilenstein', 'arbeitspaket', 'aufgabe'];
+
+    // months back, months forward
+    const WINDOWS = {
+      '12': { label: '15 Monate um heute', back: 3, fwd: 12 },
+      '36': { label: '3 Jahre um heute', back: 12, fwd: 24 },
+      'all': { label: 'Ganzer Zeitraum', back: null, fwd: null },
+    };
+    const WINDOW_ORDER = ['12', '36', 'all'];
+
+    function windowBounds() {
+      const w = WINDOWS[filterWindow.value];
+      if (!w || w.back === null) return null;
+      const from = new Date();
+      from.setUTCMonth(from.getUTCMonth() - w.back);
+      const to = new Date();
+      to.setUTCMonth(to.getUTCMonth() + w.fwd);
+      return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+    }
+
+    function inWindow(r) {
+      const b = windowBounds();
+      if (!b) return true;
+      // An item overlaps the window if it has not ended before it starts and
+      // does not begin after it ends — a long bar spanning the window counts.
+      return (r.end >= b.from) && ((r.start || r.end) <= b.to);
+    }
+
     const rows = computed(() => props.data?.ablaufplan ?? []);
 
     const phases = computed(() => {
@@ -1137,10 +1181,45 @@ const AblaufplanScreen = {
       return seen;
     });
 
+    // Which documents the dates came from. Only worth offering as a filter
+    // once a sweep has actually pulled from more than one.
+    const sources = computed(() => {
+      const seen = [];
+      for (const r of rows.value) {
+        if (r.source_hint && !seen.includes(r.source_hint)) seen.push(r.source_hint);
+      }
+      return seen.sort();
+    });
+
     const filtered = computed(() => rows.value.filter(
       r => (!filterPhase.value || (r.phase || 'Ohne Phase') === filterPhase.value)
         && (!filterStatus.value || r.status === filterStatus.value)
+        && (!filterLevel.value || r.level === filterLevel.value)
+        && (!filterSource.value || r.source_hint === filterSource.value)
+        && inWindow(r)
     ));
+
+    // Never hide rows silently: whatever the window leaves out is counted and
+    // offered as one click back to the full extent.
+    const outsideWindow = computed(() => {
+      if (filterWindow.value === 'all') return 0;
+      return rows.value.filter(
+        r => (!filterPhase.value || (r.phase || 'Ohne Phase') === filterPhase.value)
+          && (!filterStatus.value || r.status === filterStatus.value)
+          && (!filterLevel.value || r.level === filterLevel.value)
+          && (!filterSource.value || r.source_hint === filterSource.value)
+          && !inWindow(r)
+      ).length;
+    });
+
+    const levelCounts = computed(() => {
+      const out = {};
+      for (const k of LEVEL_ORDER) out[k] = 0;
+      for (const r of filtered.value) {
+        if (out[r.level] !== undefined) out[r.level] += 1;
+      }
+      return out;
+    });
 
     // Group the filtered rows under their phase, preserving phase order.
     const groups = computed(() => {
@@ -1279,22 +1358,32 @@ const AblaufplanScreen = {
     });
 
     return {
-      filterPhase, filterStatus, asTable, hovered, rows, phases, filtered,
-      groups, ticks, todayLeft, barStyle, milestoneStyle, fmt, duration,
-      isLate, lateCount, nextMilestone, daysToNext, statusCounts,
-      STATUS, STATUS_ORDER,
+      filterPhase, filterStatus, filterLevel, filterSource, asTable, hovered,
+      filterWindow, outsideWindow, WINDOWS, WINDOW_ORDER,
+      rows, phases, sources, filtered, groups, ticks, todayLeft, barStyle,
+      milestoneStyle, fmt, duration, isLate, lateCount, nextMilestone,
+      daysToNext, statusCounts, levelCounts,
+      STATUS, STATUS_ORDER, LEVEL_ORDER,
       statusLabel: (s) => (STATUS[s] || {}).label || s,
       statusClass: (s) => (STATUS[s] || {}).cls || 'is-open',
-      resetFilters() { filterPhase.value = ''; filterStatus.value = ''; },
+      levelLabel: (l) => LEVELS[l] || l,
+      resetFilters() {
+        filterPhase.value = '';
+        filterStatus.value = '';
+        filterLevel.value = '';
+        filterSource.value = '';
+        filterWindow.value = 'all';
+      },
     };
   },
   template: `
     <div>
       <div class="page-header">
         <div>
-          <h1 class="page-title">Ablaufplan</h1>
+          <h1 class="page-title">Termine &amp; Fristen</h1>
           <div class="page-subtitle">
-            Projektablaufplan Detail — Phasen, Vorgänge und Meilensteine als Balkenplan.
+            Alles mit einem Datum — quer über alle Quellen, vom Meilenstein
+            bis zur einzelnen Aufgabe.
           </div>
         </div>
       </div>
@@ -1307,10 +1396,11 @@ const AblaufplanScreen = {
       <div v-else-if="!rows.length" class="card">
         <div class="empty-state">
           <span class="empty-state-icon" aria-hidden="true">◵</span>
-          <div class="empty-state-title">Kein Ablaufplan importiert</div>
+          <div class="empty-state-title">Nichts Datiertes importiert</div>
           <p class="text-sm">
-            Importiere den <code>Projektablaufplan_Detail</code> über
-            <strong>Import JSON → Ablaufplan</strong>.
+            Hol dir mit <strong>Import JSON → Alle Termine &amp; To-dos</strong>
+            einen Querschnitt über alle Projektdokumente, oder importiere den
+            <code>Projektablaufplan_Detail</code> allein.
           </p>
         </div>
       </div>
@@ -1360,7 +1450,24 @@ const AblaufplanScreen = {
             <option value="">Alle Status</option>
             <option v-for="s in STATUS_ORDER" :key="s" :value="s">{{ statusLabel(s) }}</option>
           </select>
-          <button v-if="filterPhase || filterStatus" class="btn btn-ghost" @click="resetFilters">
+          <select class="filter-select" v-model="filterLevel" aria-label="Ebene filtern">
+            <option value="">Jede Flughöhe</option>
+            <option v-for="l in LEVEL_ORDER" :key="l" :value="l">
+              {{ levelLabel(l) }} ({{ levelCounts[l] }})
+            </option>
+          </select>
+          <!-- Only offered once a sweep has actually pulled from more than
+               one document; on a single-source import it is noise. -->
+          <select v-if="sources.length > 1" class="filter-select" v-model="filterSource"
+                  aria-label="Quelle filtern">
+            <option value="">Alle Quellen</option>
+            <option v-for="q in sources" :key="q" :value="q">{{ q }}</option>
+          </select>
+          <select class="filter-select" v-model="filterWindow" aria-label="Zeitraum">
+            <option v-for="w in WINDOW_ORDER" :key="w" :value="w">{{ WINDOWS[w].label }}</option>
+          </select>
+          <button v-if="filterPhase || filterStatus || filterLevel || filterSource"
+                  class="btn btn-ghost" @click="resetFilters">
             Filter zurücksetzen
           </button>
           <!-- The table view is the accessible equal of the chart, not a
@@ -1369,6 +1476,17 @@ const AblaufplanScreen = {
             <button :class="{ active: !asTable }" @click="asTable = false">Balkenplan</button>
             <button :class="{ active: asTable }" @click="asTable = true">Tabelle</button>
           </div>
+        </div>
+
+        <!-- Whatever the window leaves out is said out loud, with one click
+             back to the full extent. -->
+        <div v-if="outsideWindow" class="notice notice-info mb-3">
+          {{ outsideWindow }}
+          {{ outsideWindow === 1 ? 'Eintrag liegt' : 'Einträge liegen' }}
+          ausserhalb des gewählten Zeitraums.
+          <button class="btn-link ml-2" @click="filterWindow = 'all'">
+            Ganzen Zeitraum zeigen
+          </button>
         </div>
 
         <!-- Legend — identity never rests on colour alone. -->
@@ -1380,6 +1498,10 @@ const AblaufplanScreen = {
           <span class="gantt-legend-item">
             <span class="gantt-key is-milestone" aria-hidden="true"></span>
             Meilenstein
+          </span>
+          <span class="gantt-legend-item">
+            <span class="gantt-key is-termin" aria-hidden="true"></span>
+            Termin ohne Dauer
           </span>
           <span class="gantt-legend-item">
             <span class="gantt-key is-today" aria-hidden="true"></span>
@@ -1423,6 +1545,15 @@ const AblaufplanScreen = {
                           :style="milestoneStyle(r)"
                           :aria-label="r.title + ' — Meilenstein am ' + fmt(r.end)"></span>
                   </template>
+                  <!-- A dated obligation with no span: a to-do with a
+                       deadline. Its own mark, so it cannot be mistaken for a
+                       project gate. -->
+                  <template v-else-if="r.kind === 'termin'">
+                    <span class="gantt-termin"
+                          :class="[statusClass(r.status), { 'is-late': isLate(r) }]"
+                          :style="milestoneStyle(r)"
+                          :aria-label="r.title + ' — faellig am ' + fmt(r.end)"></span>
+                  </template>
                   <template v-else>
                     <span class="gantt-bar"
                           :class="[statusClass(r.status), { 'is-late': isLate(r) }]"
@@ -1438,9 +1569,10 @@ const AblaufplanScreen = {
                         :style="{ left: barStyle(r).left }">
                     <strong>{{ r.title }}</strong>
                     <span>{{ statusLabel(r.status) }}<template v-if="isLate(r)"> · überfällig</template></span>
-                    <span v-if="r.kind === 'meilenstein'">{{ fmt(r.end) }}</span>
+                    <span v-if="!r.start">fällig {{ fmt(r.end) }}</span>
                     <span v-else>{{ fmt(r.start) }} – {{ fmt(r.end) }} · {{ duration(r) }}</span>
                     <span v-if="r.owner">{{ r.owner }}</span>
+                    <span v-if="r.source_hint">Quelle: {{ r.source_hint }}</span>
                     <span v-if="r.progress_pct !== null && r.progress_pct !== undefined">
                       {{ r.progress_pct }}% erledigt
                     </span>
@@ -1460,22 +1592,25 @@ const AblaufplanScreen = {
           <table class="data-table">
             <thead>
               <tr>
-                <th>Phase</th><th>Vorgang</th><th>Art</th>
-                <th>Start</th><th>Ende</th><th>Verantwortlich</th>
-                <th>Status</th><th class="text-right">Fortschritt</th>
+                <th>Phase</th><th>Vorgang</th><th>Ebene</th>
+                <th>Start</th><th>Fällig</th><th>Verantwortlich</th>
+                <th>Quelle</th><th>Status</th><th class="text-right">Fortschritt</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="r in filtered" :key="r.id">
                 <td class="text-gray-400">{{ r.phase || '—' }}</td>
                 <td class="max-w-xs truncate" :title="r.title">{{ r.title }}</td>
-                <td class="text-gray-400">{{ r.kind === 'meilenstein' ? 'Meilenstein' : 'Vorgang' }}</td>
+                <td class="text-gray-400">{{ levelLabel(r.level) }}</td>
                 <td class="font-mono text-xs">{{ fmt(r.start) }}</td>
                 <td class="font-mono text-xs">
                   {{ fmt(r.end) }}
                   <span v-if="isLate(r)" class="gantt-late-tag">überfällig</span>
                 </td>
                 <td class="text-gray-400">{{ r.owner || '—' }}</td>
+                <td class="text-gray-400 max-w-xs truncate" :title="r.source_hint">
+                  {{ r.source_hint || '—' }}
+                </td>
                 <td>
                   <span class="chip" :class="'chip-plan-' + r.status">
                     <span class="chip-mark" :class="statusClass(r.status)" aria-hidden="true"></span>

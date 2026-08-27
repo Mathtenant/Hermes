@@ -72,6 +72,28 @@ _ABLAUF_STATUS_TABLE: dict[str, str] = {
     "blocked": "blockiert",
 }
 
+# Copilot ``faelligkeiten.ebene`` → ``ScheduledItem.level``.
+_LEVEL_TABLE: dict[str, str] = {
+    "meilenstein": "meilenstein",
+    "milestone": "meilenstein",
+    "arbeitspaket": "arbeitspaket",
+    "workpackage": "arbeitspaket",
+    "aufgabe": "aufgabe",
+    "task": "aufgabe",
+    "todo": "aufgabe",
+    "pendenz": "aufgabe",
+}
+
+# ...and onto the older calendar vocabulary the ICS exporter and the deadline
+# view already speak. Lossy in one direction — an "aufgabe" and an
+# "arbeitspaket" both become work items — which is why `level` is kept verbatim
+# alongside rather than reconstructed from `kind`.
+_LEVEL_KIND_TABLE: dict[str, str] = {
+    "meilenstein": "milestone",
+    "arbeitspaket": "deadline",
+    "aufgabe": "task",
+}
+
 # Copilot ``beschluesse.status`` → ``Beschluss.decision_status``.
 _BESCHLUSS_STATUS_TABLE: dict[str, str] = {
     "beschlossen": "beschlossen",
@@ -460,6 +482,76 @@ def _adapt_ablaufplan_v1(payload: dict) -> dict:
         note = a.get("notiz")
         if note:
             item["note"] = str(note)
+        items.append(item)
+
+    return {
+        "schedule": [
+            {
+                "project_id": project_id,
+                "project_label": str(payload.get("project_label") or project_id),
+                "items": items,
+            }
+        ],
+        "_skipped_sections": [],
+    }
+
+
+@_register("hermes.faelligkeiten/v1")
+def _adapt_faelligkeiten_v1(payload: dict) -> dict:
+    """Map the cross-source sweep of everything dated → ``schedule``.
+
+    Unlike the per-document exports, this one is a *querschnitt*: one list of
+    every obligation in the project that carries a date, whatever its altitude
+    and whichever document it was found in. It lands in the same
+    ``schedule.json`` as the timeline and Ablaufplan exports, so the Gantt, the
+    Timeline screen, ``hermes deadlines`` and ``hermes ics`` all read it
+    without change — the sweep is a different *question*, not a different
+    store.
+    """
+    rows = payload.get("faelligkeiten")
+    if rows is None:
+        return {"_skipped_sections": []}
+    if not isinstance(rows, list):
+        raise ValueError("'faelligkeiten' must be a JSON array")
+
+    project_ref = str(payload.get("project_ref") or "").strip()
+    project_id = _strip_prefix(project_ref, "proj/") or "imported-project"
+
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        title = str(r.get("titel", ""))
+        level = _LEVEL_TABLE.get(str(r.get("ebene", "arbeitspaket")).lower(), "arbeitspaket")
+        ext_ref = r.get("external_ref")
+
+        item: dict[str, Any] = {
+            "title": title,
+            "due": str(r.get("faellig_am", "")),
+            # The altitude maps onto the existing calendar vocabulary so ICS
+            # and the deadline view keep behaving sensibly, and is also kept
+            # verbatim in `level` because that mapping is lossy.
+            "kind": _LEVEL_KIND_TABLE[level],
+            "level": level,
+            "item_id": _strip_prefix(str(ext_ref), "fk/") if ext_ref else _slug(title),
+            "status": _ABLAUF_STATUS_TABLE.get(
+                str(r.get("status", "offen")).lower(), "offen"
+            ),
+        }
+        # A milestone is a point. One handed a start anyway would draw as a
+        # bar, which is exactly the distinction the sweep has to preserve.
+        if level != "meilenstein" and r.get("start"):
+            item["start"] = str(r["start"])
+
+        for src, dst in (
+            ("verantwortlich", "owner"),
+            ("phase", "phase"),
+            ("quelle", "source_hint"),
+            ("notiz", "note"),
+        ):
+            value = r.get(src)
+            if value:
+                item[dst] = str(value)
         items.append(item)
 
     return {

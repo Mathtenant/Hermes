@@ -1244,6 +1244,8 @@ def _import_schedule(
                     depends_on=[
                         str(d) for d in (item.get("depends_on") or []) if d
                     ],
+                    level=str(item.get("level") or "arbeitspaket"),
+                    source_hint=str(item.get("source_hint") or ""),
                 )
             )
         schedule = _Schedule(

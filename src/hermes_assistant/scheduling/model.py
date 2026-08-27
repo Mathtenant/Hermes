@@ -65,6 +65,16 @@ class ScheduledItem(BaseModel):
     status: Literal["offen", "laufend", "erledigt", "blockiert"] = "offen"
     progress_pct: int | None = None  # 0–100, only when the plan states it
 
+    # --- Cross-source sweep (hermes.faelligkeiten/v1) ---------------------- #
+    # When every dated obligation in the project is swept into one list,
+    # regardless of altitude or which document it came from, two things have to
+    # travel with each row or the list stops being usable: how big the thing is,
+    # and where it was found. Without `level` a Go-Live and "check an invoice"
+    # sit side by side with nothing to sort them; without `source_hint` there is
+    # no way back to the document a date came from when two disagree.
+    level: Literal["meilenstein", "arbeitspaket", "aufgabe"] = "arbeitspaket"
+    source_hint: str = ""      # originating file name, never a path
+
 
 class Schedule(BaseModel):
     """A fully derived, dated schedule for one project."""

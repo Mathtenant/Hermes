@@ -277,6 +277,82 @@ async def refresh(project_id: str | None = Query(default=None)) -> Response:
 
 _TASK_STATUSES = ("open", "closed", "blocked")
 
+# An owner is a role or a name. Anything longer is a sentence that has wandered
+# into the wrong field, and it would be rendered on every row of the plan.
+_MAX_OWNER_LEN = 80
+
+
+@app.post("/api/schedule/{project_id}/items/{item_id}/owner")
+@confidentiality_guard
+async def set_schedule_item_owner(
+    project_id: str, item_id: str, request: Request
+) -> dict[str, Any]:
+    """Reassign one dated obligation to somebody else.
+
+    A swept plan is only as good as its owners, and those are the field an
+    import gets wrong most often — a protocol names "IT", the plan means a
+    person. Fixing that had meant re-running the whole export.
+
+    Body: ``{"owner": "<role or name>"}``; an empty string clears it.
+    """
+    from hermes_assistant.scheduling.model import Schedule
+
+    try:
+        body = _json.loads(await request.body() or b"{}")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Body is not valid JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Body must be a JSON object")
+
+    owner = body.get("owner", "")
+    if not isinstance(owner, str):
+        raise HTTPException(status_code=422, detail="owner must be a string")
+    owner = owner.strip()
+    if len(owner) > _MAX_OWNER_LEN:
+        raise HTTPException(
+            status_code=422, detail=f"owner must be at most {_MAX_OWNER_LEN} characters"
+        )
+    # Whatever is written here is rendered on every row of the plan and shipped
+    # in every dashboard response, so it goes through the same redaction the
+    # importer applies. Without it one pasted email address would 500 the
+    # dashboard permanently.
+    from hermes_assistant.webapp.import_json import _redact_unsafe_text
+
+    owner, redactions = _redact_unsafe_text(owner)
+
+    # The id comes from the URL and is used to build a path, so it must not be
+    # able to climb out of the projects root.
+    # Reuses the importer's guard rather than a second copy: two path checks
+    # that can drift is exactly how a traversal hole opens.
+    from hermes_assistant.webapp.import_json import _is_safe_path_segment
+
+    if not _is_safe_path_segment(project_id):
+        raise HTTPException(status_code=422, detail="Invalid project_id")
+
+    sched_file = Path(settings.projects_path) / project_id / "schedule.json"
+    if not sched_file.is_file():
+        raise HTTPException(status_code=404, detail="Project has no schedule")
+
+    try:
+        schedule = Schedule.model_validate_json(sched_file.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="Internal error") from exc
+
+    for item in schedule.items:
+        if item.item_id == item_id:
+            item.owner = owner or None
+            break
+    else:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    sched_file.write_text(schedule.model_dump_json(indent=2), encoding="utf-8")
+    return {
+        "project_id": project_id,
+        "item_id": item_id,
+        "owner": owner,
+        "redacted": redactions,
+    }
+
 
 @app.post("/api/tasks/{task_id}/status")
 @confidentiality_guard

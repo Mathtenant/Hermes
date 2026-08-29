@@ -259,9 +259,10 @@ class TestJsonImportUI:
         _open_modal(page)
         for key, schema in (
             ("wbs", "hermes.wbs/v1"),
-            ("timeline", "hermes.timeline/v1"),
+            ("faelligkeiten", "hermes.faelligkeiten/v1"),
             ("risks", "hermes.risks/v1"),
             ("pendenzen", "hermes.pendenzen/v1"),
+            ("beschluesse", "hermes.beschluesse/v1"),
             ("full", "hermes.project_state/v1"),
         ):
             page.locator(f'[data-testid="prompt-kind-{key}"]').click()

@@ -77,6 +77,9 @@ Sonst nichts. Insbesondere:
    - status: offen | laufend | erledigt | blockiert
 7. "start" nur bei etwas, das über einen Zeitraum läuft. Ein Meilenstein hat
    nie ein "start". "start" darf nie nach "faellig_am" liegen.
+7a. "fortschritt_prozent": ganze Zahl 0–100, NUR wenn im Dokument belegt.
+   Rate niemals einen Fortschritt aus dem Datum — ein Vorgang in der
+   Vergangenheit ist nicht automatisch fertig. Kein Beleg → Feld weglassen.
 8. "quelle" ist PFLICHT: der Dateiname (ohne Pfad), aus dem der Eintrag
    stammt. Bei mehreren Quellen die massgebliche nennen (siehe Dubletten).
 9. Keine Personendaten über Namen/Rolle hinaus: keine E-Mail-Adressen, keine
@@ -124,6 +127,7 @@ aber nur EINMAL vorkommen.
       "start": "YYYY-MM-DD",
       "ebene": "meilenstein|arbeitspaket|aufgabe",
       "status": "offen|laufend|erledigt|blockiert",
+      "fortschritt_prozent": <0-100, optional>,
       "verantwortlich": "<Rolle oder Name, optional>",
       "phase": "<Phasenname, optional>",
       "quelle": "<Dateiname ohne Pfad>",
@@ -148,6 +152,7 @@ aber nur EINMAL vorkommen.
       "titel": "Schnittstellen realisieren",
       "start": "2026-07-16", "faellig_am": "2026-10-02",
       "ebene": "arbeitspaket", "status": "laufend",
+      "fortschritt_prozent": 65,
       "verantwortlich": "IT", "phase": "Realisierung",
       "quelle": "projektablaufplan_detail.xlsx" },
     { "external_ref": "fk/rechnung-lieferant-pruefen",
@@ -192,4 +197,5 @@ aber nur EINMAL vorkommen.
 - Erledigte Termine weglassen.
 - Denselben Termin doppelt ausgeben, weil er in zwei Dokumenten steht.
 - Unscharfe Angaben zu einem erfundenen Datum machen ("Q4" → 2026-12-31).
+- Einen Fortschritt schätzen, der nirgends steht.
 - Serientermine als hunderte Einzeleinträge ausgeben.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tomllib
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -526,3 +527,130 @@ def test_set_task_status_response_carries_no_extra_fields(status_db) -> None:
     _, task_id = status_db
     body = client.post(f"/api/tasks/{task_id}/status", json={"status": "closed"}).json()
     assert set(body) == {"id", "status", "wbs_number", "updated_at"}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/schedule/{project}/items/{item}/owner
+#
+# The owner is the field an import gets wrong most often — a protocol names a
+# team where the plan means a person. Fixing it had meant re-running the whole
+# export.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def owner_project(tmp_path: Path):
+    """A project directory holding one real schedule.json."""
+    from hermes_assistant.scheduling.model import Schedule, ScheduledItem
+
+    proj = tmp_path / "projects"
+    (proj / "widget").mkdir(parents=True)
+    schedule = Schedule(
+        project_id="widget",
+        generated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        items=[
+            ScheduledItem(
+                uid="hermes-widget-a@local", project_id="widget",
+                project_label="Widget", item_id="a", title="Task A",
+                kind="task", due=date(2026, 6, 1), owner="IT",
+            )
+        ],
+    )
+    (proj / "widget" / "schedule.json").write_text(
+        schedule.model_dump_json(indent=2), encoding="utf-8"
+    )
+    with patch("hermes_assistant.webapp.server.settings.projects_path", str(proj)):
+        yield proj / "widget" / "schedule.json"
+
+
+def _stored_owner(sched_file: Path) -> str | None:
+    from hermes_assistant.scheduling.model import Schedule
+
+    sched = Schedule.model_validate_json(sched_file.read_text(encoding="utf-8"))
+    return sched.items[0].owner
+
+
+def test_set_owner_writes_through_to_disk(owner_project) -> None:
+    resp = client.post(
+        "/api/schedule/widget/items/a/owner", json={"owner": "Frau Meier"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["owner"] == "Frau Meier"
+    assert _stored_owner(owner_project) == "Frau Meier"
+
+
+def test_an_empty_owner_clears_the_assignment(owner_project) -> None:
+    """"Nobody owns this" is a finding a lead needs to be able to record."""
+    assert client.post(
+        "/api/schedule/widget/items/a/owner", json={"owner": "  "}
+    ).status_code == 200
+    assert _stored_owner(owner_project) is None
+
+
+def test_an_email_in_the_owner_is_redacted_not_stored(owner_project) -> None:
+    """One pasted address would otherwise 500 the dashboard permanently.
+
+    The response guard rejects an email anywhere in a payload, and the owner is
+    rendered on every row of the plan — so it goes through the same redaction
+    the importer applies, and the caller is told.
+    """
+    resp = client.post(
+        "/api/schedule/widget/items/a/owner", json={"owner": "a.muster@example.com"}
+    )
+    assert resp.status_code == 200
+    assert "@" not in resp.json()["owner"]
+    assert resp.json()["redacted"]
+    assert "@" not in (_stored_owner(owner_project) or "")
+
+
+def test_owner_length_is_capped(owner_project) -> None:
+    """A sentence in this field would be rendered on every row."""
+    resp = client.post(
+        "/api/schedule/widget/items/a/owner", json={"owner": "x" * 200}
+    )
+    assert resp.status_code == 422
+    assert _stored_owner(owner_project) == "IT"  # untouched
+
+
+@pytest.mark.parametrize("bad", [{"owner": 42}, {"owner": None}, ["x"]])
+def test_owner_rejects_a_non_string(owner_project, bad) -> None:
+    assert client.post(
+        "/api/schedule/widget/items/a/owner", json=bad
+    ).status_code == 422
+
+
+def test_owner_rejects_an_unsafe_project_id(owner_project) -> None:
+    """The id builds a path, so it must not be able to climb out."""
+    resp = client.post(
+        "/api/schedule/not a slug/items/a/owner", json={"owner": "X"}
+    )
+    assert resp.status_code == 422
+
+
+def test_owner_unknown_project_is_404(owner_project) -> None:
+    assert client.post(
+        "/api/schedule/nosuch/items/a/owner", json={"owner": "X"}
+    ).status_code == 404
+
+
+def test_owner_unknown_item_is_404(owner_project) -> None:
+    assert client.post(
+        "/api/schedule/widget/items/nosuch/owner", json={"owner": "X"}
+    ).status_code == 404
+    assert _stored_owner(owner_project) == "IT"
+
+
+def test_setting_an_owner_leaves_the_rest_of_the_schedule_intact(
+    owner_project,
+) -> None:
+    """A rewrite of the file must not lose the fields it does not touch."""
+    from hermes_assistant.scheduling.model import Schedule
+
+    client.post("/api/schedule/widget/items/a/owner", json={"owner": "Neu"})
+    sched = Schedule.model_validate_json(
+        owner_project.read_text(encoding="utf-8")
+    )
+    item = sched.items[0]
+    assert item.title == "Task A"
+    assert str(item.due) == "2026-06-01"
+    assert item.uid == "hermes-widget-a@local"

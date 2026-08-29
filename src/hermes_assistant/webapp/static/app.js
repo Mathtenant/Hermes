@@ -4,7 +4,7 @@
  */
 /* global Vue, OverviewScreen, ProjectListScreen, ProjectDetailScreen,
           PendenzenScreen, ReviewsScreen, RisksScreen, AblaufplanScreen,
-          WbsNodeItem, WbsTab, TimelineTab, KanbanTab */
+          WbsNodeItem, WbsTab, KanbanTab */
 (function () {
 'use strict';
 
@@ -219,16 +219,12 @@ const PROMPT_KINDS = [
     hint: 'Arbeitspakete als Baum — speist WBS und Kanban' },
   { key: 'faelligkeiten', label: 'Alle Termine & To-dos', file: 'copilot_faelligkeiten',
     hint: 'Querschnitt über ALLE Quellen — alles mit Datum, jede Flughöhe' },
-  { key: 'timeline', label: 'Nur Meilensteine', file: 'copilot_timeline',
-    hint: 'Schmaler Export: nur die grossen Termine' },
   { key: 'risks', label: 'Risiken', file: 'copilot_risks',
     hint: 'Risikoregister' },
   { key: 'pendenzen', label: 'Pendenzen', file: 'copilot_pendenzen',
     hint: 'Offene Punkte und Action Items' },
   { key: 'beschluesse', label: 'Pendenzen & Beschlüsse', file: 'copilot_beschluesse',
     hint: 'Beschlussliste — Entscheide plus die Pendenzen daraus' },
-  { key: 'ablaufplan', label: 'Ablaufplan (Detail)', file: 'copilot_ablaufplan',
-    hint: 'Phasen und Vorgänge mit Start/Ende — speist den Balkenplan' },
   { key: 'full', label: 'Alles (Gesamtexport)', file: 'copilot_state_export',
     hint: 'Einmaliger Rundum-Export — langsamer, fehleranfälliger' },
 ];
@@ -688,6 +684,7 @@ const App = {
           :data="state.data"
           :loading="state.loading"
           :error="state.error"
+          @changed="refresh"
         />
         <pendenzen-screen
           v-else-if="state.screen === 'pendenzen'"
@@ -948,7 +945,6 @@ const App = {
 const vueApp = createApp(App);
 vueApp.component('WbsNodeItem', WbsNodeItem);
 vueApp.component('WbsTab', WbsTab);
-vueApp.component('TimelineTab', TimelineTab);
 vueApp.component('KanbanTab', KanbanTab);
 vueApp.mount('#app');
 }());

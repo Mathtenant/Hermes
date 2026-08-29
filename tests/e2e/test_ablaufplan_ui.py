@@ -24,43 +24,43 @@ pytestmark = pytest.mark.e2e
 
 BASE_URL = "http://localhost:8000"
 
+# The plan fixture, expressed in the surviving cross-source schema. Far-future
+# dates keep it from colliding with real data; the default time window excludes
+# them, so the fixtures select "Ganzer Zeitraum" first.
 _ABLAUFPLAN = {
-    "schema": "hermes.ablaufplan/v1",
+    "schema": "hermes.faelligkeiten/v1",
     "project_ref": "proj/e2e-plan",
     "project_label": "E2E Plan",
-    "phasen": [
-        {"external_ref": "ph/e2e-konzept", "titel": "E2E Konzept"},
-        {"external_ref": "ph/e2e-bau", "titel": "E2E Realisierung"},
-    ],
-    "vorgaenge": [
+    "faelligkeiten": [
         {
-            "external_ref": "vg/e2e-konzept-erstellen",
+            "external_ref": "fk/e2e-konzept-erstellen",
             "titel": "E2E Detailkonzept erstellen",
-            "art": "vorgang", "phase_ref": "ph/e2e-konzept",
-            "start": "2099-01-05", "ende": "2099-02-20",
-            "verantwortlich": "Fachbereich", "status": "erledigt",
-            "fortschritt_prozent": 100,
+            "start": "2099-01-05", "faellig_am": "2099-02-20",
+            "ebene": "arbeitspaket", "status": "erledigt",
+            "verantwortlich": "Fachbereich", "phase": "E2E Konzept",
+            "fortschritt_prozent": 100, "quelle": "e2e-ablaufplan.xlsx",
         },
         {
-            "external_ref": "vg/e2e-abnahme",
+            "external_ref": "fk/e2e-abnahme",
             "titel": "E2E Konzept-Abnahme",
-            "art": "meilenstein", "phase_ref": "ph/e2e-konzept",
-            "ende": "2099-02-20", "status": "offen",
+            "faellig_am": "2099-02-20", "ebene": "meilenstein",
+            "status": "offen", "phase": "E2E Konzept",
+            "quelle": "e2e-ablaufplan.xlsx",
         },
         {
-            "external_ref": "vg/e2e-bau-arbeiten",
+            "external_ref": "fk/e2e-bau-arbeiten",
             "titel": "E2E Realisierung durchführen",
-            "art": "vorgang", "phase_ref": "ph/e2e-bau",
-            "start": "2099-02-21", "ende": "2099-06-30",
-            "verantwortlich": "IT", "status": "laufend",
-            "fortschritt_prozent": 45,
+            "start": "2099-02-21", "faellig_am": "2099-06-30",
+            "ebene": "arbeitspaket", "status": "laufend",
+            "verantwortlich": "IT", "phase": "E2E Realisierung",
+            "fortschritt_prozent": 45, "quelle": "e2e-ablaufplan.xlsx",
         },
         {
-            "external_ref": "vg/e2e-blockiert",
+            "external_ref": "fk/e2e-blockiert",
             "titel": "E2E Blockierter Vorgang",
-            "art": "vorgang", "phase_ref": "ph/e2e-bau",
-            "start": "2099-03-01", "ende": "2099-04-15",
-            "status": "blockiert",
+            "start": "2099-03-01", "faellig_am": "2099-04-15",
+            "ebene": "arbeitspaket", "status": "blockiert",
+            "phase": "E2E Realisierung", "quelle": "e2e-ablaufplan.xlsx",
         },
     ],
 }
@@ -439,3 +439,152 @@ def test_the_time_window_hides_nothing_silently(sweep_page: Page):
     sweep_page.click('button:has-text("Ganzen Zeitraum zeigen")')
     sweep_page.wait_for_timeout(400)
     assert sweep_page.locator(".notice-info").count() == 0
+
+
+# --------------------------------------------------------------------------- #
+# Person filter, inline owner editing, and zoom
+# --------------------------------------------------------------------------- #
+
+
+def test_owner_filter_lists_everyone_who_owns_something(sweep_page: Page):
+    opts = sweep_page.locator('[data-testid="filter-owner"] option').all_text_contents()
+    assert any(o.strip() == "IT" for o in opts)
+    assert any(o.strip() == "Controlling" for o in opts)
+    # Unassigned work is a finding, so it gets its own entry rather than being
+    # invisible behind "all".
+    assert any("ohne Verantwortlichen" in o for o in opts)
+
+
+def test_owner_filter_narrows_to_one_person(sweep_page: Page):
+    before = sweep_page.locator(".gantt-row").count()
+    sweep_page.select_option('[data-testid="filter-owner"]', "Controlling")
+    sweep_page.wait_for_timeout(400)
+    after = sweep_page.locator(".gantt-row").count()
+    assert 0 < after < before
+    owners = sweep_page.locator(".gantt-row-owner").all_text_contents()
+    assert {o.strip() for o in owners} == {"Controlling"}
+
+
+def test_owner_filter_can_find_unassigned_work(sweep_page: Page):
+    sweep_page.select_option('[data-testid="filter-owner"]', "__ohne__")
+    sweep_page.wait_for_timeout(400)
+    rows = sweep_page.locator(".gantt-row").all_text_contents()
+    assert any("E2E Go-Live" in r for r in rows)   # the fixture row with no owner
+    assert not any("Controlling" in r for r in rows)
+
+
+def _table(page: Page) -> None:
+    page.click('button:has-text("Tabelle")')
+    page.wait_for_selector(".data-table", timeout=3000)
+
+
+def test_owner_is_editable_and_persists(sweep_page: Page):
+    """The write has to reach disk, not just the rendered table."""
+    _table(sweep_page)
+    row = sweep_page.locator("tbody tr").filter(has_text="E2E Rechnung pruefen").first
+    assert row.locator(".owner-button").inner_text().strip() == "Controlling"
+    row.locator(".owner-button").click()
+    sweep_page.locator(".owner-input").fill("E2E Frau Meier")
+    sweep_page.keyboard.press("Enter")
+    sweep_page.wait_for_timeout(2200)
+
+    row = sweep_page.locator("tbody tr").filter(has_text="E2E Rechnung pruefen").first
+    assert row.locator(".owner-button").inner_text().strip() == "E2E Frau Meier"
+
+    # A reload proves it was written, not just re-rendered.
+    sweep_page.goto(BASE_URL)
+    sweep_page.wait_for_selector(".stat-tile", timeout=10000)
+    sweep_page.click('[data-testid="nav-plan"]')
+    sweep_page.wait_for_selector(".gantt", timeout=5000)
+    sweep_page.select_option('select[aria-label="Zeitraum"]', "all")
+    _table(sweep_page)
+    row = sweep_page.locator("tbody tr").filter(has_text="E2E Rechnung pruefen").first
+    assert row.locator(".owner-button").inner_text().strip() == "E2E Frau Meier"
+
+    # Restore, so the fixture is stable for the next run.
+    row.locator(".owner-button").click()
+    sweep_page.locator(".owner-input").fill("Controlling")
+    sweep_page.keyboard.press("Enter")
+    sweep_page.wait_for_timeout(2000)
+
+
+def test_an_unassigned_row_invites_assignment(sweep_page: Page):
+    _table(sweep_page)
+    row = sweep_page.locator("tbody tr").filter(has_text="E2E Go-Live").first
+    assert "zuweisen" in row.locator(".owner-button").inner_text()
+
+
+def test_escape_abandons_an_owner_edit(sweep_page: Page):
+    _table(sweep_page)
+    row = sweep_page.locator("tbody tr").filter(has_text="E2E Bau").first
+    before = row.locator(".owner-button").inner_text().strip()
+    row.locator(".owner-button").click()
+    sweep_page.locator(".owner-input").fill("Verworfen")
+    sweep_page.keyboard.press("Escape")
+    sweep_page.wait_for_timeout(1200)
+    row = sweep_page.locator("tbody tr").filter(has_text="E2E Bau").first
+    assert row.locator(".owner-button").inner_text().strip() == before
+
+
+def test_zoom_widens_the_track_without_hiding_rows(sweep_page: Page):
+    """Zoom is a different lever from the time window: same rows, more room."""
+    rows_before = sweep_page.locator(".gantt-row").count()
+    width_before = sweep_page.locator(".gantt").bounding_box()["width"]
+    sweep_page.click('[data-testid="zoom-in"]')
+    sweep_page.wait_for_timeout(400)
+    assert sweep_page.locator(".gantt").bounding_box()["width"] > width_before
+    assert sweep_page.locator(".gantt-row").count() == rows_before
+
+
+def test_zoom_out_returns_to_the_fitted_width(sweep_page: Page):
+    width_before = sweep_page.locator(".gantt").bounding_box()["width"]
+    sweep_page.click('[data-testid="zoom-in"]')
+    sweep_page.wait_for_timeout(300)
+    sweep_page.click('[data-testid="zoom-out"]')
+    sweep_page.wait_for_timeout(300)
+    assert sweep_page.locator(".gantt").bounding_box()["width"] == pytest.approx(
+        width_before, rel=0.02
+    )
+
+
+def test_zoom_is_bounded_at_both_ends(sweep_page: Page):
+    assert sweep_page.locator('[data-testid="zoom-out"]').is_disabled()
+    for _ in range(8):
+        if sweep_page.locator('[data-testid="zoom-in"]').is_disabled():
+            break
+        sweep_page.locator('[data-testid="zoom-in"]').click()
+        sweep_page.wait_for_timeout(150)
+    assert sweep_page.locator('[data-testid="zoom-in"]').is_disabled()
+    assert sweep_page.locator('[data-testid="zoom-level"]').inner_text() == "600%"
+
+
+def test_zoom_control_is_absent_in_the_table_view(sweep_page: Page):
+    """It scales a time axis; a table has none."""
+    _table(sweep_page)
+    assert sweep_page.locator('[data-testid="zoom-in"]').count() == 0
+
+
+# --------------------------------------------------------------------------- #
+# What the cleanup removed
+# --------------------------------------------------------------------------- #
+
+
+def test_the_detail_screen_no_longer_carries_a_timeline_tab(page: Page):
+    """It plotted the same schedule.json this screen shows in full, and its
+    status was derived from the date rather than stated by the plan."""
+    page.goto(BASE_URL)
+    page.wait_for_selector(".stat-tile", timeout=10000)
+    page.click('[data-testid="nav-detail"]')
+    page.wait_for_timeout(600)
+    labels = [t.strip() for t in page.locator(".tab-bar .tab-btn").all_text_contents()]
+    assert not any(t.startswith("Timeline") for t in labels), labels
+    assert any(t.startswith("Kanban") for t in labels)
+
+
+def test_the_picker_no_longer_offers_the_subsumed_exports(page: Page):
+    page.goto(BASE_URL)
+    page.wait_for_selector(".stat-tile", timeout=10000)
+    page.click("button:has-text('Import JSON')")
+    page.wait_for_selector('[data-testid="prompt-kind-faelligkeiten"]', timeout=5000)
+    assert page.locator('[data-testid="prompt-kind-ablaufplan"]').count() == 0
+    assert page.locator('[data-testid="prompt-kind-timeline"]').count() == 0

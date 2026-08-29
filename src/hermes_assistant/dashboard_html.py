@@ -150,7 +150,6 @@ class GanttRow(BaseModel):
     owner: str = ""
     status: Literal["offen", "laufend", "erledigt", "blockiert"] = "offen"
     progress_pct: int | None = None
-    depends_on: list[str] = Field(default_factory=list)
     project_id: str = ""
     # Altitude and provenance, for the cross-source sweep: which document a
     # date came from, and whether the row is a gate or a single errand.
@@ -445,7 +444,6 @@ def load_dashboard_data(
                             owner=getattr(item, "owner", None) or "",
                             status=getattr(item, "status", "offen") or "offen",
                             progress_pct=getattr(item, "progress_pct", None),
-                            depends_on=list(item.depends_on or []),
                             project_id=sched.project_id,
                             level=getattr(item, "level", "arbeitspaket") or "arbeitspaket",
                             source_hint=getattr(item, "source_hint", "") or "",

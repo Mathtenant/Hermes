@@ -119,16 +119,6 @@ _NODE_KIND_TABLE: dict[str, str] = {
     "phase": "deliverable",
 }
 
-# Copilot ``timeline.kind`` → ``ItemKind``; German synonyms accepted.
-_TIMELINE_KIND_TABLE: dict[str, str] = {
-    "milestone": "milestone",
-    "meilenstein": "milestone",
-    "deadline": "deadline",
-    "frist": "deadline",
-    "task": "task",
-    "aufgabe": "task",
-}
-
 # Top-level sections in Copilot v1 that the importer cannot store.
 # These are noted in ``_skipped_sections``; never silently dropped.
 _COPILOT_V1_UNMAPPED_SECTIONS: tuple[str, ...] = ("open_assumptions", "decisions")
@@ -354,148 +344,6 @@ def _adapt_wbs_v1(payload: dict) -> dict:
     return out
 
 
-@_register("hermes.timeline/v1")
-def _adapt_timeline_v1(payload: dict) -> dict:
-    """Map the timeline Copilot export → native ``schedule``.
-
-    Produces one schedule document per project, which the importer writes to
-    ``<projects_root>/<project_id>/schedule.json`` — the only source the
-    Timeline screen reads.
-    """
-    entries = payload.get("timeline")
-    if entries is None:
-        return {"_skipped_sections": []}
-    if not isinstance(entries, list):
-        raise ValueError("'timeline' must be a JSON array")
-
-    project_ref = str(payload.get("project_ref") or "").strip()
-    project_id = _strip_prefix(project_ref, "proj/") or "imported-project"
-
-    items: list[dict[str, Any]] = []
-    for e in entries:
-        if not isinstance(e, dict):
-            continue
-        title = str(e.get("title", ""))
-        item: dict[str, Any] = {
-            "title": title,
-            "due": str(e.get("due", "")),
-            "kind": _TIMELINE_KIND_TABLE.get(
-                str(e.get("kind", "milestone")).lower(), "milestone"
-            ),
-        }
-        ext_ref = e.get("external_ref")
-        item["item_id"] = _strip_prefix(str(ext_ref), "ms/") if ext_ref else _slug(title)
-        note = e.get("note")
-        if note:
-            item["note"] = str(note)
-        items.append(item)
-
-    # Deliberately no "projects" entry: _import_schedule already creates
-    # <projects_root>/<project_id>/ when it writes schedule.json. Emitting a
-    # project stub as well would mean a *rejected* timeline still reported
-    # "1 created", telling the user the import succeeded when the thing they
-    # actually asked for was thrown away.
-    return {
-        "schedule": [
-            {
-                "project_id": project_id,
-                "project_label": str(payload.get("project_label") or project_id),
-                "items": items,
-            }
-        ],
-        "_skipped_sections": [],
-    }
-
-
-@_register("hermes.ablaufplan/v1")
-def _adapt_ablaufplan_v1(payload: dict) -> dict:
-    """Map the detailed flow plan (Projektablaufplan_Detail) → ``schedule``.
-
-    Lands in the same ``schedule.json`` the timeline export writes, so
-    ``hermes deadlines`` and ``hermes ics`` keep working unchanged. The extra
-    span fields — phase, owner, status, progress — ride along on
-    ``ScheduledItem``, which is what turns a list of dates into a Gantt.
-
-    Phases are a lookup table, not rows: they exist to give each activity a
-    display name to group under, and emitting them as items too would put
-    phantom bars on the chart.
-    """
-    activities = payload.get("vorgaenge")
-    if activities is None:
-        return {"_skipped_sections": []}
-    if not isinstance(activities, list):
-        raise ValueError("'vorgaenge' must be a JSON array")
-
-    project_ref = str(payload.get("project_ref") or "").strip()
-    project_id = _strip_prefix(project_ref, "proj/") or "imported-project"
-
-    phase_names: dict[str, str] = {}
-    raw_phases = payload.get("phasen")
-    if isinstance(raw_phases, list):
-        for ph in raw_phases:
-            if isinstance(ph, dict) and ph.get("external_ref"):
-                phase_names[str(ph["external_ref"])] = str(ph.get("titel", ""))
-
-    items: list[dict[str, Any]] = []
-    for a in activities:
-        if not isinstance(a, dict):
-            continue
-        title = str(a.get("titel", ""))
-        art = str(a.get("art", "vorgang")).lower()
-        ext_ref = a.get("external_ref")
-
-        item: dict[str, Any] = {
-            "title": title,
-            # A milestone is a point, so its date is the "due"; a task's due
-            # is the end of its bar. Both live in the same field because the
-            # ICS exporter and the deadline view only ever ask "when".
-            "due": str(a.get("ende", "")),
-            "kind": "milestone" if art == "meilenstein" else "task",
-            "item_id": _strip_prefix(str(ext_ref), "vg/") if ext_ref else _slug(title),
-            "status": _ABLAUF_STATUS_TABLE.get(
-                str(a.get("status", "offen")).lower(), "offen"
-            ),
-        }
-        # Only a real activity gets a start. A milestone with one would render
-        # as a zero-or-more-day bar instead of a diamond.
-        if art != "meilenstein" and a.get("start"):
-            item["start"] = str(a["start"])
-
-        phase_ref = a.get("phase_ref")
-        if phase_ref and str(phase_ref) in phase_names:
-            item["phase"] = phase_names[str(phase_ref)]
-
-        owner = a.get("verantwortlich")
-        if owner:
-            item["owner"] = str(owner)
-
-        progress = a.get("fortschritt_prozent")
-        if isinstance(progress, (int, float)):
-            item["progress_pct"] = max(0, min(100, int(progress)))
-
-        preds = a.get("vorgaenger_refs")
-        if isinstance(preds, list):
-            item["depends_on"] = [
-                _strip_prefix(str(p), "vg/") for p in preds if p
-            ]
-
-        note = a.get("notiz")
-        if note:
-            item["note"] = str(note)
-        items.append(item)
-
-    return {
-        "schedule": [
-            {
-                "project_id": project_id,
-                "project_label": str(payload.get("project_label") or project_id),
-                "items": items,
-            }
-        ],
-        "_skipped_sections": [],
-    }
-
-
 @_register("hermes.faelligkeiten/v1")
 def _adapt_faelligkeiten_v1(payload: dict) -> dict:
     """Map the cross-source sweep of everything dated → ``schedule``.
@@ -542,6 +390,10 @@ def _adapt_faelligkeiten_v1(payload: dict) -> dict:
         # bar, which is exactly the distinction the sweep has to preserve.
         if level != "meilenstein" and r.get("start"):
             item["start"] = str(r["start"])
+
+        progress = r.get("fortschritt_prozent")
+        if isinstance(progress, (int, float)):
+            item["progress_pct"] = max(0, min(100, int(progress)))
 
         for src, dst in (
             ("verantwortlich", "owner"),

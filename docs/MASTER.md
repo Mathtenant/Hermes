@@ -885,6 +885,7 @@ SQLite task/job stores + schedule.json files
 | `/api/dashboard` | GET | Full DashboardData JSON (all projects) |
 | `/api/dashboard?project_id=X` | GET | Scoped DashboardData for project X |
 | `/api/refresh` | GET | Same as `/api/dashboard` — fresh disk read |
+| `/api/schedule/{project_id}/items/{item_id}/owner` | POST | Reassign one dated obligation. Body `{"owner": "<role or name>"}`; an empty string clears it. Capped at 80 characters, and run through the importer's redaction — the owner is rendered on every row and shipped in every dashboard response, so one pasted email address would otherwise 500 the dashboard permanently; the response reports what was stripped. `project_id` goes through the importer's own `_is_safe_path_segment` rather than a second copy, since two path checks that can drift is how a traversal hole opens. |
 | `/api/tasks/{id}/status` | POST | Move a task between kanban columns. Body `{"status": "open"\|"closed"\|"blocked"}`; 422 on any other value, 404 on an unknown id. Returns `{id, status, wbs_number, updated_at}` — deliberately narrow, since echoing the whole task would put `description`/`metadata` (neither covered by the dashboard's field allowlist) on the wire. Writes through `TaskStore.update()`, so every move lands in the task's `updates` audit trail as `changed_by="dashboard"`. |
 | `/` and `/*` | GET | Serves `index.html` (SPA fallback) |
 | `/static/*` | GET | CSS, JS, HTML static assets |
@@ -937,12 +938,22 @@ Step 1 offers one prompt per screen instead of a single whole-project export. Co
 |---|---|---|---|
 | `copilot_wbs.txt` | `hermes.wbs/v1` | **WBS + Kanban** | `tasks` → TaskStore |
 | `copilot_faelligkeiten.txt` | `hermes.faelligkeiten/v1` | **Termine & Fristen** (default) | `schedule` → `<projects_root>/<id>/schedule.json` |
-| `copilot_timeline.txt` | `hermes.timeline/v1` | Timeline (narrow variant) | `schedule` → same file |
 | `copilot_risks.txt` | `hermes.risks/v1` | Risks | `risks` → RiskRegistry |
 | `copilot_pendenzen.txt` | `hermes.pendenzen/v1` | Pendenzen | `pendenzen` → TaskStore |
 | `copilot_beschluesse.txt` | `hermes.beschluesse/v1` | Pendenzen → **Beschlüsse** | `beschluesse` + `pendenzen` → TaskStore |
-| `copilot_ablaufplan.txt` | `hermes.ablaufplan/v1` | **Ablaufplan** (Gantt) | `schedule` → `<projects_root>/<id>/schedule.json` |
 | `copilot_state_export.txt` | `hermes.project_state/v1` | one-shot bootstrap | all of the above except tasks/schedule |
+
+#### Removed as subsumed
+
+`copilot_timeline` / `hermes.timeline/v1` and `copilot_ablaufplan` / `hermes.ablaufplan/v1` are gone, along with the web **Timeline tab**. Each produced a strict subset of what the sweep produces, into the same `schedule.json`:
+
+- *timeline* emitted dated points — the sweep's `meilenstein` rows, minus the altitude and provenance.
+- *ablaufplan* emitted phases and dated activities — the sweep's rows with `start`, minus the cross-document reach. Its one unique field, `fortschritt_prozent`, moved into the sweep first so the removal was not a regression.
+- The *Timeline tab* plotted the same `schedule.json` the Termine & Fristen screen now renders in full, and its status was **derived from the date** (`due < today` ⇒ "closed"), which marks an overdue task finished. `DashboardData.timeline` itself stays — the TUI reads it.
+
+Also dropped: `GanttRow.depends_on`, which was populated on every row and rendered nowhere (`ScheduledItem.depends_on` stays — the dependency-dating scheduler in `derive.py` is built on it).
+
+**Kept after checking, despite looking redundant:** `plans.db` (the chat executor lists and reads plan versions), the static HTML dashboard (`hermes dashboard --html` produces a self-contained file you can send), and `copilot_pendenzen` (it covers *undated* action items, which the sweep excludes by design).
 
 #### The cross-source sweep — `hermes.faelligkeiten/v1`
 
@@ -959,6 +970,10 @@ Completed items are deliberately included — dropping them makes the plan look 
 Rows carry `level` (meilenstein / arbeitspaket / aufgabe) and `source_hint` (the originating file). Without the first, a Go-Live and an errand sit side by side with nothing to sort them; without the second there is no way back to the document a date came from when two disagree. `level` also maps onto the older `ItemKind` vocabulary, lossily (an *aufgabe* and an *arbeitspaket* both become work items), which is why it is stored verbatim alongside rather than reconstructed from `kind`.
 
 **Three marks, not two.** `_gantt_kind()` picks by `level` first: a gate is a diamond, a span is a bar, and a dated obligation with no span is an upright tick. A has-a-start test alone would render every dated to-do as a milestone diamond — and a sweep is full of them, so "check an invoice by Friday" would look like a Go-Live.
+
+**Filter by person, and fix the person.** The owner is the field an import gets wrong most often — a protocol names a team where the plan means somebody. The screen filters by `verantwortlich` (with an explicit *ohne Verantwortlichen* entry, because unassigned work is a finding rather than missing data) and the table's owner cell edits in place, writing through `POST /api/schedule/{project}/items/{item}/owner`. Escape restores the draft *before* closing the editor: unmounting a focused input fires `blur`, so a bare close would run the save on the way out and Escape would commit the edit it is meant to abandon.
+
+**Zoom.** A separate lever from the time window: the window changes *which rows* are shown, zoom changes how much room the same rows get, so two bars a few days apart in a busy month can be told apart without hiding anything. It scales the track wider than its container and lets it scroll, 100 % to 600 %, and is absent in the table view — it scales a time axis, and a table has none.
 
 **The time window.** A sweep reaches years out — a contract date, a parked item, a typo'd year — and fitting the axis to the full extent crushes everything real into a few pixels with no way back except deleting data. The view defaults to a window *centred on today* (3 months back, 12 forward), because the sweep includes what is already done. Nothing is hidden silently: whatever falls outside is counted in a notice with one click back to the full extent.
 

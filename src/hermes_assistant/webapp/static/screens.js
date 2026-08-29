@@ -322,52 +322,6 @@ const ProjectListScreen = {
   `,
 };
 
-// ── TimelineTab ────────────────────────────────────────────────────────────
-const TimelineTab = {
-  props: ['entries'],
-  setup(props) {
-    const filterStatus = ref('');
-
-    const filtered = computed(() => {
-      const rows = props.entries ?? [];
-      return filterStatus.value ? rows.filter(e => e.status === filterStatus.value) : rows;
-    });
-
-    function labelClass(status) {
-      if (status === 'blocked') return 'tl-label-blocked';
-      if (status === 'closed') return 'tl-label-closed';
-      return '';
-    }
-
-    return { filterStatus, filtered, labelClass };
-  },
-  template: `
-    <div>
-      <div class="filter-bar">
-        <select class="filter-select" v-model="filterStatus" aria-label="Filter by status">
-          <option value="">All statuses</option>
-          <option value="open">Open</option>
-          <option value="closed">Closed</option>
-          <option value="blocked">Blocked</option>
-          <option value="future">Future</option>
-        </select>
-        <span class="result-count">{{ filtered.length }} items</span>
-      </div>
-      <div v-if="!filtered.length" class="empty-state">
-        <div class="empty-state-title">No timeline items</div>
-        <p class="text-sm">Run <code>hermes schedule</code> to derive one.</p>
-      </div>
-      <div v-for="e in filtered" :key="e.date + e.label" class="tl-entry">
-        <span class="tl-date">{{ e.date }}</span>
-        <span :class="['tl-dot', e.status]" :aria-label="e.status"></span>
-        <span :class="labelClass(e.status)" class="flex-1">{{ e.label }}</span>
-        <span class="text-gray-400 text-xs shrink-0">{{ e.kind }}</span>
-        <span class="text-gray-400 text-xs shrink-0 font-mono">{{ e.project_id }}</span>
-      </div>
-    </div>
-  `,
-};
-
 // ── KanbanTab ──────────────────────────────────────────────────────────────
 const KanbanTab = {
   props: ['columns'],
@@ -524,9 +478,9 @@ const KanbanTab = {
 const ProjectDetailScreen = {
   props: ['data', 'loading', 'error', 'projectId'],
   emits: ['back', 'changed'],
-  components: { TimelineTab, KanbanTab },
+  components: { KanbanTab },
   setup() {
-    const activeTab = ref('timeline');
+    const activeTab = ref('kanban');
     return { activeTab };
   },
   template: `
@@ -546,9 +500,6 @@ const ProjectDetailScreen = {
       <div v-else-if="error" class="card notice-error">{{ error }}</div>
       <div v-else>
         <div class="tab-bar">
-          <button class="tab-btn" :class="{ active: activeTab === 'timeline' }" @click="activeTab = 'timeline'">
-            Timeline ({{ data?.timeline?.length ?? 0 }})
-          </button>
           <button class="tab-btn" :class="{ active: activeTab === 'kanban' }" @click="activeTab = 'kanban'">
             Kanban
           </button>
@@ -557,8 +508,7 @@ const ProjectDetailScreen = {
           </button>
         </div>
         <div class="card">
-          <timeline-tab v-if="activeTab === 'timeline'" :entries="data?.timeline ?? []" />
-          <kanban-tab v-else-if="activeTab === 'kanban'" :columns="data?.kanban ?? []"
+          <kanban-tab v-if="activeTab === 'kanban'" :columns="data?.kanban ?? []"
                       @changed="$emit('changed')" />
           <wbs-tab v-else :nodes="data?.wbs ?? []" />
         </div>
@@ -1101,7 +1051,8 @@ const ReviewsScreen = {
 // glance instead of by reading dates off a list.
 const AblaufplanScreen = {
   props: ['data', 'loading', 'error'],
-  setup(props) {
+  emits: ['changed'],
+  setup(props, { emit }) {
     const filterPhase = ref('');
     const filterStatus = ref('');
     const filterLevel = ref('');
@@ -1112,6 +1063,16 @@ const AblaufplanScreen = {
     // deleting data. The window is centred on today rather than starting
     // there, because the sweep deliberately includes what is already done.
     const filterWindow = ref('12');
+    const filterOwner = ref('');
+    // Zoom scales the track wider than its container and lets it scroll.
+    // Distinct from the time window, which changes *which rows* are shown:
+    // zoom changes how much room the same rows get, so overlapping bars in a
+    // busy month can be told apart without hiding anything.
+    const zoom = ref(1);
+    const ZOOM_STEPS = [1, 1.5, 2, 3, 4, 6];
+    const editingOwner = ref(null);   // row id currently being edited
+    const ownerDraft = ref('');
+    const ownerError = ref('');
     const asTable = ref(false);
     const hovered = ref(null);
 
@@ -1191,11 +1152,35 @@ const AblaufplanScreen = {
       return seen.sort();
     });
 
+    // Everyone who owns at least one dated obligation. "Ohne" is a real
+    // choice, not an omission: unassigned work is exactly what a lead hunts
+    // for, so it gets its own entry rather than being invisible.
+    const owners = computed(() => {
+      const seen = [];
+      for (const r of rows.value) {
+        const name = r.owner || '';
+        if (name && !seen.includes(name)) seen.push(name);
+      }
+      return seen.sort((a, b) => a.localeCompare(b));
+    });
+
+    // Plain sentinel rather than a control character: it travels through a
+    // <select> value, a test fixture and a URL without anyone having to
+    // escape it, and no real role or name looks like this.
+    const UNASSIGNED = '__ohne__';
+
+    function matchesOwner(r) {
+      if (!filterOwner.value) return true;
+      if (filterOwner.value === UNASSIGNED) return !r.owner;
+      return r.owner === filterOwner.value;
+    }
+
     const filtered = computed(() => rows.value.filter(
       r => (!filterPhase.value || (r.phase || 'Ohne Phase') === filterPhase.value)
         && (!filterStatus.value || r.status === filterStatus.value)
         && (!filterLevel.value || r.level === filterLevel.value)
         && (!filterSource.value || r.source_hint === filterSource.value)
+        && matchesOwner(r)
         && inWindow(r)
     ));
 
@@ -1208,6 +1193,7 @@ const AblaufplanScreen = {
           && (!filterStatus.value || r.status === filterStatus.value)
           && (!filterLevel.value || r.level === filterLevel.value)
           && (!filterSource.value || r.source_hint === filterSource.value)
+          && matchesOwner(r)
           && !inWindow(r)
       ).length;
     });
@@ -1357,9 +1343,65 @@ const AblaufplanScreen = {
       return out;
     });
 
+    async function saveOwner(row) {
+      const next = ownerDraft.value.trim();
+      editingOwner.value = null;
+      if (next === (row.owner || '')) return;
+      ownerError.value = '';
+      try {
+        const resp = await fetch(
+          `/api/schedule/${encodeURIComponent(row.project_id)}`
+          + `/items/${encodeURIComponent(row.id)}/owner`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ owner: next }),
+          }
+        );
+        if (!resp.ok) {
+          const detail = await resp.json().catch(() => ({}));
+          throw new Error(detail.detail || `Server returned ${resp.status}`);
+        }
+        const body = await resp.json();
+        // The server redacts anything that would later trip the response
+        // guard, so say when what was stored is not what was typed.
+        if (body.redacted && body.redacted.length) {
+          ownerError.value = 'Gespeichert, aber bereinigt: ' + body.redacted.join(', ');
+        }
+        emit('changed');
+      } catch (err) {
+        ownerError.value = String(err.message || err);
+      }
+    }
+
+    function beginEdit(row) {
+      editingOwner.value = row.id;
+      ownerDraft.value = row.owner || '';
+    }
+
+    // Escape has to put the draft back before closing the editor. Unmounting a
+    // focused input fires `blur`, so a bare `editingOwner = null` would run the
+    // save on the way out and Escape would commit the very edit it is meant to
+    // abandon. Restoring the original first makes that trailing save a no-op,
+    // because saveOwner returns early when nothing changed.
+    function cancelEdit(row) {
+      ownerDraft.value = row.owner || '';
+      editingOwner.value = null;
+    }
+
+    function zoomBy(step) {
+      const i = ZOOM_STEPS.indexOf(zoom.value);
+      zoom.value = ZOOM_STEPS[
+        Math.min(ZOOM_STEPS.length - 1, Math.max(0, i + step))
+      ];
+    }
+
     return {
       filterPhase, filterStatus, filterLevel, filterSource, asTable, hovered,
       filterWindow, outsideWindow, WINDOWS, WINDOW_ORDER,
+      filterOwner, owners, UNASSIGNED,
+      zoom, ZOOM_STEPS, zoomBy,
+      editingOwner, ownerDraft, ownerError, beginEdit, cancelEdit, saveOwner,
       rows, phases, sources, filtered, groups, ticks, todayLeft, barStyle,
       milestoneStyle, fmt, duration, isLate, lateCount, nextMilestone,
       daysToNext, statusCounts, levelCounts,
@@ -1372,6 +1414,7 @@ const AblaufplanScreen = {
         filterStatus.value = '';
         filterLevel.value = '';
         filterSource.value = '';
+        filterOwner.value = '';
         filterWindow.value = 'all';
       },
     };
@@ -1463,16 +1506,33 @@ const AblaufplanScreen = {
             <option value="">Alle Quellen</option>
             <option v-for="q in sources" :key="q" :value="q">{{ q }}</option>
           </select>
+          <select class="filter-select" v-model="filterOwner" aria-label="Verantwortlich filtern"
+                  data-testid="filter-owner">
+            <option value="">Alle Verantwortlichen</option>
+            <option v-for="o in owners" :key="o" :value="o">{{ o }}</option>
+            <option :value="UNASSIGNED">— ohne Verantwortlichen —</option>
+          </select>
           <select class="filter-select" v-model="filterWindow" aria-label="Zeitraum">
             <option v-for="w in WINDOW_ORDER" :key="w" :value="w">{{ WINDOWS[w].label }}</option>
           </select>
-          <button v-if="filterPhase || filterStatus || filterLevel || filterSource"
+          <button v-if="filterPhase || filterStatus || filterLevel || filterSource || filterOwner"
                   class="btn btn-ghost" @click="resetFilters">
             Filter zurücksetzen
           </button>
           <!-- The table view is the accessible equal of the chart, not a
                fallback: every value the bars encode is readable as text. -->
-          <div class="segmented ml-auto" role="group" aria-label="Darstellung">
+          <div v-if="!asTable" class="zoom-control ml-auto" role="group" aria-label="Zoom">
+            <button class="btn btn-ghost" :disabled="zoom === ZOOM_STEPS[0]"
+                    aria-label="Herauszoomen" title="Herauszoomen"
+                    data-testid="zoom-out" @click="zoomBy(-1)">−</button>
+            <span class="zoom-level" data-testid="zoom-level">{{ Math.round(zoom * 100) }}%</span>
+            <button class="btn btn-ghost"
+                    :disabled="zoom === ZOOM_STEPS[ZOOM_STEPS.length - 1]"
+                    aria-label="Hineinzoomen" title="Hineinzoomen"
+                    data-testid="zoom-in" @click="zoomBy(1)">+</button>
+          </div>
+          <div class="segmented" :class="{ 'ml-auto': asTable }" role="group"
+               aria-label="Darstellung">
             <button :class="{ active: !asTable }" @click="asTable = false">Balkenplan</button>
             <button :class="{ active: asTable }" @click="asTable = true">Tabelle</button>
           </div>
@@ -1510,8 +1570,10 @@ const AblaufplanScreen = {
         </div>
 
         <!-- ── Balkenplan ────────────────────────────────────────────── -->
+        <div v-if="ownerError" class="notice notice-warn mb-3">{{ ownerError }}</div>
+
         <div v-if="!asTable" class="card card-flush gantt-scroll">
-          <div class="gantt">
+          <div class="gantt" :style="{ width: (100 * zoom) + '%' }">
             <div class="gantt-head">
               <div class="gantt-label-col">Vorgang</div>
               <div class="gantt-track-col">
@@ -1607,7 +1669,20 @@ const AblaufplanScreen = {
                   {{ fmt(r.end) }}
                   <span v-if="isLate(r)" class="gantt-late-tag">überfällig</span>
                 </td>
-                <td class="text-gray-400">{{ r.owner || '—' }}</td>
+                <td class="owner-cell">
+                  <input v-if="editingOwner === r.id"
+                         class="text-input owner-input"
+                         v-model="ownerDraft"
+                         :ref="el => el && el.focus()"
+                         @keydown.enter="saveOwner(r)"
+                         @keydown.esc="cancelEdit(r)"
+                         @blur="saveOwner(r)"
+                         aria-label="Verantwortlich bearbeiten">
+                  <button v-else class="owner-button" @click="beginEdit(r)"
+                          :title="'Verantwortlich für ' + r.title + ' ändern'">
+                    {{ r.owner || '— zuweisen —' }}
+                  </button>
+                </td>
                 <td class="text-gray-400 max-w-xs truncate" :title="r.source_hint">
                   {{ r.source_hint || '—' }}
                 </td>
@@ -1643,6 +1718,5 @@ global.ProjectDetailScreen = ProjectDetailScreen;
 global.PendenzenScreen = PendenzenScreen;
 global.RisksScreen = RisksScreen;
 global.ReviewsScreen = ReviewsScreen;
-global.TimelineTab = TimelineTab;
 global.KanbanTab = KanbanTab;
 }(window));

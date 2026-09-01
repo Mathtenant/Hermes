@@ -281,6 +281,193 @@ _TASK_STATUSES = ("open", "closed", "blocked")
 # into the wrong field, and it would be rendered on every row of the plan.
 _MAX_OWNER_LEN = 80
 
+# A title is a headline, not a paragraph. The cap is generous enough for a real
+# one and short enough that a pasted wall of text is rejected rather than
+# rendered across every view that lists it.
+_MAX_TITLE_LEN = 200
+_MAX_DESCRIPTION_LEN = 2000
+
+_PRIORITIES = ("low", "medium", "high", "blocker")
+# "pendenz" is excluded on purpose: that is what POST /api/todos creates,
+# and offering two routes for one thing invites them to drift.
+# "assumption" holds internal planning notes the dashboard never renders.
+_CREATABLE_NODE_KINDS = ("task", "deliverable", "milestone")
+
+
+def _clean_text(value: Any, field: str, limit: int, *, required: bool = False) -> str:
+    """Validate and redact one free-text field from a create request.
+
+    Everything typed here is stored verbatim and rendered on the dashboard, so
+    it goes through the same redaction the importer applies. Hand-entered text
+    is *more* likely to carry an email address than imported text, not less —
+    somebody pasting "chase up with a.muster@example.com" would otherwise make
+    every dashboard response 500 until the row was edited out of the database
+    by hand.
+    """
+    from hermes_assistant.webapp.import_json import _redact_unsafe_text
+
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail=f"{field} must be a string")
+    text = value.strip()
+    if required and not text:
+        raise HTTPException(status_code=422, detail=f"{field} is required")
+    if len(text) > limit:
+        raise HTTPException(
+            status_code=422, detail=f"{field} must be at most {limit} characters"
+        )
+    cleaned, _ = _redact_unsafe_text(text)
+    return cleaned
+
+
+def _json_body(raw: bytes) -> dict[str, Any]:
+    try:
+        body = _json.loads(raw or b"{}")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Body is not valid JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Body must be a JSON object")
+    return body
+
+
+@app.post("/api/todos")
+@confidentiality_guard
+async def create_todo(request: Request) -> dict[str, Any]:
+    """Create one to-do by hand.
+
+    Everything on the dashboard arrived by import until now, which made it
+    read-only for anything that came up between exports — the exact moments a
+    to-do is born. A hand-created item is a ``Pendenz`` with
+    ``source="manual"``, so it is the same shape as an imported one and needs
+    no separate store or view.
+
+    Body: ``{"title", "owner"?, "priority"?, "due_date"?, "description"?}``.
+    """
+    from hermes_assistant.tasks.pendenzen import Pendenz, PendenzSource
+    from hermes_assistant.tasks.store import TaskStore
+    from hermes_assistant.webapp.import_json import _parse_due
+
+    body = _json_body(await request.body())
+
+    title = _clean_text(body.get("title"), "title", _MAX_TITLE_LEN, required=True)
+    owner = _clean_text(body.get("owner"), "owner", _MAX_OWNER_LEN)
+    description = _clean_text(
+        body.get("description"), "description", _MAX_DESCRIPTION_LEN
+    )
+
+    priority = body.get("priority", "medium")
+    if priority not in _PRIORITIES:
+        raise HTTPException(
+            status_code=422, detail=f"priority must be one of {', '.join(_PRIORITIES)}"
+        )
+
+    raw_due = body.get("due_date")
+    due = _parse_due(raw_due)
+    # A date that was supplied but unusable is a mistake worth reporting: a
+    # silently dropped deadline is worse than a rejected form.
+    if raw_due and due is None:
+        raise HTTPException(status_code=422, detail="due_date must be YYYY-MM-DD")
+
+    store = TaskStore(settings.tasks_db_path)
+    try:
+        new_id = store.create(
+            Pendenz(
+                id="",
+                title=title,
+                description=description,
+                owner=owner or None,
+                priority=priority,
+                due_date=due,
+                source=PendenzSource.manual,
+            )
+        )
+    finally:
+        store.close()
+    return {"id": new_id, "title": title, "kind": "todo"}
+
+
+@app.post("/api/tasks")
+@confidentiality_guard
+async def create_task(request: Request) -> dict[str, Any]:
+    """Create one work-breakdown node by hand.
+
+    Body: ``{"title", "node_kind"?, "parent_id"?, "owner"?, "status"?}``.
+    """
+    from hermes_assistant.tasks.model import Task
+    from hermes_assistant.tasks.store import TaskStore
+
+    body = _json_body(await request.body())
+
+    title = _clean_text(body.get("title"), "title", _MAX_TITLE_LEN, required=True)
+    owner = _clean_text(body.get("owner"), "owner", _MAX_OWNER_LEN)
+
+    node_kind = body.get("node_kind", "task")
+    if node_kind not in _CREATABLE_NODE_KINDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"node_kind must be one of {', '.join(_CREATABLE_NODE_KINDS)}",
+        )
+    status = body.get("status", "open")
+    if status not in _TASK_STATUSES:
+        raise HTTPException(
+            status_code=422, detail=f"status must be one of {', '.join(_TASK_STATUSES)}"
+        )
+
+    parent_id = body.get("parent_id") or None
+    if parent_id is not None and not isinstance(parent_id, str):
+        raise HTTPException(status_code=422, detail="parent_id must be a string")
+
+    store = TaskStore(settings.tasks_db_path)
+    try:
+        # A parent that does not exist would leave the node orphaned in the
+        # tree — visible on the board but absent from the WBS.
+        if parent_id is not None and store.get(parent_id) is None:
+            raise HTTPException(status_code=404, detail="Parent task not found")
+        new_id = store.create(
+            Task(
+                id="",
+                title=title,
+                owner=owner or None,
+                status=status,
+                node_kind=node_kind,
+                parent_id=parent_id,
+            )
+        )
+    finally:
+        store.close()
+    return {"id": new_id, "title": title, "kind": "task"}
+
+
+@app.post("/api/projects")
+@confidentiality_guard
+async def create_project(request: Request) -> dict[str, Any]:
+    """Create an empty project directory.
+
+    Body: ``{"project_id"}``. The id becomes a directory name, so it goes
+    through the importer's own path guard rather than a second copy.
+    """
+    from hermes_assistant.webapp.import_json import _is_safe_path_segment
+
+    body = _json_body(await request.body())
+    project_id = body.get("project_id")
+    if not isinstance(project_id, str) or not project_id.strip():
+        raise HTTPException(status_code=422, detail="project_id is required")
+    project_id = project_id.strip()
+    if not _is_safe_path_segment(project_id):
+        raise HTTPException(
+            status_code=422,
+            detail="project_id must be a single safe directory name "
+            "(letters, digits, . _ -)",
+        )
+
+    proj_dir = Path(settings.projects_path) / project_id
+    if proj_dir.exists():
+        raise HTTPException(status_code=409, detail="Project already exists")
+    proj_dir.mkdir(parents=True)
+    return {"project_id": project_id, "kind": "project"}
+
+
 
 @app.post("/api/schedule/{project_id}/items/{item_id}/owner")
 @confidentiality_guard

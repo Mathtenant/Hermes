@@ -298,7 +298,7 @@ def test_a_decision_shows_its_follow_up_load(decisions_page: Page):
     item = decisions_page.locator(".decision-item").filter(
         has_text="E2E Verzicht auf Eigenentwicklung"
     ).first.inner_text()
-    assert "1 von 2 Pendenzen offen" in item
+    assert "1 von 2 Todos offen" in item
 
 
 def test_decision_status_is_a_labelled_chip(decisions_page: Page):

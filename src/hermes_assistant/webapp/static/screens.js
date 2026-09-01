@@ -97,14 +97,14 @@ const OverviewScreen = {
              shortcut into its screen. -->
         <div class="overview-head">
           <button class="hero-tile" @click="$emit('navigate', 'pendenzen')">
-            <span class="hero-label">Open pendenzen</span>
+            <span class="hero-label">Offene Todos</span>
             <span class="hero-value">{{ openPendenzen.length }}</span>
             <span class="hero-hint" :class="{ 'is-alert': blockers.length > 0 }">
               <template v-if="blockers.length">
                 {{ blockers.length }} blocker<template v-if="blockers.length !== 1">s</template>
               </template>
-              <template v-else-if="counts.pendenzen">nothing blocking</template>
-              <template v-else>no pendenzen recorded</template>
+              <template v-else-if="counts.pendenzen">nichts blockiert</template>
+              <template v-else>keine Todos erfasst</template>
             </span>
           </button>
 
@@ -140,7 +140,7 @@ const OverviewScreen = {
             </button>
 
             <button class="stat-tile" @click="$emit('navigate', 'pendenzen')">
-              <span class="stat-label">Pendenzen total</span>
+              <span class="stat-label">Todos gesamt</span>
               <span class="stat-value">{{ counts.pendenzen }}</span>
               <span class="stat-hint">
                 {{ counts.pendenzen - openPendenzen.length }} closed
@@ -183,11 +183,11 @@ const OverviewScreen = {
           <!-- Needs attention -->
           <section class="card">
             <div class="flex justify-between items-center mb-3">
-              <h2 class="text-base font-semibold">Needs attention</h2>
-              <button class="btn-link" @click="$emit('navigate', 'pendenzen')">Pendenzen &rarr;</button>
+              <h2 class="text-base font-semibold">Braucht Aufmerksamkeit</h2>
+              <button class="btn-link" @click="$emit('navigate', 'pendenzen')">Todos &rarr;</button>
             </div>
             <div v-if="!urgentPendenzen.length" class="text-sm text-gray-400 py-2">
-              No open pendenzen.
+              Keine offenen Todos.
             </div>
             <div v-for="p in urgentPendenzen" :key="p.id" class="tl-entry">
               <span :class="['prio-dot', p.priority]" :aria-label="p.priority"></span>
@@ -631,9 +631,9 @@ const PendenzenScreen = {
     <div>
       <div class="page-header">
         <div>
-          <h1 class="page-title">Pendenzen &amp; Beschlüsse</h1>
+          <h1 class="page-title">Todo &amp; Beschlüsse</h1>
           <div class="page-subtitle">
-            Offene Punkte aus Sitzungen und Reviews, und die Entscheide, aus
+            Offene Todos aus Sitzungen und Reviews, und die Entscheide, aus
             denen sie folgen.
           </div>
         </div>
@@ -647,7 +647,7 @@ const PendenzenScreen = {
         <div class="tab-bar">
           <button class="tab-btn" :class="{ active: activeTab === 'pendenzen' }"
                   @click="activeTab = 'pendenzen'" data-testid="tab-pendenzen">
-            Pendenzen ({{ data?.pendenzen?.length ?? 0 }})
+            Todos ({{ data?.pendenzen?.length ?? 0 }})
           </button>
           <button class="tab-btn" :class="{ active: activeTab === 'beschluesse' }"
                   @click="activeTab = 'beschluesse'" data-testid="tab-beschluesse">
@@ -663,7 +663,7 @@ const PendenzenScreen = {
             <div class="empty-state-title">Keine Beschlüsse importiert</div>
             <p class="text-sm">
               Importiere die <code>Pendenzen- und Beschlussliste</code> über
-              <strong>Import JSON → Pendenzen &amp; Beschlüsse</strong>.
+              <strong>Import JSON → Todos &amp; Beschlüsse</strong>.
             </p>
           </div>
         </div>
@@ -673,7 +673,7 @@ const PendenzenScreen = {
                    placeholder="Beschluss, Gremium oder Bereich…"
                    aria-label="Beschlüsse durchsuchen">
             <span class="result-count">
-              {{ decisions.length }} Beschlüsse · {{ openFollowUps }} offene Pendenzen daraus
+              {{ decisions.length }} Beschlüsse · {{ openFollowUps }} offene Todos daraus
             </span>
           </div>
 
@@ -699,9 +699,9 @@ const PendenzenScreen = {
                   <span v-if="d.affects" class="decision-affects">{{ d.affects }}</span>
                   <span v-if="d.pendenzen_total" class="decision-followups"
                         :class="{ 'is-alert': d.pendenzen_open > 0 }">
-                    {{ d.pendenzen_open }} von {{ d.pendenzen_total }} Pendenzen offen
+                    {{ d.pendenzen_open }} von {{ d.pendenzen_total }} Todos offen
                   </span>
-                  <span v-else class="text-gray-400">keine Pendenzen</span>
+                  <span v-else class="text-gray-400">keine Todos</span>
                 </div>
               </div>
             </li>

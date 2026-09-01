@@ -31,6 +31,59 @@ const NAV_ICONS = {
   reviews:   'M4.5 12.5l4.5 4.5 10.5-11',
 };
 
+// ── Sidebar order ──────────────────────────────────────────────────────────
+// The order is the user's, so it is stored rather than derived. It is stored
+// as a list of keys and reconciled against the canonical screen list on every
+// read: a screen added in a later version appears at the end instead of
+// vanishing, and one that was removed drops out instead of leaving a hole.
+const NAV_ORDER_KEY = 'hermes-nav-order';
+
+function readNavOrder() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(NAV_ORDER_KEY) || '[]');
+    return Array.isArray(raw) ? raw.filter((k) => typeof k === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function reconcileOrder(stored, canonical) {
+  const known = stored.filter((k) => canonical.includes(k));
+  return [...known, ...canonical.filter((k) => !known.includes(k))];
+}
+
+const navOrder = ref(reconcileOrder(readNavOrder(), SCREENS));
+
+function persistNavOrder() {
+  try {
+    localStorage.setItem(NAV_ORDER_KEY, JSON.stringify(navOrder.value));
+  } catch {
+    /* storage unavailable — the order still applies for this session */
+  }
+}
+
+function moveNav(key, delta) {
+  const order = [...navOrder.value];
+  const from = order.indexOf(key);
+  const to = from + delta;
+  if (from < 0 || to < 0 || to >= order.length) return false;
+  order.splice(to, 0, order.splice(from, 1)[0]);
+  navOrder.value = order;
+  persistNavOrder();
+  return true;
+}
+
+function dropNav(dragKey, targetKey) {
+  if (!dragKey || dragKey === targetKey) return;
+  const order = [...navOrder.value];
+  const from = order.indexOf(dragKey);
+  const to = order.indexOf(targetKey);
+  if (from < 0 || to < 0) return;
+  order.splice(to, 0, order.splice(from, 1)[0]);
+  navOrder.value = order;
+  persistNavOrder();
+}
+
 // ── Global reactive state ──────────────────────────────────────────────────
 const state = reactive({
   screen: 'overview',  // one of SCREENS
@@ -41,6 +94,7 @@ const state = reactive({
   lastRefresh: null,
   showHelp: false,
   showImport: false,
+  showCreate: false,
 });
 
 // ── Theme ──────────────────────────────────────────────────────────────────
@@ -120,6 +174,93 @@ async function loadVersion() {
     if (body.version) version.value = body.version;
   } catch {
     // Version is cosmetic — leave it blank rather than surfacing an error
+  }
+}
+
+// ── Create (todo / task / project) ─────────────────────────────────────────
+// Everything on the dashboard arrived by import, which left it read-only for
+// anything that came up between exports — exactly when a to-do is born.
+const CREATE_KINDS = [
+  { key: 'todo', label: 'Todo', hint: 'Offener Punkt mit Verantwortlichem und Termin' },
+  { key: 'task', label: 'Arbeitspaket', hint: 'Knoten im Strukturplan / auf dem Board' },
+  { key: 'project', label: 'Projekt', hint: 'Neues, leeres Projektverzeichnis' },
+];
+
+const createKind = ref('todo');
+const createForm = reactive({
+  title: '', owner: '', priority: 'medium', due_date: '', description: '',
+  node_kind: 'task', status: 'open', project_id: '',
+});
+const createBusy = ref(false);
+const createError = ref('');
+
+function openCreate() {
+  createError.value = '';
+  state.showCreate = true;
+}
+
+function closeCreate() {
+  state.showCreate = false;
+}
+
+function resetCreateForm() {
+  Object.assign(createForm, {
+    title: '', owner: '', priority: 'medium', due_date: '', description: '',
+    node_kind: 'task', status: 'open', project_id: '',
+  });
+}
+
+function createPayload() {
+  if (createKind.value === 'project') {
+    return { project_id: createForm.project_id.trim() };
+  }
+  if (createKind.value === 'task') {
+    return {
+      title: createForm.title.trim(),
+      owner: createForm.owner.trim(),
+      node_kind: createForm.node_kind,
+      status: createForm.status,
+    };
+  }
+  return {
+    title: createForm.title.trim(),
+    owner: createForm.owner.trim(),
+    priority: createForm.priority,
+    due_date: createForm.due_date,
+    description: createForm.description.trim(),
+  };
+}
+
+const createValid = computed(() => (createKind.value === 'project'
+  ? createForm.project_id.trim().length > 0
+  : createForm.title.trim().length > 0));
+
+async function submitCreate() {
+  if (!createValid.value || createBusy.value) return;
+  createBusy.value = true;
+  createError.value = '';
+  const endpoint = { todo: '/api/todos', task: '/api/tasks', project: '/api/projects' }[
+    createKind.value
+  ];
+  try {
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createPayload()),
+    });
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${resp.status}`);
+    }
+    const kindLabel = (CREATE_KINDS.find((k) => k.key === createKind.value) || {}).label;
+    showToast(`${kindLabel} angelegt`);
+    resetCreateForm();
+    closeCreate();
+    await refresh();
+  } catch (e) {
+    createError.value = String(e.message || e);
+  } finally {
+    createBusy.value = false;
   }
 }
 
@@ -221,10 +362,10 @@ const PROMPT_KINDS = [
     hint: 'Querschnitt über ALLE Quellen — alles mit Datum, jede Flughöhe' },
   { key: 'risks', label: 'Risiken', file: 'copilot_risks',
     hint: 'Risikoregister' },
-  { key: 'pendenzen', label: 'Pendenzen', file: 'copilot_pendenzen',
-    hint: 'Offene Punkte und Action Items' },
-  { key: 'beschluesse', label: 'Pendenzen & Beschlüsse', file: 'copilot_beschluesse',
-    hint: 'Beschlussliste — Entscheide plus die Pendenzen daraus' },
+  { key: 'pendenzen', label: 'Todos', file: 'copilot_pendenzen',
+    hint: 'Offene Punkte und Action Items ohne Datum' },
+  { key: 'beschluesse', label: 'Todos & Beschlüsse', file: 'copilot_beschluesse',
+    hint: 'Beschlussliste — Entscheide plus die Todos daraus' },
   { key: 'full', label: 'Alles (Gesamtexport)', file: 'copilot_state_export',
     hint: 'Einmaliger Rundum-Export — langsamer, fehleranfälliger' },
 ];
@@ -399,6 +540,7 @@ async function runImport() {
 function onKeydown(e) {
   if (e.key === 'Escape') {
     state.showHelp = false;
+    if (state.showCreate) closeCreate();
     if (state.showImport) closeImport();
     return;
   }
@@ -408,18 +550,25 @@ function onKeydown(e) {
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   // Don't navigate away from an open dialog
-  if (state.showImport || state.showHelp) return;
+  if (state.showImport || state.showHelp || state.showCreate) return;
+
+  // Digits map to screens positionally in the canonical order, never in the
+  // user's rearranged one: a key that moved with its row would be
+  // unlearnable. Derived rather than hand-listed because the switch, the nav
+  // items and the help dialog were three copies of this mapping and had
+  // already drifted — 4 went to Todo while the help promised Termine &
+  // Fristen, and 7 did nothing at all.
+  if (/^[1-9]$/.test(e.key)) {
+    const target = SCREENS[Number(e.key) - 1];
+    if (target) goTo(target);
+    return;
+  }
 
   switch (e.key) {
-    case '1': goTo('overview'); break;
-    case '2': goTo('projects'); break;
-    case '3': goTo('detail'); break;
-    case '4': goTo('pendenzen'); break;
-    case '5': goTo('risks'); break;
-    case '6': goTo('reviews'); break;
     case 'r': refresh(); break;
     case 'd': toggleTheme(); break;
     case 'i': openImport(); break;
+    case 'n': openCreate(); break;
     case '?': state.showHelp = true; break;
     default: break;
   }
@@ -489,31 +638,57 @@ const App = {
       reviews: state.data?.reviews?.length ?? 0,
     }));
 
+    // No `shortcut` field: the digits are positional in this very list,
+    // so storing them here would be a copy that can disagree with it.
     const navItems = computed(() => [
-      { key: 'overview',  label: 'Overview',  shortcut: '1', icon: NAV_ICONS.overview,  count: null },
-      { key: 'projects',  label: 'Projects',  shortcut: '2', icon: NAV_ICONS.projects,  count: counts.value.projects },
-      { key: 'detail',    label: 'Timeline & WBS', shortcut: '3', icon: NAV_ICONS.detail,
+      { key: 'overview',  label: 'Overview',  icon: NAV_ICONS.overview,  count: null },
+      { key: 'projects',  label: 'Projects',  icon: NAV_ICONS.projects,  count: counts.value.projects },
+      { key: 'detail',    label: 'Timeline & WBS', icon: NAV_ICONS.detail,
         count: counts.value.tasks + counts.value.timeline },
-      { key: 'plan',      label: 'Termine & Fristen', shortcut: '4', icon: NAV_ICONS.plan, count: counts.value.ablaufplan },
-      { key: 'pendenzen', label: 'Pendenzen', shortcut: '5', icon: NAV_ICONS.pendenzen, count: counts.value.pendenzen },
-      { key: 'risks',     label: 'Risks',     shortcut: '6', icon: NAV_ICONS.risks,     count: counts.value.risks },
-      { key: 'reviews',   label: 'Reviews',   shortcut: '7', icon: NAV_ICONS.reviews,   count: counts.value.reviews },
+      { key: 'plan',      label: 'Termine & Fristen', icon: NAV_ICONS.plan, count: counts.value.ablaufplan },
+      { key: 'pendenzen', label: 'Todo', icon: NAV_ICONS.pendenzen, count: counts.value.pendenzen },
+      { key: 'risks',     label: 'Risks',     icon: NAV_ICONS.risks,     count: counts.value.risks },
+      { key: 'reviews',   label: 'Reviews',   icon: NAV_ICONS.reviews,   count: counts.value.reviews },
     ]);
 
-    const shortcuts = [
-      ['1', 'Overview'],
-      ['2', 'Projects'],
-      ['3', 'Timeline & WBS'],
-      ['4', 'Termine & Fristen'],
-      ['5', 'Pendenzen'],
-      ['6', 'Risks'],
-      ['7', 'Reviews'],
+    // Definitions stay canonical; the user's order is applied on top, so the
+    // shortcut digits keep pointing at the same screens however the sidebar is
+    // arranged — a key that moved with the row would be unlearnable.
+    const orderedNavItems = computed(() => {
+      const byKey = new Map(navItems.value.map((i) => [i.key, i]));
+      return navOrder.value.map((k) => byKey.get(k)).filter(Boolean);
+    });
+
+    const draggingKey = ref(null);
+    const dragOverKey = ref(null);
+
+    function onNavDragStart(key, event) {
+      draggingKey.value = key;
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        // Firefox refuses to start a drag unless some data is set.
+        event.dataTransfer.setData('text/plain', key);
+      }
+    }
+
+    function onNavDrop(key) {
+      dropNav(draggingKey.value, key);
+      draggingKey.value = null;
+      dragOverKey.value = null;
+    }
+
+    // Built from the same canonical order the key handler indexes into, so
+    // the help can no longer promise a binding the handler does not have.
+    const shortcuts = computed(() => [
+      ...navItems.value.map((item, i) => [String(i + 1), item.label]),
       ['r', 'Refresh data'],
       ['i', 'Import JSON'],
+      ['n', 'Neu anlegen'],
       ['d', 'Toggle dark / light theme'],
       ['?', 'Show this help'],
       ['Esc', 'Close dialog'],
-    ];
+      ['Alt+↑/↓', 'Reihenfolge der Seitenleiste ändern'],
+    ]);
 
     function focusTextarea() {
       nextTick(() => {
@@ -539,9 +714,9 @@ const App = {
     const ENTITY_DESTINATIONS = {
       tasks: { label: 'Arbeitspakete', screen: 'Strukturplan & Kanban' },
       schedule: { label: 'Termine & Fristen', screen: 'Termine & Fristen' },
-      beschluesse: { label: 'Beschlüsse', screen: 'Pendenzen → Beschlüsse' },
+      beschluesse: { label: 'Beschlüsse', screen: 'Todo → Beschlüsse' },
       risks: { label: 'Risiken', screen: 'Risks' },
-      pendenzen: { label: 'Pendenzen', screen: 'Pendenzen' },
+      pendenzen: { label: 'Todos', screen: 'Todo' },
       projects: { label: 'Projekte', screen: 'Projects' },
       plans: { label: 'Plan-Versionen', screen: 'nicht im Dashboard sichtbar' },
     };
@@ -574,6 +749,12 @@ const App = {
       importedWhere,
       importStep, importMode, importText, importFilename, importLoading,
       importResult, importError, importPreview, copilotPrompt, isDragOver,
+      // Sidebar order
+      orderedNavItems, draggingKey, dragOverKey, moveNav,
+      onNavDragStart, onNavDrop,
+      // Create dialog
+      openCreate, closeCreate, submitCreate, createKind, createForm,
+      createBusy, createError, createValid, CREATE_KINDS,
     };
   },
   template: `
@@ -624,30 +805,53 @@ const App = {
         >?</button>
 
         <button
-          class="tb-btn tb-btn-primary"
+          class="tb-btn"
           @click="openImport"
           aria-label="Import JSON (i)"
           title="Import JSON (i)"
         >Import JSON</button>
+
+        <button
+          class="tb-btn tb-btn-primary"
+          @click="openCreate"
+          aria-label="Neu anlegen (n)"
+          title="Neu anlegen (n)"
+          data-testid="open-create"
+        >+ Neu</button>
       </nav>
 
       <!-- ── Sidebar ────────────────────────────────────────────────────── -->
       <aside class="hermes-sidebar" role="navigation" aria-label="Main navigation">
         <span class="sidebar-label">Navigate</span>
         <button
-          v-for="item in navItems"
+          v-for="item in orderedNavItems"
           :key="item.key"
           class="nav-btn"
-          :class="{ active: state.screen === item.key }"
+          :class="{
+            active: state.screen === item.key,
+            'is-dragging': draggingKey === item.key,
+            'is-drop-target': dragOverKey === item.key && draggingKey !== item.key,
+          }"
           :aria-current="state.screen === item.key ? 'page' : undefined"
           :data-testid="'nav-' + item.key"
+          draggable="true"
           @click="goTo(item.key)"
+          @dragstart="onNavDragStart(item.key, $event)"
+          @dragover.prevent="dragOverKey = item.key"
+          @dragleave="dragOverKey === item.key && (dragOverKey = null)"
+          @drop.prevent="onNavDrop(item.key)"
+          @dragend="draggingKey = null; dragOverKey = null"
+          @keydown.up.alt.prevent="moveNav(item.key, -1)"
+          @keydown.down.alt.prevent="moveNav(item.key, 1)"
         >
           <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path :d="item.icon" />
           </svg>
           <span>{{ item.label }}</span>
           <span v-if="item.count !== null" class="nav-count">{{ item.count }}</span>
+          <!-- Drag is not the only way in: Alt+↑/↓ moves the focused item, so
+               the order is reachable without a pointer. -->
+          <span class="nav-grip" aria-hidden="true" title="Ziehen zum Sortieren">⠿</span>
         </button>
       </aside>
 
@@ -715,6 +919,120 @@ const App = {
           </span>
         </footer>
       </main>
+
+      <!-- ── Create dialog ──────────────────────────────────────────────── -->
+      <div v-if="state.showCreate"
+           class="modal-overlay"
+           @click.self="closeCreate"
+           role="dialog" aria-modal="true" aria-label="Neu anlegen">
+        <div class="modal-box" style="max-width:520px">
+          <div class="flex justify-between items-start mb-4">
+            <h3 class="modal-title">Neu anlegen</h3>
+            <button class="modal-close" @click="closeCreate" aria-label="Schliessen">&times;</button>
+          </div>
+
+          <div class="prompt-kinds mb-4" role="group" aria-label="Was anlegen">
+            <button v-for="k in CREATE_KINDS" :key="k.key"
+                    class="prompt-kind"
+                    :class="{ active: createKind === k.key }"
+                    :data-testid="'create-kind-' + k.key"
+                    @click="createKind = k.key; createError = ''">{{ k.label }}</button>
+          </div>
+          <p class="text-xs text-gray-400 mb-4">
+            {{ (CREATE_KINDS.find(k => k.key === createKind) || {}).hint }}
+          </p>
+
+          <div v-if="createError" class="notice notice-error mb-3">{{ createError }}</div>
+
+          <!-- Project needs only an id; it becomes a directory name. -->
+          <template v-if="createKind === 'project'">
+            <label class="form-row">
+              <span class="form-label">Projekt-ID</span>
+              <input class="text-input w-full" v-model="createForm.project_id"
+                     placeholder="webshop-relaunch" data-testid="create-project-id"
+                     @keydown.enter="submitCreate">
+            </label>
+            <p class="text-xs text-gray-400 mt-1">
+              Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich — der Wert
+              wird als Verzeichnisname verwendet.
+            </p>
+          </template>
+
+          <template v-else>
+            <label class="form-row">
+              <span class="form-label">Titel</span>
+              <input class="text-input w-full" v-model="createForm.title"
+                     placeholder="Was ist zu tun?" data-testid="create-title"
+                     @keydown.enter="submitCreate">
+            </label>
+
+            <label class="form-row">
+              <span class="form-label">Verantwortlich</span>
+              <input class="text-input w-full" v-model="createForm.owner"
+                     placeholder="Rolle oder Name (optional)"
+                     data-testid="create-owner">
+            </label>
+
+            <template v-if="createKind === 'todo'">
+              <div class="form-grid">
+                <label class="form-row">
+                  <span class="form-label">Priorität</span>
+                  <select class="filter-select w-full" v-model="createForm.priority"
+                          data-testid="create-priority">
+                    <option value="blocker">Blocker</option>
+                    <option value="high">Hoch</option>
+                    <option value="medium">Mittel</option>
+                    <option value="low">Tief</option>
+                  </select>
+                </label>
+                <label class="form-row">
+                  <span class="form-label">Termin</span>
+                  <input class="text-input w-full" type="date"
+                         v-model="createForm.due_date" data-testid="create-due">
+                </label>
+              </div>
+              <label class="form-row">
+                <span class="form-label">Beschreibung</span>
+                <textarea class="text-input w-full" rows="2"
+                          v-model="createForm.description"
+                          placeholder="Optional"></textarea>
+              </label>
+            </template>
+
+            <div v-else class="form-grid">
+              <label class="form-row">
+                <span class="form-label">Art</span>
+                <select class="filter-select w-full" v-model="createForm.node_kind"
+                        data-testid="create-node-kind">
+                  <option value="task">Aufgabe</option>
+                  <option value="deliverable">Liefergegenstand</option>
+                  <option value="milestone">Meilenstein</option>
+                </select>
+              </label>
+              <label class="form-row">
+                <span class="form-label">Status</span>
+                <select class="filter-select w-full" v-model="createForm.status">
+                  <option value="open">To Do</option>
+                  <option value="blocked">Blockiert</option>
+                  <option value="closed">Erledigt</option>
+                </select>
+              </label>
+            </div>
+          </template>
+
+          <div class="modal-actions">
+            <button class="btn" @click="closeCreate">Abbrechen</button>
+            <button class="btn btn-primary"
+                    :disabled="!createValid || createBusy"
+                    data-testid="create-submit"
+                    @click="submitCreate">
+              <span v-if="createBusy" class="spinner"
+                    style="width:11px;height:11px;border-width:1.5px"></span>
+              Anlegen
+            </button>
+          </div>
+        </div>
+      </div>
 
       <!-- ── Help modal ─────────────────────────────────────────────────── -->
       <div v-if="state.showHelp"

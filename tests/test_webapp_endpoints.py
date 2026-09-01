@@ -654,3 +654,167 @@ def test_setting_an_owner_leaves_the_rest_of_the_schedule_intact(
     assert item.title == "Task A"
     assert str(item.due) == "2026-06-01"
     assert item.uid == "hermes-widget-a@local"
+
+
+# ---------------------------------------------------------------------------
+# Create routes — POST /api/todos, /api/tasks, /api/projects
+#
+# Everything on the dashboard arrived by import until now, which left it
+# read-only for anything that came up between exports.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def create_env(tmp_path: Path):
+    db = tmp_path / "tasks.db"
+    proj = tmp_path / "projects"
+    proj.mkdir()
+    with patch("hermes_assistant.webapp.server.settings.tasks_db_path", str(db)), patch(
+        "hermes_assistant.webapp.server.settings.projects_path", str(proj)
+    ):
+        yield db, proj
+
+
+def _stored(db: Path, task_id: str):
+    store = TaskStore(str(db))
+    try:
+        return store.get(task_id)
+    finally:
+        store.close()
+
+
+def test_create_todo_lands_in_the_task_store(create_env) -> None:
+    db, _ = create_env
+    resp = client.post(
+        "/api/todos",
+        json={"title": "Angebot einholen", "owner": "Einkauf",
+              "priority": "high", "due_date": "2026-10-10"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    todo = _stored(db, resp.json()["id"])
+    assert todo.title == "Angebot einholen"
+    assert todo.node_kind == "pendenz"
+    assert todo.owner == "Einkauf"
+    assert todo.priority == "high"
+    assert str(todo.due_date) == "2026-10-10"
+
+
+def test_a_hand_made_todo_is_marked_manual(create_env) -> None:
+    """It has to be the same shape as an imported one, but say where it came
+    from — otherwise a re-import cannot tell what it is safe to replace."""
+    db, _ = create_env
+    resp = client.post("/api/todos", json={"title": "X"})
+    assert _stored(db, resp.json()["id"]).source == "manual"
+
+
+def test_create_todo_requires_a_title(create_env) -> None:
+    assert client.post("/api/todos", json={"title": "   "}).status_code == 422
+    assert client.post("/api/todos", json={}).status_code == 422
+
+
+@pytest.mark.parametrize("bad", ["urgent", "hoch", "", None])
+def test_create_todo_rejects_an_unknown_priority(create_env, bad) -> None:
+    assert client.post(
+        "/api/todos", json={"title": "X", "priority": bad}
+    ).status_code == 422
+
+
+def test_an_unusable_due_date_is_reported_not_dropped(create_env) -> None:
+    """A silently discarded deadline is worse than a rejected form."""
+    resp = client.post("/api/todos", json={"title": "X", "due_date": "KW 47"})
+    assert resp.status_code == 422
+    assert "YYYY-MM-DD" in resp.json()["detail"]
+
+
+def test_an_absent_due_date_is_fine(create_env) -> None:
+    db, _ = create_env
+    resp = client.post("/api/todos", json={"title": "X", "due_date": ""})
+    assert resp.status_code == 200
+    assert _stored(db, resp.json()["id"]).due_date is None
+
+
+def test_hand_typed_text_is_redacted(create_env) -> None:
+    """Hand-entered text is *more* likely to carry an address than imported
+    text — somebody pasting a contact into a to-do would otherwise 500 the
+    dashboard permanently."""
+    db, _ = create_env
+    resp = client.post(
+        "/api/todos", json={"title": "Klaeren mit a.muster@example.com"}
+    )
+    assert resp.status_code == 200
+    assert "@" not in resp.json()["title"]
+    assert "@" not in _stored(db, resp.json()["id"]).title
+
+
+def test_title_length_is_capped(create_env) -> None:
+    assert client.post(
+        "/api/todos", json={"title": "x" * 500}
+    ).status_code == 422
+
+
+def test_create_task_lands_in_the_tree(create_env) -> None:
+    db, _ = create_env
+    resp = client.post(
+        "/api/tasks",
+        json={"title": "Neues Arbeitspaket", "node_kind": "deliverable",
+              "owner": "IT", "status": "blocked"},
+    )
+    assert resp.status_code == 200, resp.text
+    task = _stored(db, resp.json()["id"])
+    assert task.node_kind == "deliverable"
+    assert task.status == "blocked"
+
+
+def test_a_task_can_be_nested_under_an_existing_one(create_env) -> None:
+    db, _ = create_env
+    parent = client.post("/api/tasks", json={"title": "Phase"}).json()["id"]
+    child = client.post(
+        "/api/tasks", json={"title": "Unterpunkt", "parent_id": parent}
+    ).json()["id"]
+    assert _stored(db, child).parent_id == parent
+    assert child in _stored(db, parent).children_ids
+
+
+def test_a_task_cannot_be_orphaned_under_a_missing_parent(create_env) -> None:
+    """It would show on the board but be absent from the WBS."""
+    resp = client.post("/api/tasks", json={"title": "X", "parent_id": "nope"})
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize("kind", ["pendenz", "assumption", "nonsense"])
+def test_create_task_rejects_node_kinds_it_does_not_own(create_env, kind) -> None:
+    """"pendenz" belongs to POST /api/todos; two routes for one thing drift.
+    "assumption" holds notes the dashboard deliberately never renders."""
+    assert client.post(
+        "/api/tasks", json={"title": "X", "node_kind": kind}
+    ).status_code == 422
+
+
+def test_create_project_makes_a_directory(create_env) -> None:
+    _, proj = create_env
+    resp = client.post("/api/projects", json={"project_id": "neu-projekt"})
+    assert resp.status_code == 200, resp.text
+    assert (proj / "neu-projekt").is_dir()
+
+
+def test_create_project_is_not_a_way_to_overwrite_one(create_env) -> None:
+    client.post("/api/projects", json={"project_id": "a"})
+    assert client.post("/api/projects", json={"project_id": "a"}).status_code == 409
+
+
+@pytest.mark.parametrize("bad", ["../escaped", "a/b", "..", ".", "", "  "])
+def test_create_project_rejects_an_unsafe_id(create_env, bad) -> None:
+    """The id becomes a directory name."""
+    _, proj = create_env
+    assert client.post(
+        "/api/projects", json={"project_id": bad}
+    ).status_code == 422
+    assert list(proj.parent.glob("escaped")) == []
+
+
+@pytest.mark.parametrize(
+    "endpoint", ["/api/todos", "/api/tasks", "/api/projects"]
+)
+def test_create_routes_reject_a_non_object_body(create_env, endpoint) -> None:
+    assert client.post(endpoint, json=["x"]).status_code == 422

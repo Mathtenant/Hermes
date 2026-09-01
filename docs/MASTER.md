@@ -885,6 +885,9 @@ SQLite task/job stores + schedule.json files
 | `/api/dashboard` | GET | Full DashboardData JSON (all projects) |
 | `/api/dashboard?project_id=X` | GET | Scoped DashboardData for project X |
 | `/api/refresh` | GET | Same as `/api/dashboard` — fresh disk read |
+| `/api/todos` | POST | Create one to-do by hand. Body `{title, owner?, priority?, due_date?, description?}`. Stored as a `Pendenz` with `source="manual"` — the same shape as an imported one, so it needs no separate store or view. A supplied-but-unusable `due_date` is a 422 rather than a silent drop. |
+| `/api/tasks` | POST | Create one work-breakdown node. Body `{title, node_kind?, parent_id?, owner?, status?}`. `node_kind` excludes `pendenz` (that is `/api/todos`; two routes for one thing drift) and `assumption` (internal notes the dashboard never renders). A missing `parent_id` is a 404 — an orphan would show on the board but be absent from the WBS. |
+| `/api/projects` | POST | Create an empty project directory. Body `{project_id}`, guarded by the importer's own `_is_safe_path_segment`; an existing id is a 409 rather than an overwrite. |
 | `/api/schedule/{project_id}/items/{item_id}/owner` | POST | Reassign one dated obligation. Body `{"owner": "<role or name>"}`; an empty string clears it. Capped at 80 characters, and run through the importer's redaction — the owner is rendered on every row and shipped in every dashboard response, so one pasted email address would otherwise 500 the dashboard permanently; the response reports what was stripped. `project_id` goes through the importer's own `_is_safe_path_segment` rather than a second copy, since two path checks that can drift is how a traversal hole opens. |
 | `/api/tasks/{id}/status` | POST | Move a task between kanban columns. Body `{"status": "open"\|"closed"\|"blocked"}`; 422 on any other value, 404 on an unknown id. Returns `{id, status, wbs_number, updated_at}` — deliberately narrow, since echoing the whole task would put `description`/`metadata` (neither covered by the dashboard's field allowlist) on the wire. Writes through `TaskStore.update()`, so every move lands in the task's `updates` audit trail as `changed_by="dashboard"`. |
 | `/` and `/*` | GET | Serves `index.html` (SPA fallback) |
@@ -911,6 +914,14 @@ SQLite task/job stores + schedule.json files
 - **One hero figure per view**, sentence-case labels (not ALL CAPS), and proportional — not tabular — figures on the large standalone numbers; tabular figures belong in columns of numbers that must line up.
 
 **`/api/dashboard` — DashboardData fields:** `generated_at`, `scope`, `range_start`, `range_end`, `projects`, `timeline`, `kanban`, `wbs`, `pendenzen`, `reviews`, `risks`. The `risks` array carries only safe fields per `RiskRow` (`id`, `title`, `severity`, `likelihood`, `status`, `score`, `updated_at`) — confidential risks and the `owner` field are excluded.
+
+**"Pendenzen" is labelled "Todo" in the UI only.** The route key (`#/pendenzen`), the API paths, the `pendenzen` entity type, the stored `node_kind`, and the prompt bodies all keep the original name: renaming the schema would break stored data and saved exports for a cosmetic change, and `copilot_beschluesse` describes a document literally called *Pendenzen- und Beschlussliste*, so the term has to survive there to match what is in the folder.
+
+**The sidebar is reorderable** by drag or by Alt+↑/↓ on the focused item — drag alone would put the order out of reach without a pointer. The order lives in `localStorage` and is reconciled against the canonical screen list on every read, so a screen added in a later version appears at the end rather than vanishing, and one that was removed drops out rather than leaving a hole; a corrupt value falls back to the default.
+
+**The digit shortcuts are positional in the canonical order, not the user's.** A key that moved with its row would be unlearnable. They are derived from `SCREENS` rather than hand-listed, because the switch statement, each nav item's `shortcut` field and the help dialog were three copies of one mapping and had already drifted: after the Termine & Fristen screen was added, `4` went to Todo while the help promised Termine, and `7` did nothing at all. The `shortcut` field is gone and the help list is built from the nav items.
+
+**Creating by hand.** Everything arrived by import until now, which left the dashboard read-only for anything that came up between exports — exactly when a to-do is born. `+ Neu` (or `n`) opens a dialog for a Todo, an Arbeitspaket or a Projekt. Hand-typed text goes through the same redaction the importer applies; it is *more* likely to carry an address than imported text, not less.
 
 **Keyboard shortcuts:** `1`–`7` switch screens · `r` refresh · `i` import JSON · `d` toggle dark/light · `?` help · `Esc` close dialog. Theme persisted in `localStorage`.
 

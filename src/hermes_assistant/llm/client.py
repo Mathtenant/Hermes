@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 from urllib.parse import urlparse
 
@@ -29,6 +29,9 @@ from hermes_assistant.llm.tracing import JsonlTracer, TraceRecord, hash_prompt
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
+# Unbounded: the failover wrapper is generic over whatever the wrapped call
+# returns — a str from chat(), a BaseModel from structured().
+_T = TypeVar("_T")
 
 # Only loopback hosts are permitted — no confidential data may leave the box.
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -182,7 +185,109 @@ class OllamaClient:
     # ----------------------------------------------------------------- #
     # Public API
     # ----------------------------------------------------------------- #
+    # ------------------------------------------------------------------ #
+    # Model failover
+    #
+    # A model that is not pulled, is corrupt, or dies under memory pressure
+    # fails on every request. Telling the caller to go pull it is a worse
+    # answer than using a model the machine already has, so a reachability
+    # failure falls through to the next installed model here — at the client,
+    # where every caller inherits it, rather than at one call site.
+    # ------------------------------------------------------------------ #
+
+    def _failover_candidates(self, failed: str) -> list[str]:
+        """Installed models worth trying after ``failed`` did not answer.
+
+        Empty when Ollama itself is unreachable: every model sits behind the
+        same daemon, so trying each in turn would repeat one failure slowly
+        and bury the real cause. The probe never raises, so a dead daemon
+        lands here as "no candidates" rather than as a second exception.
+
+        Uses the untraced probe rather than :meth:`health`, so a failed call
+        still leaves exactly one trace record instead of two.
+
+        Sorted for reproducibility — the candidate picked must not depend on
+        the order Ollama happened to list its models in.
+        """
+        tags = self._probe_tags()
+        if not tags.get("available"):
+            return []
+        return sorted(m for m in tags.get("models", []) if m and m != failed)
+
+    def _with_failover(
+        self,
+        call_type: str,
+        model: str,
+        allow_fallback: bool,
+        attempt: Callable[[str], _T],
+    ) -> _T:
+        """Run ``attempt`` on ``model``, retrying on other installed models.
+
+        ``OllamaValidationError`` is deliberately never retried elsewhere: it
+        means the model answered but the answer did not fit the schema, which
+        is a prompt or schema problem. Burning through every installed model
+        would hide that behind a slow, confusing failure.
+
+        Re-raises the ORIGINAL error when nothing works, so the message names
+        the model the caller actually asked for rather than the last one tried.
+        """
+        try:
+            return attempt(model)
+        except OllamaValidationError:
+            raise
+        except OllamaError as exc:
+            if not allow_fallback:
+                raise
+            for candidate in self._failover_candidates(model):
+                try:
+                    result = attempt(candidate)
+                except OllamaError:
+                    continue
+                logger.warning(
+                    "%s: model %s was unreachable (%s) — fell back to %s",
+                    call_type,
+                    model,
+                    exc,
+                    candidate,
+                )
+                return result
+            raise
+
     def chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        *,
+        think: bool | None = None,
+        num_ctx: int = 8192,
+        temperature: float = 0.2,
+        keep_alive: int | str | None = None,
+        num_gpu: int | None = None,
+        allow_fallback: bool = True,
+    ) -> str:
+        """Plain chat completion, falling back to another installed model.
+
+        Set ``allow_fallback=False`` when the identity of the model is part of
+        the result — a panel judge, or anything whose output is compared
+        across model families. There, silently substituting a model would
+        corrupt the comparison rather than rescue it.
+        """
+        return self._with_failover(
+            "chat",
+            model,
+            allow_fallback,
+            lambda m: self._chat_impl(
+                m,
+                messages,
+                think=think,
+                num_ctx=num_ctx,
+                temperature=temperature,
+                keep_alive=keep_alive,
+                num_gpu=num_gpu,
+            ),
+        )
+
+    def _chat_impl(
         self,
         model: str,
         messages: list[dict[str, str]],
@@ -339,6 +444,48 @@ class OllamaClient:
             )
 
     def structured(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        schema: type[T],
+        *,
+        system: str | None = None,
+        num_ctx: int = 8192,
+        max_retries: int = 1,
+        temperature: float = 0.1,
+        keep_alive: int | str | None = None,
+        num_gpu: int | None = None,
+        allow_fallback: bool = True,
+    ) -> T:
+        """Grammar-constrained JSON, falling back to another installed model.
+
+        This is the single choke point for LLM requests in the codebase — the
+        router, intake, planner, critic, red team and meeting extraction all
+        come through here — so the fallback lives here rather than being
+        re-implemented per caller.
+
+        Set ``allow_fallback=False`` when which model answered is part of the
+        result (see :meth:`chat`). A schema-validation failure is never
+        retried on another model: that is a prompt problem, not reachability.
+        """
+        return self._with_failover(
+            "structured",
+            model,
+            allow_fallback,
+            lambda m: self._structured_impl(
+                m,
+                messages,
+                schema,
+                system=system,
+                num_ctx=num_ctx,
+                max_retries=max_retries,
+                temperature=temperature,
+                keep_alive=keep_alive,
+                num_gpu=num_gpu,
+            ),
+        )
+
+    def _structured_impl(
         self,
         model: str,
         messages: list[dict[str, str]],
@@ -568,31 +715,41 @@ class OllamaClient:
         vectors: list[list[float]] = data["embeddings"]
         return vectors
 
-    def health(self) -> dict[str, Any]:
-        """Check whether the local Ollama service is reachable.
+    def _probe_tags(self) -> dict[str, Any]:
+        """Ask Ollama what it has installed. Never raises, never traces.
 
-        Never raises: returns a status dict so callers can degrade gracefully.
+        Split out of :meth:`health` so the failover path can look up
+        candidates without writing a trace record. The tracer is the log of
+        model calls the caller actually made — a probe the client fires on its
+        own would inflate every failed call to two records and make the trace
+        useless for cost and latency analysis.
         """
         url = f"{self.host}/api/tags"
-        start = time.perf_counter()
         try:
             response = requests.get(url, timeout=2)
             response.raise_for_status()
             payload = response.json()
-            models = [m.get("name") for m in payload.get("models", [])]
-            status: dict[str, Any] = {
+            return {
                 "available": True,
                 "host": self.host,
-                "models": models,
+                "models": [m.get("name") for m in payload.get("models", [])],
                 "error": None,
             }
         except (requests.RequestException, ValueError) as exc:
-            status = {
+            return {
                 "available": False,
                 "host": self.host,
                 "models": [],
                 "error": str(exc),
             }
+
+    def health(self) -> dict[str, Any]:
+        """Check whether the local Ollama service is reachable.
+
+        Never raises: returns a status dict so callers can degrade gracefully.
+        """
+        start = time.perf_counter()
+        status: dict[str, Any] = self._probe_tags()
         latency_ms = (time.perf_counter() - start) * 1000
         self._trace(
             call_type="health",

@@ -88,12 +88,20 @@ class IntentRouter:
 
         messages = [{"role": "user", "content": message}]
 
+        # allow_fallback=False: ChatService owns failover for the chat path,
+        # not because the client's is wrong but because the service can make
+        # the switch STICK — it writes the working model back onto this
+        # router, so later turns stop paying for the dead one and the model
+        # picker in the dashboard reports what is actually serving. A silent
+        # client-level fallback here would succeed every turn and leave both
+        # of those wrong.
         result = self.client.structured(
             self.model,
             messages,
             IntentClassification,
             system=system_prompt,
             num_ctx=4096,
+            allow_fallback=False,
         )
         if isinstance(result, IntentClassification):
             return result

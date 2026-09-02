@@ -211,9 +211,14 @@ def panel_check_criterion(
     for model_id in panelists:
         weight = (weights or {}).get(model_id, 1.0)
         try:
+            # allow_fallback=False: a panel exists to compare model families,
+            # so a substituted panelist would corrupt the very thing being
+            # measured. Dropping one (below) is recorded and honest; silently
+            # swapping it is not.
             sample = client.structured(
                 model_id, messages, CheckSample,
                 temperature=0.1, num_ctx=num_ctx,
+                allow_fallback=False,
             )
         except OllamaError as exc:
             logger.warning(
@@ -377,10 +382,13 @@ def panel_review(
             msgs = messages_by_criterion[criterion.id]
 
             try:
+                # allow_fallback=False for the same reason as above: the
+                # panelist's identity is part of the result.
                 sample = client.structured(
                     model_id, msgs, CheckSample,
                     temperature=0.1, num_ctx=num_ctx,
                     keep_alive=ka,
+                    allow_fallback=False,
                 )
                 per_model_results[model_id][criterion.id] = sample
             except OllamaError as exc:

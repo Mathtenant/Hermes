@@ -60,29 +60,29 @@ def _nav(page: Page) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 
-def test_the_sidebar_says_todo(app_page: Page):
-    assert "Todo" in _nav(app_page)
+def test_the_sidebar_never_says_pendenzen(app_page: Page):
+    """The word the rename removed must not come back on any route.
+
+    The tab it used to name has since been merged into "Aufgaben & Termine",
+    so this no longer asserts a "Todo" entry — see test_work_screen_ui.py for
+    the merged screen's own contract. What stays worth pinning is the absence.
+    """
     assert "Pendenzen" not in _nav(app_page)
-
-
-def test_the_screen_and_its_tab_say_todo(app_page: Page):
-    app_page.click('[data-testid="nav-pendenzen"]')
-    app_page.wait_for_timeout(500)
-    assert "Todo" in app_page.locator(".page-title").inner_text()
-    tabs = app_page.locator(".tab-bar .tab-btn").all_text_contents()
-    assert any("Todos" in t for t in tabs)
 
 
 def test_the_overview_hero_says_todo(app_page: Page):
     assert "Todo" in app_page.locator(".hero-label").inner_text()
 
 
-def test_the_route_key_is_unchanged_by_the_rename(app_page: Page):
-    """Only labels moved. The hash, the API and the stored data keep the
-    original name, so existing links and imports still work."""
-    app_page.click('[data-testid="nav-pendenzen"]')
-    app_page.wait_for_timeout(400)
-    assert app_page.url.endswith("#/pendenzen")
+def test_the_old_route_key_still_resolves(app_page: Page):
+    """This used to assert the hash key never changes. It does now.
+
+    Merging the two tabs replaced #/pendenzen with #/work, so the promise
+    that survives is the one that actually matters to a person with a
+    bookmark: the old key still lands on the right screen.
+    """
+    app_page.goto(f"{BASE_URL}/#/pendenzen")
+    app_page.wait_for_selector('[data-testid="work-search"]', timeout=15000)
 
 
 # --------------------------------------------------------------------------- #
@@ -152,12 +152,20 @@ def test_reordering_does_not_break_navigation(app_page: Page):
 
 def test_the_shortcut_digits_do_not_move_with_the_rows(app_page: Page):
     """A key that followed the row would be unlearnable, so the digits stay
-    bound to screens rather than positions."""
+    bound to screens rather than positions.
+
+    The digit is derived from the shipped order rather than written in: this
+    test hard-coded "6" and broke the moment two screens merged into one, for
+    a reason that had nothing to do with what it was testing.
+    """
+    canonical = _nav(app_page)
+    digit = str(canonical.index("Risks") + 1)
+
     app_page.locator('[data-testid="nav-risks"]').focus()
     app_page.keyboard.press("Alt+ArrowUp")
     app_page.wait_for_timeout(300)
     app_page.locator("body").click()
-    app_page.keyboard.press("6")          # 6 is Risks in the canonical list
+    app_page.keyboard.press(digit)
     app_page.wait_for_timeout(500)
     assert app_page.locator(".page-title").inner_text().strip() == "Risks"
 
@@ -165,6 +173,7 @@ def test_the_shortcut_digits_do_not_move_with_the_rows(app_page: Page):
 def test_an_unknown_stored_key_is_ignored(app_page: Page):
     """A screen removed in a later version must not leave a hole, and one
     added must not vanish."""
+    canonical = _nav(app_page)
     app_page.evaluate(
         "localStorage.setItem('hermes-nav-order',"
         " JSON.stringify(['risks','gibt-es-nicht','overview']))"
@@ -174,16 +183,19 @@ def test_an_unknown_stored_key_is_ignored(app_page: Page):
     nav = _nav(app_page)
     assert nav[0] == "Risks"          # stored order honoured
     assert nav[1] == "Overview"
-    assert "Todo" in nav              # screens absent from the stored list survive
-    assert len(nav) == 7
+    # Screens absent from the stored list survive, and the bogus key is
+    # dropped — compared against the shipped set rather than a written-in
+    # count, so merging or adding a screen does not falsify this test.
+    assert set(nav) == set(canonical)
+    assert len(nav) == len(canonical)
 
 
 def test_corrupt_stored_order_falls_back_to_the_default(app_page: Page):
+    canonical = _nav(app_page)
     app_page.evaluate("localStorage.setItem('hermes-nav-order','not json')")
     app_page.reload()
     app_page.wait_for_selector(".stat-tile", timeout=10000)
-    assert _nav(app_page)[0] == "Overview"
-    assert len(_nav(app_page)) == 7
+    assert _nav(app_page) == canonical
 
 
 # --------------------------------------------------------------------------- #
@@ -203,7 +215,7 @@ def test_the_create_button_opens_a_dialog(app_page: Page):
 
 
 def test_a_todo_can_be_created_and_shows_up(app_page: Page):
-    before = int(app_page.locator('[data-testid="nav-pendenzen"] .nav-count').inner_text())
+    before = int(app_page.locator('[data-testid="nav-work"] .nav-count').inner_text())
     _open_create(app_page)
     app_page.fill('[data-testid="create-title"]', "E2E Neuer Punkt")
     app_page.fill('[data-testid="create-owner"]', "E2E Owner")
@@ -211,11 +223,11 @@ def test_a_todo_can_be_created_and_shows_up(app_page: Page):
     app_page.click('[data-testid="create-submit"]')
     app_page.wait_for_timeout(2500)
 
-    after = int(app_page.locator('[data-testid="nav-pendenzen"] .nav-count').inner_text())
+    after = int(app_page.locator('[data-testid="nav-work"] .nav-count').inner_text())
     assert after == before + 1
 
-    app_page.click('[data-testid="nav-pendenzen"]')
-    app_page.fill('[data-testid="pendenzen-search"]', "E2E Neuer Punkt")
+    app_page.click('[data-testid="nav-work"]')
+    app_page.fill('[data-testid="work-search"]', "E2E Neuer Punkt")
     app_page.wait_for_timeout(500)
     row = app_page.locator('tbody tr:has-text("E2E Neuer Punkt")').first.inner_text()
     assert "E2E Owner" in row

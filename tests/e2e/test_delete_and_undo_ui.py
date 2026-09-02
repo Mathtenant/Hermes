@@ -83,8 +83,8 @@ def _make_todo(page: Page, title: str) -> None:
 
 
 def _open_todos(page: Page) -> None:
-    page.get_by_role("button", name="Todo").first.click()
-    page.wait_for_selector('[data-testid="pendenzen-search"]', timeout=10000)
+    page.get_by_role("button", name="Aufgaben & Termine").first.click()
+    page.wait_for_selector('[data-testid="work-search"]', timeout=10000)
 
 
 def _row(page: Page, title: str):
@@ -100,9 +100,9 @@ def test_a_todo_row_offers_a_delete_button(todo_page: Page) -> None:
     title = _unique("E2E todo")
     _make_todo(todo_page, title)
     _open_todos(todo_page)
-    todo_page.locator('[data-testid="pendenzen-search"]').fill(title)
+    todo_page.locator('[data-testid="work-search"]').fill(title)
     expect(_row(todo_page, title).locator(
-        '[data-testid="delete-todo"]'
+        '[data-testid="delete-work"]'
     )).to_have_count(1)
 
 
@@ -111,10 +111,10 @@ def test_cancelling_the_confirm_keeps_the_todo(todo_page: Page) -> None:
     title = _unique("E2E todo")
     _make_todo(todo_page, title)
     _open_todos(todo_page)
-    todo_page.locator('[data-testid="pendenzen-search"]').fill(title)
+    todo_page.locator('[data-testid="work-search"]').fill(title)
 
     todo_page.on("dialog", lambda d: d.dismiss())
-    _row(todo_page, title).locator('[data-testid="delete-todo"]').click()
+    _row(todo_page, title).locator('[data-testid="delete-work"]').click()
     todo_page.wait_for_timeout(500)
 
     expect(_row(todo_page, title)).to_have_count(1)
@@ -124,10 +124,10 @@ def test_confirming_removes_the_todo_from_the_table(todo_page: Page) -> None:
     title = _unique("E2E todo")
     _make_todo(todo_page, title)
     _open_todos(todo_page)
-    todo_page.locator('[data-testid="pendenzen-search"]').fill(title)
+    todo_page.locator('[data-testid="work-search"]').fill(title)
 
     todo_page.on("dialog", lambda d: d.accept())
-    _row(todo_page, title).locator('[data-testid="delete-todo"]').click()
+    _row(todo_page, title).locator('[data-testid="delete-work"]').click()
 
     expect(todo_page.locator("tr", has_text=title)).to_have_count(0, timeout=10000)
 
@@ -136,11 +136,11 @@ def test_deleting_shows_an_undo_button(todo_page: Page) -> None:
     title = _unique("E2E todo")
     _make_todo(todo_page, title)
     _open_todos(todo_page)
-    todo_page.locator('[data-testid="pendenzen-search"]').fill(title)
+    todo_page.locator('[data-testid="work-search"]').fill(title)
 
     todo_page.on("dialog", lambda d: d.accept())
     _row(todo_page, title).locator(
-        '[data-testid="delete-todo"]'
+        '[data-testid="delete-work"]'
     ).click()
 
     expect(todo_page.locator('[data-testid="toast-undo"]')).to_be_visible(
@@ -153,10 +153,10 @@ def test_undo_brings_the_todo_back(todo_page: Page) -> None:
     title = _unique("E2E todo")
     _make_todo(todo_page, title)
     _open_todos(todo_page)
-    todo_page.locator('[data-testid="pendenzen-search"]').fill(title)
+    todo_page.locator('[data-testid="work-search"]').fill(title)
 
     todo_page.on("dialog", lambda d: d.accept())
-    _row(todo_page, title).locator('[data-testid="delete-todo"]').click()
+    _row(todo_page, title).locator('[data-testid="delete-work"]').click()
     expect(todo_page.locator("tr", has_text=title)).to_have_count(
         0, timeout=10000
     )
@@ -164,7 +164,7 @@ def test_undo_brings_the_todo_back(todo_page: Page) -> None:
     todo_page.locator('[data-testid="toast-undo"]').click()
 
     _open_todos(todo_page)
-    todo_page.locator('[data-testid="pendenzen-search"]').fill(title)
+    todo_page.locator('[data-testid="work-search"]').fill(title)
     expect(_row(todo_page, title)).to_have_count(1, timeout=10000)
 
 
@@ -173,10 +173,10 @@ def test_the_undo_button_disappears_once_used(todo_page: Page) -> None:
     title = _unique("E2E todo")
     _make_todo(todo_page, title)
     _open_todos(todo_page)
-    todo_page.locator('[data-testid="pendenzen-search"]').fill(title)
+    todo_page.locator('[data-testid="work-search"]').fill(title)
 
     todo_page.on("dialog", lambda d: d.accept())
-    _row(todo_page, title).locator('[data-testid="delete-todo"]').click()
+    _row(todo_page, title).locator('[data-testid="delete-work"]').click()
     todo_page.locator('[data-testid="toast-undo"]').click()
 
     expect(todo_page.locator('[data-testid="toast-undo"]')).to_have_count(
@@ -194,9 +194,9 @@ def test_deleting_raises_no_console_errors(todo_page: Page) -> None:
     title = _unique("E2E todo")
     _make_todo(todo_page, title)
     _open_todos(todo_page)
-    todo_page.locator('[data-testid="pendenzen-search"]').fill(title)
+    todo_page.locator('[data-testid="work-search"]').fill(title)
     todo_page.on("dialog", lambda d: d.accept())
-    _row(todo_page, title).locator('[data-testid="delete-todo"]').click()
+    _row(todo_page, title).locator('[data-testid="delete-work"]').click()
     expect(todo_page.locator('[data-testid="toast-undo"]')).to_be_visible(
         timeout=10000
     )

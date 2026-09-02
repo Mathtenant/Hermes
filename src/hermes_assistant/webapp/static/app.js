@@ -3,7 +3,7 @@
  * Requires (in load order): vendor/vue.global.prod.js, components.js, screens.js
  */
 /* global Vue, OverviewScreen, ProjectListScreen, ProjectDetailScreen,
-          PendenzenScreen, ReviewsScreen, RisksScreen, AblaufplanScreen,
+          ReviewsScreen, RisksScreen, WorkScreen,
           WbsNodeItem, WbsTab, KanbanTab */
 (function () {
 'use strict';
@@ -13,9 +13,19 @@ const {
 } = Vue;
 
 // Screens that can be reached from the sidebar / hash router.
+// 'plan' and 'pendenzen' used to be two entries. They were never two kinds of
+// thing — one question ("what is owed, by when") split by whether an item
+// happened to carry a date — so they are one screen now, keyed 'work'. The
+// old keys stay resolvable in resolveScreen() so existing links and stored
+// sidebar orders keep working.
 const SCREENS = [
-  'overview', 'projects', 'detail', 'plan', 'pendenzen', 'risks', 'reviews',
+  'overview', 'projects', 'detail', 'work', 'risks', 'reviews',
 ];
+
+// Retired screen keys → where they live now. Bookmarks and the persisted
+// sidebar order both hold raw keys, so dropping a key without a forwarding
+// address would silently strand them.
+const SCREEN_ALIASES = { plan: 'work', pendenzen: 'work' };
 
 // Sidebar icons: SVG path data on a 24×24 grid, drawn as strokes so they
 // inherit the nav item's colour and stay optically consistent with each other
@@ -25,8 +35,7 @@ const NAV_ICONS = {
   overview:  'M4 5h7v6H4zM13 5h7v4h-7zM13 11h7v8h-7zM4 13h7v6H4z',
   projects:  'M4 6h16M4 12h16M4 18h16',
   detail:    'M4 6h9M4 12h13M4 18h7M19 5v4M17 7h4',
-  plan:      'M4 6h9M8 12h10M4 18h7M4 4v16',
-  pendenzen: 'M5 21V4h11l-1.5 3.5L16 11H5',
+  work:      'M4 6h9M8 12h10M4 18h7M4 4v16',
   risks:     'M12 4l8.5 15h-17zM12 10v4M12 17.2v.1',
   reviews:   'M4.5 12.5l4.5 4.5 10.5-11',
 };
@@ -48,7 +57,12 @@ function readNavOrder() {
 }
 
 function reconcileOrder(stored, canonical) {
-  const known = stored.filter((k) => canonical.includes(k));
+  // Map retired keys onto their replacement FIRST, so a merged screen keeps
+  // the slot its predecessor held instead of being treated as brand new and
+  // appended at the bottom of someone's carefully arranged sidebar. Two old
+  // keys can map to one new one, so de-duplicate after mapping.
+  const mapped = stored.map((k) => SCREEN_ALIASES[k] || k);
+  const known = [...new Set(mapped)].filter((k) => canonical.includes(k));
   return [...known, ...canonical.filter((k) => !known.includes(k))];
 }
 
@@ -386,8 +400,15 @@ function syncHash() {
   }
 }
 
-function goTo(screen) {
-  if (!SCREENS.includes(screen)) return;
+/** Map a possibly-retired screen key onto a live one, or '' if unknown. */
+function resolveScreen(screen) {
+  const target = SCREEN_ALIASES[screen] || screen;
+  return SCREENS.includes(target) ? target : '';
+}
+
+function goTo(rawScreen) {
+  const screen = resolveScreen(rawScreen);
+  if (!screen) return;
   // "Project detail" without a selection means the all-projects rollup.
   state.screen = screen;
   if (screen === 'projects' || screen === 'overview') {
@@ -416,8 +437,11 @@ function clearProject() {
 function applyHash() {
   const raw = window.location.hash.replace(/^#\/?/, '');
   if (!raw) return false;
-  const [screen, encodedId] = raw.split('/');
-  if (!SCREENS.includes(screen)) return false;
+  const [rawScreen, encodedId] = raw.split('/');
+  // An old #/pendenzen or #/plan bookmark lands on the merged screen rather
+  // than falling through to the default and looking broken.
+  const screen = resolveScreen(rawScreen);
+  if (!screen) return false;
   state.screen = screen;
   state.projectId = encodedId ? decodeURIComponent(encodedId) : null;
   return true;
@@ -691,10 +715,9 @@ const App = {
     OverviewScreen,
     ProjectListScreen,
     ProjectDetailScreen,
-    PendenzenScreen,
     ReviewsScreen,
     RisksScreen,
-    AblaufplanScreen,
+    WorkScreen,
   },
   setup() {
     // Surface API errors as a toast
@@ -756,8 +779,8 @@ const App = {
       { key: 'projects',  label: 'Projects',  icon: NAV_ICONS.projects,  count: counts.value.projects },
       { key: 'detail',    label: 'Timeline & WBS', icon: NAV_ICONS.detail,
         count: counts.value.tasks + counts.value.timeline },
-      { key: 'plan',      label: 'Termine & Fristen', icon: NAV_ICONS.plan, count: counts.value.ablaufplan },
-      { key: 'pendenzen', label: 'Todo', icon: NAV_ICONS.pendenzen, count: counts.value.pendenzen },
+      { key: 'work', label: 'Aufgaben & Termine', icon: NAV_ICONS.work,
+        count: counts.value.ablaufplan + counts.value.pendenzen },
       { key: 'risks',     label: 'Risks',     icon: NAV_ICONS.risks,     count: counts.value.risks },
       { key: 'reviews',   label: 'Reviews',   icon: NAV_ICONS.reviews,   count: counts.value.reviews },
     ]);
@@ -824,10 +847,10 @@ const App = {
     // on another screen.
     const ENTITY_DESTINATIONS = {
       tasks: { label: 'Arbeitspakete', screen: 'Strukturplan & Kanban' },
-      schedule: { label: 'Termine & Fristen', screen: 'Termine & Fristen' },
-      beschluesse: { label: 'Beschlüsse', screen: 'Todo → Beschlüsse' },
+      schedule: { label: 'Termine & Fristen', screen: 'Aufgaben & Termine → Zeitstrahl' },
+      beschluesse: { label: 'Beschlüsse', screen: 'Aufgaben & Termine → Beschlüsse' },
       risks: { label: 'Risiken', screen: 'Risks' },
-      pendenzen: { label: 'Todos', screen: 'Todo' },
+      pendenzen: { label: 'Todos', screen: 'Aufgaben & Termine → Liste' },
       projects: { label: 'Projekte', screen: 'Projects' },
       plans: { label: 'Plan-Versionen', screen: 'nicht im Dashboard sichtbar' },
     };
@@ -997,19 +1020,13 @@ const App = {
           @back="clearProject"
           @changed="refresh"
         />
-        <ablaufplan-screen
-          v-else-if="state.screen === 'plan'"
-          :data="state.data"
-          :loading="state.loading"
-          :error="state.error"
-          @changed="refresh"
-        />
-        <pendenzen-screen
-          v-else-if="state.screen === 'pendenzen'"
+        <work-screen
+          v-else-if="state.screen === 'work'"
           :data="state.data"
           :loading="state.loading"
           :error="state.error"
           @delete-task="deleteTask"
+          @changed="refresh"
         />
         <risks-screen
           v-else-if="state.screen === 'risks'"

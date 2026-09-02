@@ -2239,3 +2239,126 @@ tr:focus-within .icon-btn { opacity: 1; }
   min-height: 2.5rem;
   font-family: var(--font-sans);
 }
+
+/* ── Aufgaben & Termine ────────────────────────────────────────────────────
+   The merged screen: one dataset, three lenses over it. */
+
+.lens-bar {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+  padding: 0.25rem;
+  background: var(--c-fill-neutral);
+  border-radius: var(--radius-md);
+  width: fit-content;
+}
+
+.lens-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  border: none;
+  background: none;
+  border-radius: var(--radius-sm);
+  color: var(--c-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  padding: 0.375rem 0.875rem;
+}
+
+.lens-btn:hover     { color: var(--c-text); }
+.lens-btn.is-active {
+  background: var(--c-bg-card);
+  color: var(--c-text);
+  box-shadow: var(--shadow-sm);
+}
+.lens-btn:focus-visible { outline: 2px solid var(--c-primary); outline-offset: 1px; }
+
+.lens-count {
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-text-muted);
+}
+
+/* Buckets. The heading carries the meaning; the tone is a reinforcement, so
+   overdue is never signalled by colour alone — the word "Überfällig" is right
+   there, and the count sits beside it. */
+.bucket { margin-bottom: 1.5rem; }
+
+.bucket-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--c-text-muted);
+  margin: 0 0 0.5rem;
+}
+
+.bucket-head.is-overdue { color: var(--st-critical-ink); }
+.bucket-head.is-soon    { color: var(--st-warning-ink); }
+.bucket-head.is-done    { opacity: 0.65; }
+
+.bucket-count {
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-text-muted);
+  background: var(--c-fill-neutral);
+  border-radius: 999px;
+  padding: 0.0625rem 0.4375rem;
+}
+
+/* Which of the two former tabs a row came from. Recessive on purpose: it is
+   provenance, not priority — the reader is scanning titles and dates. */
+.kind-chip {
+  display: inline-block;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  padding: 0.0625rem 0.375rem;
+  white-space: nowrap;
+  background: var(--c-fill-neutral);
+  color: var(--c-text-muted);
+}
+
+.kind-chip.is-termin { background: var(--c-primary-soft); color: var(--c-primary); }
+
+/* Status chips for the merged vocabulary, mapped onto the existing palette.
+   Only erledigt and blockiert take a status hue — those are the two that
+   genuinely mean good and bad; laufend and offen are neither. */
+.chip-erledigt  { background: var(--c-fill-green);   color: var(--st-good-ink); }
+.chip-blockiert { background: var(--c-fill-red);     color: var(--st-critical-ink); }
+.chip-laufend   { background: var(--c-primary-soft); color: var(--c-primary); }
+.chip-offen     { background: var(--c-fill-neutral); color: var(--c-text-muted); }
+
+.notice-inline {
+  font-size: 0.8125rem;
+  color: var(--c-text-muted);
+  margin: 0 0 0.75rem;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--c-primary);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* A bucket holds a handful of rows, not a full page of them. The shared
+   .table-scroll floor of 8rem is right for one big table and wrong for six
+   stacked small ones — it leaves dead space under every short bucket. Nor
+   should each bucket scroll independently: the page scrolls, so a reader
+   moving from Überfällig to Später never has to find a second scrollbar. */
+.bucket .table-scroll {
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+}

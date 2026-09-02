@@ -1005,3 +1005,52 @@ def test_project_restore_revalidates_the_undo_token(create_env, bad) -> None:
         "/api/projects/restore", json={"project_id": "ok", "trash_name": bad}
     )
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Static asset freshness
+#
+# Starlette's StaticFiles sends ETag and Last-Modified but no Cache-Control.
+# Without it a browser falls back to HEURISTIC caching and may reuse app.js
+# for a long time without revalidating — so a shipped UI change simply does
+# not appear, with no error to explain it. That is how a renamed sidebar label
+# kept showing its old text long after the rename was on main.
+# ---------------------------------------------------------------------------
+
+
+def test_static_assets_must_be_revalidated() -> None:
+    """no-cache means "revalidate before reuse", not "do not store".
+
+    The ETag makes that a cheap 304 on every unchanged asset, so this costs a
+    conditional request rather than a re-download.
+    """
+    r = client.get("/static/app.js")
+    assert r.status_code == 200
+    assert r.headers.get("cache-control") == "no-cache"
+
+
+def test_api_responses_are_not_given_the_static_cache_header() -> None:
+    """The header is scoped to /static/, not sprayed over every response."""
+    r = client.get("/api/health")
+    assert "cache-control" not in {k.lower() for k in r.headers}
+
+
+def test_the_page_stamps_its_asset_urls_with_the_version() -> None:
+    """Belt to Cache-Control's braces.
+
+    Revalidation depends on the browser honouring the header and on nothing in
+    between stripping it. A changed URL is a new resource to every cache there
+    is, so a released version can never be served from a stale copy.
+    """
+    body = client.get("/").text
+    assert f'/static/app.js?v={__version__}' in body
+    assert f'/static/style.css?v={__version__}' in body
+
+
+def test_the_stamp_does_not_touch_the_file_on_disk() -> None:
+    """index.html keeps plain URLs so it stays directly openable."""
+    index = (
+        Path(__file__).resolve().parents[1]
+        / "src/hermes_assistant/webapp/static/index.html"
+    )
+    assert "?v=" not in index.read_text(encoding="utf-8")

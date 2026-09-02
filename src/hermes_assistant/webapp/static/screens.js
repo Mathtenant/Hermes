@@ -96,7 +96,7 @@ const OverviewScreen = {
              on — with the remaining counts as secondary tiles. Each is a
              shortcut into its screen. -->
         <div class="overview-head">
-          <button class="hero-tile" @click="$emit('navigate', 'pendenzen')">
+          <button class="hero-tile" @click="$emit('navigate', 'work')">
             <span class="hero-label">Offene Todos</span>
             <span class="hero-value">{{ openPendenzen.length }}</span>
             <span class="hero-hint" :class="{ 'is-alert': blockers.length > 0 }">
@@ -139,7 +139,7 @@ const OverviewScreen = {
               <span class="stat-hint">Rubric verdicts</span>
             </button>
 
-            <button class="stat-tile" @click="$emit('navigate', 'pendenzen')">
+            <button class="stat-tile" @click="$emit('navigate', 'work')">
               <span class="stat-label">Todos gesamt</span>
               <span class="stat-value">{{ counts.pendenzen }}</span>
               <span class="stat-hint">
@@ -184,7 +184,7 @@ const OverviewScreen = {
           <section class="card">
             <div class="flex justify-between items-center mb-3">
               <h2 class="text-base font-semibold">Braucht Aufmerksamkeit</h2>
-              <button class="btn-link" @click="$emit('navigate', 'pendenzen')">Todos &rarr;</button>
+              <button class="btn-link" @click="$emit('navigate', 'work')">Todos &rarr;</button>
             </div>
             <div v-if="!urgentPendenzen.length" class="text-sm text-gray-400 py-2">
               Keine offenen Todos.
@@ -528,276 +528,6 @@ const ProjectDetailScreen = {
   `,
 };
 
-// ── PendenzenScreen ────────────────────────────────────────────────────────
-const PendenzenScreen = {
-  props: ['data', 'loading', 'error'],
-  emits: ['delete-task'],
-  setup(props) {
-    const query = ref('');
-    const filterSource = ref('');
-    const filterPriority = ref('');
-    const filterStatus = ref('');
-    const sortKey = ref('priority');
-    const sortDir = ref(1);
-
-    const sources = computed(
-      () => [...new Set((props.data?.pendenzen ?? []).map(r => r.source))].sort()
-    );
-    const statuses = computed(
-      () => [...new Set((props.data?.pendenzen ?? []).map(r => r.status))].sort()
-    );
-
-    const filtered = computed(() => {
-      const q = query.value.trim().toLowerCase();
-      let rows = props.data?.pendenzen ?? [];
-      if (q) {
-        rows = rows.filter(
-          r => String(r.title ?? '').toLowerCase().includes(q)
-            || String(r.owner ?? '').toLowerCase().includes(q)
-        );
-      }
-      if (filterSource.value) rows = rows.filter(r => r.source === filterSource.value);
-      if (filterPriority.value) rows = rows.filter(r => r.priority === filterPriority.value);
-      if (filterStatus.value) rows = rows.filter(r => r.status === filterStatus.value);
-      return [...rows].sort((a, b) => {
-        if (sortKey.value === 'priority') {
-          const diff = (PRIO_RANK[a.priority] ?? 9) - (PRIO_RANK[b.priority] ?? 9);
-          return sortDir.value * diff;
-        }
-        return sortDir.value
-          * String(a[sortKey.value] ?? '').localeCompare(String(b[sortKey.value] ?? ''));
-      });
-    });
-
-    function toggleSort(key) {
-      if (sortKey.value === key) sortDir.value *= -1;
-      else { sortKey.value = key; sortDir.value = 1; }
-    }
-
-    function sortIcon(key) {
-      return sortKey.value === key ? (sortDir.value === 1 ? ' ↑' : ' ↓') : '';
-    }
-
-    function statusBadgeClass(s) {
-      const map = { open: 'chip-open', closed: 'chip-closed', blocked: 'chip-blocked' };
-      return `chip ${map[s] ?? 'chip-open'}`;
-    }
-
-    function statusMark(s) {
-      const map = { open: 'mark-ring', closed: 'mark-dot', blocked: 'mark-square' };
-      return map[s] ?? 'mark-ring';
-    }
-
-    function resetFilters() {
-      query.value = '';
-      filterSource.value = '';
-      filterPriority.value = '';
-      filterStatus.value = '';
-    }
-
-    // ── Beschlüsse ───────────────────────────────────────────────────────
-    // Same source document as the Pendenzen, so the same screen — a decision
-    // and the actions it set in motion are read together or not at all.
-    const activeTab = ref('pendenzen');
-
-    const DECISION_STATUS = {
-      beschlossen: { label: 'Beschlossen', cls: 'chip-open',    mark: 'mark-ring' },
-      umgesetzt:   { label: 'Umgesetzt',   cls: 'chip-closed',  mark: 'mark-dot' },
-      aufgehoben:  { label: 'Aufgehoben',  cls: 'chip-blocked', mark: 'mark-square' },
-      vertagt:     { label: 'Vertagt',     cls: 'chip-mitigated', mark: 'mark-bar' },
-    };
-
-    const decisionQuery = ref('');
-
-    const decisions = computed(() => {
-      const q = decisionQuery.value.trim().toLowerCase();
-      const rows = props.data?.decisions ?? [];
-      if (!q) return rows;
-      return rows.filter(
-        d => String(d.title ?? '').toLowerCase().includes(q)
-          || String(d.decided_by ?? '').toLowerCase().includes(q)
-          || String(d.affects ?? '').toLowerCase().includes(q)
-      );
-    });
-
-    const openFollowUps = computed(
-      () => (props.data?.decisions ?? []).reduce((n, d) => n + d.pendenzen_open, 0)
-    );
-
-    function fmtDate(iso) {
-      if (!iso) return '—';
-      const [y, m, d] = iso.split('-');
-      return `${d}.${m}.${y}`;
-    }
-
-    return {
-      query, filterSource, filterPriority, filterStatus, sources, statuses,
-      filtered, toggleSort, sortIcon, statusBadgeClass, statusMark, resetFilters,
-      activeTab, decisions, decisionQuery, openFollowUps, fmtDate,
-      decisionLabel: (s) => (DECISION_STATUS[s] || {}).label || s,
-      decisionClass: (s) => (DECISION_STATUS[s] || {}).cls || 'chip-open',
-      decisionMark: (s) => (DECISION_STATUS[s] || {}).mark || 'mark-ring',
-    };
-  },
-  template: `
-    <div>
-      <div class="page-header">
-        <div>
-          <h1 class="page-title">Todo &amp; Beschlüsse</h1>
-          <div class="page-subtitle">
-            Offene Todos aus Sitzungen und Reviews, und die Entscheide, aus
-            denen sie folgen.
-          </div>
-        </div>
-      </div>
-
-      <div v-if="loading && !data" class="flex items-center gap-2 py-8 text-gray-400">
-        <span class="spinner"></span> Loading&hellip;
-      </div>
-      <div v-else-if="error" class="card notice-error">{{ error }}</div>
-      <div v-else>
-        <div class="tab-bar">
-          <button class="tab-btn" :class="{ active: activeTab === 'pendenzen' }"
-                  @click="activeTab = 'pendenzen'" data-testid="tab-pendenzen">
-            Todos ({{ data?.pendenzen?.length ?? 0 }})
-          </button>
-          <button class="tab-btn" :class="{ active: activeTab === 'beschluesse' }"
-                  @click="activeTab = 'beschluesse'" data-testid="tab-beschluesse">
-            Beschlüsse ({{ data?.decisions?.length ?? 0 }})
-          </button>
-        </div>
-
-      <!-- ── Beschlüsse ────────────────────────────────────────────────── -->
-      <div v-if="activeTab === 'beschluesse'">
-        <div v-if="!(data?.decisions ?? []).length" class="card">
-          <div class="empty-state">
-            <span class="empty-state-icon" aria-hidden="true">◵</span>
-            <div class="empty-state-title">Keine Beschlüsse importiert</div>
-            <p class="text-sm">
-              Importiere die <code>Pendenzen- und Beschlussliste</code> über
-              <strong>Import JSON → Todos &amp; Beschlüsse</strong>.
-            </p>
-          </div>
-        </div>
-        <template v-else>
-          <div class="filter-bar">
-            <input class="text-input" type="search" v-model="decisionQuery"
-                   placeholder="Beschluss, Gremium oder Bereich…"
-                   aria-label="Beschlüsse durchsuchen">
-            <span class="result-count">
-              {{ decisions.length }} Beschlüsse · {{ openFollowUps }} offene Todos daraus
-            </span>
-          </div>
-
-          <!-- One row per decision: what was decided, by whom, when, and what
-               it still owes. The follow-up count is the reason the two lists
-               belong on one screen. -->
-          <ol class="decision-list">
-            <li v-for="d in decisions" :key="d.id" class="decision-item">
-              <div class="decision-date">
-                <span class="decision-day">{{ fmtDate(d.decided_on) }}</span>
-              </div>
-              <div class="decision-body">
-                <div class="decision-head">
-                  <span class="decision-title">{{ d.title }}</span>
-                  <span class="chip shrink-0" :class="decisionClass(d.decision_status)">
-                    <span class="chip-mark" :class="decisionMark(d.decision_status)"
-                          aria-hidden="true"></span>
-                    {{ decisionLabel(d.decision_status) }}
-                  </span>
-                </div>
-                <div class="decision-meta">
-                  <span v-if="d.decided_by">{{ d.decided_by }}</span>
-                  <span v-if="d.affects" class="decision-affects">{{ d.affects }}</span>
-                  <span v-if="d.pendenzen_total" class="decision-followups"
-                        :class="{ 'is-alert': d.pendenzen_open > 0 }">
-                    {{ d.pendenzen_open }} von {{ d.pendenzen_total }} Todos offen
-                  </span>
-                  <span v-else class="text-gray-400">keine Todos</span>
-                </div>
-              </div>
-            </li>
-          </ol>
-        </template>
-      </div>
-
-      <!-- ── Pendenzen ─────────────────────────────────────────────────── -->
-      <div v-else>
-        <div class="filter-bar">
-          <input class="text-input" type="search" v-model="query"
-                 placeholder="Search title or owner…" aria-label="Search pendenzen"
-                 data-testid="pendenzen-search">
-          <select class="filter-select" v-model="filterSource" aria-label="Filter by source"
-                  data-testid="risk-filter-source">
-            <option value="">All sources</option>
-            <option v-for="s in sources" :key="s" :value="s">{{ s }}</option>
-          </select>
-          <select class="filter-select" v-model="filterPriority" aria-label="Filter by priority">
-            <option value="">All priorities</option>
-            <option value="blocker">Blocker</option>
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-          </select>
-          <select class="filter-select" v-model="filterStatus" aria-label="Filter by status">
-            <option value="">All statuses</option>
-            <option v-for="s in statuses" :key="s" :value="s">{{ s }}</option>
-          </select>
-          <span class="result-count">{{ filtered.length }} of {{ data?.pendenzen?.length ?? 0 }}</span>
-        </div>
-
-        <div v-if="!filtered.length" class="card">
-          <div class="empty-state">
-            <div class="empty-state-title">Nothing matches these filters</div>
-            <button class="btn mt-2" @click="resetFilters">Reset filters</button>
-          </div>
-        </div>
-        <div v-else class="card card-flush table-scroll">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th @click="toggleSort('title')">Title{{ sortIcon('title') }}</th>
-                <th @click="toggleSort('source')">Source{{ sortIcon('source') }}</th>
-                <th @click="toggleSort('priority')">Priority{{ sortIcon('priority') }}</th>
-                <th @click="toggleSort('status')">Status{{ sortIcon('status') }}</th>
-                <th @click="toggleSort('owner')">Owner{{ sortIcon('owner') }}</th>
-                <th @click="toggleSort('due_date')">Due{{ sortIcon('due_date') }}</th>
-                <th><span class="sr-only">Aktionen</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="r in filtered" :key="r.id">
-                <td class="max-w-xs truncate" :title="r.title">{{ r.title }}</td>
-                <td class="text-gray-400">{{ r.source }}</td>
-                <td>
-                  <span class="inline-flex items-center gap-2">
-                    <span :class="['prio-dot', r.priority]"></span>{{ r.priority }}
-                  </span>
-                </td>
-                <td>
-                  <span :class="statusBadgeClass(r.status)">
-                    <span class="chip-mark" :class="statusMark(r.status)" aria-hidden="true"></span>
-                    {{ r.status }}
-                  </span>
-                </td>
-                <td class="text-gray-400">{{ r.owner || '—' }}</td>
-                <td class="font-mono text-xs">{{ r.due_date || '—' }}</td>
-                <td class="text-right row-actions">
-                  <button class="icon-btn is-danger"
-                          data-testid="delete-todo"
-                          :aria-label="r.title + ' löschen'"
-                          title="Löschen"
-                          @click="$emit('delete-task', r)">&times;</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-      </div>
-    </div>
-  `,
-};
 
 // ── RisksScreen ───────────────────────────────────────────────────────────
 const RisksScreen = {
@@ -1072,7 +802,9 @@ const ReviewsScreen = {
 // the question "what overlaps what, and what is late" is answerable at a
 // glance instead of by reading dates off a list.
 const AblaufplanScreen = {
-  props: ['data', 'loading', 'error'],
+  // `embedded` suppresses this screen's own page header when it is rendered
+  // as a lens inside another screen.
+  props: ['data', 'loading', 'error', 'embedded'],
   emits: ['changed'],
   setup(props, { emit }) {
     const filterPhase = ref('');
@@ -1443,7 +1175,10 @@ const AblaufplanScreen = {
   },
   template: `
     <div>
-      <div class="page-header">
+      <!-- Hidden when embedded as a lens of Aufgaben & Termine: that screen
+           already carries the page title, and two <h1>s stacked would be
+           wrong both visually and for a screen reader walking the headings. -->
+      <div v-if="!embedded" class="page-header">
         <div>
           <h1 class="page-title">Termine &amp; Fristen</h1>
           <div class="page-subtitle">
@@ -1733,11 +1468,455 @@ const AblaufplanScreen = {
   `,
 };
 
+
+// ── WorkScreen ─────────────────────────────────────────────────────────────
+// "Aufgaben & Termine" — the merge of the old Todo and Termine & Fristen tabs.
+//
+// Those two were never two kinds of thing. They were one question — what does
+// somebody owe, and by when — split by whether an item happened to carry a
+// date. In this project's own data that split is 9 dated to-dos against 137
+// undated ones, with ZERO title overlap between the two tabs: strictly
+// additive, and strictly arbitrary from the reader's side. Answering "what is
+// next" meant checking two places and merging them in your head.
+//
+// So: one dataset, two lenses over it.
+//
+//   Liste     — everything, bucketed by urgency. The undated items get a real
+//               home ("Ohne Termin") instead of a separate tab, and overdue
+//               work is the first thing on screen.
+//   Zeitstrahl— the existing Gantt, unchanged, for the dated items.
+//
+// The list is the default because it is the lens that can show every item;
+// the timeline structurally cannot show an undated one. A count chip says how
+// many items the timeline is therefore not showing, so the lens never lies by
+// omission.
+const WorkScreen = {
+  // The Gantt is 660 lines of working timeline code with its own filters,
+  // zoom and inline owner editing. It is reused whole as the timeline lens
+  // rather than reimplemented — the merge is about where things live, not
+  // about rewriting what already works.
+  components: { AblaufplanScreen },
+  props: ['data', 'loading', 'error'],
+  emits: ['delete-task', 'changed'],
+  setup(props) {
+    const lens = ref('liste');
+    const query = ref('');
+    const filterOwner = ref('');
+    const filterStatus = ref('');
+    const filterKind = ref('');
+
+    // Same sentinel as the Gantt's owner filter, for the same reason: it
+    // travels through a <select> value and a test fixture without escaping,
+    // and no real name looks like this.
+    const UNASSIGNED = '__ohne__';
+
+    // Both sources describe the same four states in different vocabularies.
+    // Normalising once here is what lets one row template render both.
+    const STATUS_FROM_TODO = {
+      open: 'offen',
+      in_progress: 'laufend',
+      done: 'erledigt',
+      closed: 'erledigt',
+      blocked: 'blockiert',
+    };
+    const STATUS_LABEL = {
+      offen: 'Offen',
+      laufend: 'Laufend',
+      erledigt: 'Erledigt',
+      blockiert: 'Blockiert',
+    };
+    const STATUS_ORDER = ['offen', 'laufend', 'blockiert', 'erledigt'];
+
+    function todayISO() {
+      return new Date().toISOString().slice(0, 10);
+    }
+
+    /** Both sources, flattened into one row shape. */
+    const rows = computed(() => {
+      const out = [];
+      for (const p of props.data?.pendenzen ?? []) {
+        out.push({
+          id: p.id,
+          title: p.title,
+          owner: p.owner || '',
+          date: p.due_date || '',
+          status: STATUS_FROM_TODO[p.status] || 'offen',
+          kind: 'todo',
+          detail: p.priority || '',
+          origin: p.source || '',
+          raw: p,
+        });
+      }
+      for (const g of props.data?.ablaufplan ?? []) {
+        out.push({
+          id: g.id,
+          title: g.title,
+          owner: g.owner || '',
+          // A bar's deadline is when it ENDS; a milestone has end === start.
+          date: g.end || g.start || '',
+          status: g.status || 'offen',
+          kind: 'termin',
+          detail: g.level || '',
+          origin: g.source_hint || '',
+          raw: g,
+        });
+      }
+      return out;
+    });
+
+    const owners = computed(() => {
+      const seen = [];
+      for (const r of rows.value) {
+        if (r.owner && !seen.includes(r.owner)) seen.push(r.owner);
+      }
+      return seen.sort((a, b) => a.localeCompare(b));
+    });
+
+    const statuses = computed(
+      () => STATUS_ORDER.filter((s) => rows.value.some((r) => r.status === s))
+    );
+
+    function matches(r) {
+      const q = query.value.trim().toLowerCase();
+      if (q && !(`${r.title} ${r.owner}`.toLowerCase().includes(q))) return false;
+      if (filterStatus.value && r.status !== filterStatus.value) return false;
+      if (filterKind.value && r.kind !== filterKind.value) return false;
+      if (filterOwner.value === UNASSIGNED) return !r.owner;
+      if (filterOwner.value && r.owner !== filterOwner.value) return false;
+      return true;
+    }
+
+    const filtered = computed(() => rows.value.filter(matches));
+
+    const undatedCount = computed(
+      () => filtered.value.filter((r) => !r.date).length
+    );
+
+    // Buckets answer "what is next" without the reader doing date arithmetic.
+    // Erledigt is pulled out of the time buckets on purpose: a done item is
+    // not upcoming work, and leaving it in "Überfällig" would cry wolf.
+    const BUCKETS = [
+      { key: 'overdue', label: 'Überfällig', tone: 'is-overdue' },
+      { key: 'week', label: 'Diese Woche', tone: 'is-soon' },
+      { key: 'month', label: 'Diesen Monat', tone: '' },
+      { key: 'later', label: 'Später', tone: '' },
+      { key: 'undated', label: 'Ohne Termin', tone: '' },
+      { key: 'done', label: 'Erledigt', tone: 'is-done' },
+    ];
+
+    function bucketOf(r) {
+      if (r.status === 'erledigt') return 'done';
+      if (!r.date) return 'undated';
+      const today = todayISO();
+      if (r.date < today) return 'overdue';
+      const in7 = new Date();
+      in7.setUTCDate(in7.getUTCDate() + 7);
+      if (r.date <= in7.toISOString().slice(0, 10)) return 'week';
+      const in30 = new Date();
+      in30.setUTCDate(in30.getUTCDate() + 30);
+      if (r.date <= in30.toISOString().slice(0, 10)) return 'month';
+      return 'later';
+    }
+
+    const grouped = computed(() => {
+      const byKey = {};
+      for (const b of BUCKETS) byKey[b.key] = [];
+      for (const r of filtered.value) byKey[bucketOf(r)].push(r);
+      for (const key of Object.keys(byKey)) {
+        byKey[key].sort((a, b) => {
+          // Undated rows have no date to sort on, so they fall back to title
+          // rather than clumping in whatever order the import produced.
+          if (!a.date && !b.date) return a.title.localeCompare(b.title);
+          if (!a.date) return 1;
+          if (!b.date) return -1;
+          return a.date.localeCompare(b.date);
+        });
+      }
+      return BUCKETS.map((b) => ({ ...b, rows: byKey[b.key] })).filter(
+        (b) => b.rows.length
+      );
+    });
+
+    function statusChip(s) {
+      return `chip chip-${s}`;
+    }
+
+    function resetFilters() {
+      query.value = '';
+      filterOwner.value = '';
+      filterStatus.value = '';
+      filterKind.value = '';
+    }
+
+    function relativeDays(iso) {
+      if (!iso) return '';
+      const days = Math.round(
+        (Date.parse(iso + 'T00:00:00Z') - Date.parse(todayISO() + 'T00:00:00Z'))
+        / 86400000
+      );
+      if (days === 0) return 'heute';
+      if (days === 1) return 'morgen';
+      if (days === -1) return 'gestern';
+      return days < 0 ? `vor ${-days} Tagen` : `in ${days} Tagen`;
+    }
+
+    // ── Beschlüsse ───────────────────────────────────────────────────────
+    // A third lens rather than a lost view: a decision and the to-dos it set
+    // in motion are read together, and the follow-up count is the link
+    // between this lens and the list.
+    const DECISION_STATUS = {
+      beschlossen: { label: 'Beschlossen', cls: 'chip-open',      mark: 'mark-ring' },
+      umgesetzt:   { label: 'Umgesetzt',   cls: 'chip-closed',    mark: 'mark-dot' },
+      aufgehoben:  { label: 'Aufgehoben',  cls: 'chip-blocked',   mark: 'mark-square' },
+      vertagt:     { label: 'Vertagt',     cls: 'chip-mitigated', mark: 'mark-bar' },
+    };
+
+    const decisionQuery = ref('');
+
+    const decisions = computed(() => {
+      const q = decisionQuery.value.trim().toLowerCase();
+      const all = props.data?.decisions ?? [];
+      if (!q) return all;
+      return all.filter(
+        d => String(d.title ?? '').toLowerCase().includes(q)
+          || String(d.decided_by ?? '').toLowerCase().includes(q)
+          || String(d.affects ?? '').toLowerCase().includes(q)
+      );
+    });
+
+    const openFollowUps = computed(
+      () => (props.data?.decisions ?? []).reduce((n, d) => n + d.pendenzen_open, 0)
+    );
+
+    function fmtDate(iso) {
+      if (!iso) return '—';
+      const [y, m, d] = iso.split('-');
+      return `${d}.${m}.${y}`;
+    }
+
+    return {
+      lens, query, filterOwner, filterStatus, filterKind,
+      owners, statuses, UNASSIGNED, STATUS_LABEL,
+      rows, filtered, grouped, undatedCount,
+      statusChip, resetFilters, relativeDays,
+      decisions, decisionQuery, openFollowUps, fmtDate,
+      decisionLabel: (s) => (DECISION_STATUS[s] || {}).label || s,
+      decisionClass: (s) => (DECISION_STATUS[s] || {}).cls || 'chip-open',
+      decisionMark: (s) => (DECISION_STATUS[s] || {}).mark || 'mark-ring',
+    };
+  },
+  template: `
+    <div class="screen">
+      <div class="page-head">
+        <div>
+          <h1 class="page-title">Aufgaben &amp; Termine</h1>
+          <div class="page-subtitle">
+            Alles, was jemand schuldet — mit und ohne Datum, aus allen Quellen.
+          </div>
+        </div>
+      </div>
+
+      <div v-if="loading && !data" class="flex items-center gap-2 py-8 text-gray-400">
+        <span class="spinner"></span> Loading&hellip;
+      </div>
+      <div v-else-if="error" class="card notice-error">{{ error }}</div>
+      <div v-else-if="!rows.length" class="card">
+        <div class="empty-state">
+          <span class="empty-state-icon" aria-hidden="true">▤</span>
+          <div class="empty-state-title">Nichts erfasst</div>
+          <p class="text-sm">
+            Importiere einen Copilot-Export oder lege einen Eintrag über
+            <strong>Neu</strong> an.
+          </p>
+        </div>
+      </div>
+
+      <div v-else>
+        <!-- Lens switch. Same data, two ways of reading it. -->
+        <div class="lens-bar" role="tablist" aria-label="Ansicht">
+          <button class="lens-btn" role="tab"
+                  :class="{ 'is-active': lens === 'liste' }"
+                  :aria-selected="lens === 'liste'"
+                  data-testid="lens-liste"
+                  @click="lens = 'liste'">Liste</button>
+          <button class="lens-btn" role="tab"
+                  :class="{ 'is-active': lens === 'zeitstrahl' }"
+                  :aria-selected="lens === 'zeitstrahl'"
+                  data-testid="lens-zeitstrahl"
+                  @click="lens = 'zeitstrahl'">Zeitstrahl</button>
+          <button class="lens-btn" role="tab"
+                  :class="{ 'is-active': lens === 'beschluesse' }"
+                  :aria-selected="lens === 'beschluesse'"
+                  data-testid="lens-beschluesse"
+                  @click="lens = 'beschluesse'">
+            Beschlüsse
+            <span v-if="data?.decisions?.length" class="lens-count">
+              {{ data.decisions.length }}
+            </span>
+          </button>
+        </div>
+
+        <!-- ── Liste ────────────────────────────────────────────────────── -->
+        <div v-if="lens === 'liste'">
+          <div class="filter-bar">
+            <input class="text-input" type="search" v-model="query"
+                   placeholder="Titel oder Verantwortliche suchen…"
+                   aria-label="Suchen" data-testid="work-search">
+            <select class="filter-select" v-model="filterOwner"
+                    aria-label="Nach Verantwortlichen filtern"
+                    data-testid="work-filter-owner">
+              <option value="">Alle Verantwortlichen</option>
+              <option :value="UNASSIGNED">Ohne Verantwortliche</option>
+              <option v-for="o in owners" :key="o" :value="o">{{ o }}</option>
+            </select>
+            <select class="filter-select" v-model="filterStatus" aria-label="Nach Status filtern">
+              <option value="">Alle Status</option>
+              <option v-for="s in statuses" :key="s" :value="s">{{ STATUS_LABEL[s] }}</option>
+            </select>
+            <select class="filter-select" v-model="filterKind" aria-label="Nach Art filtern"
+                    data-testid="work-filter-kind">
+              <option value="">To-dos und Termine</option>
+              <option value="todo">Nur To-dos</option>
+              <option value="termin">Nur Termine</option>
+            </select>
+            <span class="result-count">{{ filtered.length }} von {{ rows.length }}</span>
+          </div>
+
+          <div v-if="!filtered.length" class="card">
+            <div class="empty-state">
+              <div class="empty-state-title">Nichts passt zu diesen Filtern</div>
+              <button class="btn mt-2" @click="resetFilters">Filter zurücksetzen</button>
+            </div>
+          </div>
+
+          <div v-for="b in grouped" :key="b.key" class="bucket">
+            <h2 class="bucket-head" :class="b.tone">
+              {{ b.label }}
+              <span class="bucket-count">{{ b.rows.length }}</span>
+            </h2>
+            <div class="card card-flush table-scroll">
+              <table class="data-table">
+                <tbody>
+                  <tr v-for="r in b.rows" :key="r.kind + r.id">
+                    <td class="w-1">
+                      <span class="kind-chip" :class="'is-' + r.kind"
+                            :title="r.kind === 'todo' ? 'To-do' : 'Termin'">
+                        {{ r.kind === 'todo' ? 'To-do' : 'Termin' }}
+                      </span>
+                    </td>
+                    <td class="max-w-xs truncate" :title="r.title">{{ r.title }}</td>
+                    <!-- Priority for a to-do, altitude for a dated item. The
+                         old Todo table showed priority and the merge dropped
+                         it at first — with 137 of 146 to-dos carrying no date,
+                         priority is the only thing left to triage them by, so
+                         losing it would have made the merged list worse than
+                         the tab it replaced. -->
+                    <td class="text-gray-400 whitespace-nowrap">
+                      <span v-if="r.kind === 'todo' && r.detail"
+                            class="inline-flex items-center gap-2">
+                        <span :class="['prio-dot', r.detail]"></span>{{ r.detail }}
+                      </span>
+                      <span v-else-if="r.detail">{{ r.detail }}</span>
+                      <span v-else>—</span>
+                    </td>
+                    <td class="text-gray-400">{{ r.owner || '—' }}</td>
+                    <td>
+                      <span :class="statusChip(r.status)">{{ STATUS_LABEL[r.status] }}</span>
+                    </td>
+                    <td class="font-mono text-xs">
+                      {{ r.date || '—' }}
+                      <span v-if="r.date" class="text-gray-400">· {{ relativeDays(r.date) }}</span>
+                    </td>
+                    <td class="text-right row-actions">
+                      <button class="icon-btn is-danger"
+                              data-testid="delete-work"
+                              :aria-label="r.title + ' löschen'"
+                              title="Löschen"
+                              @click="$emit('delete-task', r.raw)">&times;</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Beschlüsse ───────────────────────────────────────────────── -->
+        <div v-else-if="lens === 'beschluesse'">
+          <div v-if="!(data?.decisions ?? []).length" class="card">
+            <div class="empty-state">
+              <span class="empty-state-icon" aria-hidden="true">◵</span>
+              <div class="empty-state-title">Keine Beschlüsse importiert</div>
+              <p class="text-sm">
+                Importiere die <code>Pendenzen- und Beschlussliste</code> über
+                <strong>Import JSON → Todos &amp; Beschlüsse</strong>.
+              </p>
+            </div>
+          </div>
+          <template v-else>
+            <div class="filter-bar">
+              <input class="text-input" type="search" v-model="decisionQuery"
+                     placeholder="Beschluss, Gremium oder Bereich…"
+                     aria-label="Beschlüsse durchsuchen">
+              <span class="result-count">
+                {{ decisions.length }} Beschlüsse · {{ openFollowUps }} offene Todos daraus
+              </span>
+            </div>
+
+            <!-- One row per decision: what was decided, by whom, when, and
+                 what it still owes. The follow-up count is the reason this
+                 belongs beside the list rather than on its own tab. -->
+            <ol class="decision-list">
+              <li v-for="d in decisions" :key="d.id" class="decision-item">
+                <div class="decision-date">
+                  <span class="decision-day">{{ fmtDate(d.decided_on) }}</span>
+                </div>
+                <div class="decision-body">
+                  <div class="decision-head">
+                    <span class="decision-title">{{ d.title }}</span>
+                    <span class="chip shrink-0" :class="decisionClass(d.decision_status)">
+                      <span class="chip-mark" :class="decisionMark(d.decision_status)"
+                            aria-hidden="true"></span>
+                      {{ decisionLabel(d.decision_status) }}
+                    </span>
+                  </div>
+                  <div class="decision-meta">
+                    <span v-if="d.decided_by">{{ d.decided_by }}</span>
+                    <span v-if="d.affects" class="decision-affects">{{ d.affects }}</span>
+                    <span v-if="d.pendenzen_total" class="decision-followups"
+                          :class="{ 'is-alert': d.pendenzen_open > 0 }">
+                      {{ d.pendenzen_open }} von {{ d.pendenzen_total }} Todos offen
+                    </span>
+                    <span v-else class="text-gray-400">keine Todos</span>
+                  </div>
+                </div>
+              </li>
+            </ol>
+          </template>
+        </div>
+
+        <!-- ── Zeitstrahl ───────────────────────────────────────────────── -->
+        <div v-else>
+          <!-- The timeline cannot place an undated item, so say how many it is
+               leaving out rather than letting the lens quietly lose them. -->
+          <p v-if="undatedCount" class="notice-inline" data-testid="undated-notice">
+            {{ undatedCount }} Einträge ohne Termin erscheinen hier nicht —
+            <button class="link-btn" @click="lens = 'liste'">in der Liste ansehen</button>.
+          </p>
+          <ablaufplan-screen
+            :data="data" :loading="loading" :error="error" :embedded="true"
+            @changed="$emit('changed')" />
+        </div>
+      </div>
+    </div>
+  `,
+};
+
 global.AblaufplanScreen = AblaufplanScreen;
+global.WorkScreen = WorkScreen;
 global.OverviewScreen = OverviewScreen;
 global.ProjectListScreen = ProjectListScreen;
 global.ProjectDetailScreen = ProjectDetailScreen;
-global.PendenzenScreen = PendenzenScreen;
 global.RisksScreen = RisksScreen;
 global.ReviewsScreen = ReviewsScreen;
 global.KanbanTab = KanbanTab;

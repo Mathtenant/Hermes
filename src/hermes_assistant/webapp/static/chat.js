@@ -206,7 +206,7 @@
       })
       .join("");
     return msgs ||
-      '<div class="chat-empty">Ask Hermes about risks, pendenzen or the plan.</div>';
+      '<div class="chat-empty">Ask Hermes about risks, todos or the plan.</div>';
   }
 
   function typingHtml() {

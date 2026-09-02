@@ -1,3 +1,3 @@
 """HERMES Local Assistant — fully-local AI for senior-level project management."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

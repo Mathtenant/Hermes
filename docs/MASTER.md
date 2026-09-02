@@ -881,7 +881,7 @@ SQLite task/job stores + schedule.json files
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/health` | GET | Health check; `{"status":"ok","version":"0.1.0","timestamp":"…"}` |
+| `/api/health` | GET | Health check; `{"status":"ok","version":"<hermes_assistant.__version__>","timestamp":"…"}` |
 | `/api/dashboard` | GET | Full DashboardData JSON (all projects) |
 | `/api/dashboard?project_id=X` | GET | Scoped DashboardData for project X |
 | `/api/refresh` | GET | Same as `/api/dashboard` — fresh disk read |

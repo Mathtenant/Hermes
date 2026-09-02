@@ -135,6 +135,22 @@ def test_version_matches_pyproject() -> None:
     )
 
 
+def test_setup_py_declares_no_version() -> None:
+    """setup.py must not carry a third copy of the version.
+
+    It is a package-discovery shim; ``[project]`` in pyproject.toml supplies the
+    distribution metadata. A ``version=`` there would not fail any build — it is
+    simply ignored — so it could drift from ``__version__`` unnoticed and ship a
+    stale number in the wheel. Guard the absence rather than the agreement.
+    """
+    setup_py = Path(__file__).resolve().parents[1] / "setup.py"
+    source = setup_py.read_text(encoding="utf-8")
+    assert "version=" not in source, (
+        "setup.py declares a version; delete it and let pyproject.toml's "
+        "[project] table remain the single packaging source."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Security headers
 # ---------------------------------------------------------------------------

@@ -348,7 +348,7 @@ def make_filter_modal(
 
         def compose(self):  # type: ignore[override]
             with Vertical(id="filter-dialog"):
-                yield Label("Filter Pendenzen")
+                yield Label("Filter Todos")
                 yield Select(
                     [("All", ""), ("manual", "manual"), ("review", "review"),
                      ("meeting", "meeting"), ("decision", "decision")],

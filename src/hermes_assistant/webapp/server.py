@@ -5,6 +5,7 @@ import functools
 import json as _json
 import logging
 import re
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -467,6 +468,132 @@ async def create_project(request: Request) -> dict[str, Any]:
     proj_dir.mkdir(parents=True)
     return {"project_id": project_id, "kind": "project"}
 
+
+# --------------------------------------------------------------------------- #
+# Delete & restore
+#
+# Nothing on the dashboard could be removed until now: the stores grew but never
+# shrank, so a typo or a duplicate import was permanent. Both routes below
+# delete *recoverably* — a task keeps its row and gains a deleted_at stamp, a
+# project directory moves to a trash folder — because the UI offers Undo, and an
+# Undo that cannot actually restore would be a lie.
+#
+# Each delete returns an ``undo`` object that is exactly what the matching
+# restore route wants as its body. The client never has to reconstruct what was
+# removed; it just hands the token back.
+# --------------------------------------------------------------------------- #
+
+def _trash_dir() -> Path:
+    """Where deleted project directories go. Sits beside projects, not inside.
+
+    Inside would make every project lister see the trash as projects.
+    """
+    return Path(settings.projects_path).parent / ".trash"
+
+
+@app.delete("/api/tasks/{task_id}")
+@confidentiality_guard
+async def delete_task(task_id: str) -> dict[str, Any]:
+    """Soft-delete a task (or to-do) and its subtree.
+
+    Returns the ids that were hidden, parent-first, as the undo token.
+    """
+    from hermes_assistant.tasks.store import TaskStore
+
+    store = TaskStore(settings.tasks_db_path)
+    try:
+        try:
+            deleted = store.soft_delete(task_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Task not found") from None
+    finally:
+        store.close()
+    return {
+        "deleted": len(deleted),
+        "undo": {"kind": "tasks", "ids": deleted},
+    }
+
+
+@app.post("/api/tasks/restore")
+@confidentiality_guard
+async def restore_tasks(request: Request) -> dict[str, Any]:
+    """Undo a task delete. Body: the ``undo`` object from the delete response."""
+    from hermes_assistant.tasks.store import TaskStore
+
+    body = _json_body(await request.body())
+    ids = body.get("ids")
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        raise HTTPException(status_code=422, detail="ids must be a list of strings")
+
+    store = TaskStore(settings.tasks_db_path)
+    try:
+        restored = store.restore(ids)
+    finally:
+        store.close()
+    return {"restored": len(restored)}
+
+
+@app.delete("/api/projects/{project_id}")
+@confidentiality_guard
+async def delete_project(project_id: str) -> dict[str, Any]:
+    """Move a project directory to the trash folder.
+
+    Deliberately a move, not ``rmtree``: a project directory holds the user's
+    own source documents, which Hermes did not create and cannot regenerate.
+    Losing those to a mis-click is not an acceptable outcome, so nothing here
+    ever deletes file contents — reclaiming the trash is a manual, deliberate
+    act outside the dashboard.
+    """
+    from hermes_assistant.webapp.import_json import _is_safe_path_segment
+
+    if not _is_safe_path_segment(project_id):
+        raise HTTPException(status_code=422, detail="Invalid project id")
+
+    proj_dir = Path(settings.projects_path) / project_id
+    if not proj_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    trash = _trash_dir()
+    trash.mkdir(parents=True, exist_ok=True)
+    # The timestamp keeps repeated deletes of the same project id from
+    # colliding in the trash, so the second delete cannot clobber the first.
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
+    target = trash / f"{project_id}__{stamp}"
+    shutil.move(str(proj_dir), str(target))
+    return {
+        "project_id": project_id,
+        "undo": {"kind": "project", "project_id": project_id, "trash_name": target.name},
+    }
+
+
+@app.post("/api/projects/restore")
+@confidentiality_guard
+async def restore_project(request: Request) -> dict[str, Any]:
+    """Undo a project delete. Body: the ``undo`` object from the delete."""
+    from hermes_assistant.webapp.import_json import _is_safe_path_segment
+
+    body = _json_body(await request.body())
+    project_id = body.get("project_id")
+    trash_name = body.get("trash_name")
+    # Both are path segments the client hands back, so both go through the same
+    # guard as any other user-supplied segment — an undo token is not a reason
+    # to trust a string.
+    if not isinstance(project_id, str) or not _is_safe_path_segment(project_id):
+        raise HTTPException(status_code=422, detail="Invalid project id")
+    if not isinstance(trash_name, str) or not _is_safe_path_segment(trash_name):
+        raise HTTPException(status_code=422, detail="Invalid trash name")
+
+    source = _trash_dir() / trash_name
+    if not source.is_dir():
+        raise HTTPException(status_code=404, detail="Nothing to restore")
+
+    target = Path(settings.projects_path) / project_id
+    if target.exists():
+        raise HTTPException(
+            status_code=409, detail="A project with that id exists again"
+        )
+    shutil.move(str(source), str(target))
+    return {"project_id": project_id, "restored": True}
 
 
 @app.post("/api/schedule/{project_id}/items/{item_id}/owner")

@@ -231,13 +231,13 @@ _PAGE = _DashTemplate("""\
 <h1>HERMES Dashboard</h1>
 <span class="scope">@@scope</span>
 <span class="range">@@range_start–@@range_end</span>
-<nav><a href="#timeline">Timeline</a> <a href="#kanban">Board</a> <a href="#pendenzen">Pendenzen</a></nav>
+<nav><a href="#timeline">Timeline</a> <a href="#kanban">Board</a> <a href="#pendenzen">Todo</a></nav>
 <button id="theme-toggle" aria-pressed="false">Dark</button>
 </header>
 <main>
 <section id="timeline"><h2>Grob-Zeitstrahl</h2>@@timeline</section>
 <section id="kanban"><h2>Detail-Board</h2>@@kanban</section>
-<section id="pendenzen"><h2>Pendenzen</h2>@@pendenzen</section>
+<section id="pendenzen"><h2>Todo</h2>@@pendenzen</section>
 <section id="wbs"><h2>WBS</h2>@@wbs</section>
 <section id="reviews"><h2>Reviews</h2>@@reviews</section>
 </main>

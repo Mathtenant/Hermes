@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 from pydantic import BaseModel
 
 from hermes_assistant.llm.client import (
@@ -194,3 +195,151 @@ def test_loopback_variants_accepted() -> None:
     """127.0.0.1 and localhost are both accepted."""
     assert OllamaClient(host="http://127.0.0.1:11434").host.endswith("11434")
     assert OllamaClient(host="http://localhost:11434").host.endswith("11434")
+
+
+# ---------------------------------------------------------------------------
+# Model failover
+#
+# A model that is not pulled, is corrupt, or dies under memory pressure fails
+# on every request. The fallback lives on the client rather than at one call
+# site, because structured() is the single choke point every LLM request in
+# the codebase goes through — the router, intake, planner, critic, red team
+# and meeting extraction all reach Ollama here.
+# ---------------------------------------------------------------------------
+
+
+def _health(client: OllamaClient, available: bool, models: list[str]) -> None:
+    """Pin the client's view of what Ollama has installed."""
+    client._probe_tags = lambda: {  # type: ignore[method-assign]
+        "available": available,
+        "models": models,
+        "error": None if available else "connection refused",
+    }
+
+
+def test_chat_falls_back_to_another_installed_model(
+    client: OllamaClient, mock_post: MagicMock
+) -> None:
+    _health(client, True, ["dead:1b", "alive:1b"])
+    mock_post.side_effect = [
+        requests.exceptions.ConnectionError("boom"),
+        make_response({"message": {"content": "second model answered"}}),
+    ]
+
+    assert client.chat("dead:1b", [{"role": "user", "content": "Hi"}]) == (
+        "second model answered"
+    )
+
+
+def test_structured_falls_back_to_another_installed_model(
+    client: OllamaClient, mock_post: MagicMock
+) -> None:
+    _health(client, True, ["dead:1b", "alive:1b"])
+    mock_post.side_effect = [
+        requests.exceptions.ConnectionError("boom"),
+        make_response({"message": {"content": '{"name": "ok", "value": 1}'}}),
+    ]
+
+    result = client.structured("dead:1b", [{"role": "user", "content": "Hi"}], SampleModel)
+
+    assert result.name == "ok"
+
+
+def test_no_fallback_when_ollama_itself_is_unreachable(
+    client: OllamaClient, mock_post: MagicMock
+) -> None:
+    """Every model is behind the same daemon; retrying each buries the cause."""
+    _health(client, False, [])
+    mock_post.side_effect = requests.exceptions.ConnectionError("boom")
+
+    with pytest.raises(OllamaConnectionError):
+        client.chat("dead:1b", [{"role": "user", "content": "Hi"}])
+
+    assert mock_post.call_count == 1
+
+
+def test_no_fallback_when_nothing_else_is_installed(
+    client: OllamaClient, mock_post: MagicMock
+) -> None:
+    _health(client, True, ["dead:1b"])
+    mock_post.side_effect = requests.exceptions.ConnectionError("boom")
+
+    with pytest.raises(OllamaConnectionError):
+        client.chat("dead:1b", [{"role": "user", "content": "Hi"}])
+
+
+def test_the_original_error_survives_when_every_model_fails(
+    client: OllamaClient, mock_post: MagicMock
+) -> None:
+    """The message must name the model the caller asked for."""
+    _health(client, True, ["dead:1b", "alsodead:1b"])
+    mock_post.side_effect = requests.exceptions.ReadTimeout("slow")
+
+    with pytest.raises(OllamaTimeoutError) as excinfo:
+        client.chat("dead:1b", [{"role": "user", "content": "Hi"}])
+
+    assert "Timed out reading" in str(excinfo.value)
+
+
+def test_a_schema_failure_is_never_retried_on_another_model(
+    client: OllamaClient, mock_post: MagicMock
+) -> None:
+    """That is a prompt or schema problem, not reachability.
+
+    Burning through every installed model would hide it behind a slow,
+    confusing failure.
+    """
+    _health(client, True, ["dead:1b", "alive:1b", "third:1b"])
+    mock_post.return_value = make_response({"message": {"content": "not json at all"}})
+
+    with pytest.raises(OllamaValidationError):
+        client.structured(
+            "m", [{"role": "user", "content": "Hi"}], SampleModel, max_retries=0
+        )
+
+    # One attempt only — no candidate models were tried.
+    assert mock_post.call_count == 1
+
+
+def test_allow_fallback_false_reraises_immediately(
+    client: OllamaClient, mock_post: MagicMock
+) -> None:
+    """Panel judging opts out: which model answered is part of the result."""
+    _health(client, True, ["dead:1b", "alive:1b"])
+    mock_post.side_effect = requests.exceptions.ConnectionError("boom")
+
+    with pytest.raises(OllamaConnectionError):
+        client.chat(
+            "dead:1b", [{"role": "user", "content": "Hi"}], allow_fallback=False
+        )
+
+    assert mock_post.call_count == 1
+
+
+def test_candidate_order_is_reproducible(client: OllamaClient) -> None:
+    """Which model is picked must not depend on Ollama's listing order."""
+    _health(client, True, ["zz:9b", "dead:1b", "aa:9b"])
+
+    assert client._failover_candidates("dead:1b") == ["aa:9b", "zz:9b"]
+
+
+def test_failover_writes_no_probe_record_into_the_trace(
+    client: OllamaClient, mock_post: MagicMock, tracer
+) -> None:
+    """The trace holds model calls only — one per attempt, no probe.
+
+    The tracer is the log of model calls the caller made. Routing the
+    candidate lookup through the traced health() added a record per failure,
+    which the hung-Ollama fault simulation caught by asserting a single
+    record. Two chat records here (the original and the one retry) are the
+    two real attempts; a third entry would be the probe leaking back in.
+    """
+    client._probe_tags = lambda: {  # type: ignore[method-assign]
+        "available": True, "models": ["dead:1b", "alive:1b"], "error": None,
+    }
+    mock_post.side_effect = requests.exceptions.ReadTimeout("hang")
+
+    with pytest.raises(OllamaTimeoutError):
+        client.chat("dead:1b", [{"role": "user", "content": "Hi"}])
+
+    assert [r.call_type for r in tracer.read_all()] == ["chat", "chat"]

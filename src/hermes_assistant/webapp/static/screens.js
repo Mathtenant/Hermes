@@ -227,7 +227,7 @@ const OverviewScreen = {
 // ── ProjectListScreen ──────────────────────────────────────────────────────
 const ProjectListScreen = {
   props: ['data', 'loading', 'error'],
-  emits: ['select-project'],
+  emits: ['select-project', 'delete-project'],
   setup(props) {
     const sortKey = ref('project_id');
     const sortDir = ref(1);
@@ -312,7 +312,18 @@ const ProjectListScreen = {
                 <td class="font-mono font-medium text-blue-500">{{ p.project_id }}</td>
                 <td>{{ p.label || '—' }}</td>
                 <td class="text-right tabular-nums">{{ tlCount(p.project_id) }}</td>
-                <td class="text-right text-gray-400" aria-hidden="true">&rsaquo;</td>
+                <td class="text-right row-actions">
+                  <!-- .stop: the whole row navigates, and deleting is not a
+                       reason to also open what you just deleted. -->
+                  <button class="icon-btn is-danger"
+                          data-testid="delete-project"
+                          :aria-label="'Projekt ' + p.project_id + ' löschen'"
+                          :title="'Projekt ' + p.project_id + ' löschen'"
+                          @click.stop="$emit('delete-project', p.project_id)"
+                          @keydown.enter.stop
+                          @keydown.space.stop>&times;</button>
+                  <span class="text-gray-400" aria-hidden="true">&rsaquo;</span>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -520,6 +531,7 @@ const ProjectDetailScreen = {
 // ── PendenzenScreen ────────────────────────────────────────────────────────
 const PendenzenScreen = {
   props: ['data', 'loading', 'error'],
+  emits: ['delete-task'],
   setup(props) {
     const query = ref('');
     const filterSource = ref('');
@@ -750,6 +762,7 @@ const PendenzenScreen = {
                 <th @click="toggleSort('status')">Status{{ sortIcon('status') }}</th>
                 <th @click="toggleSort('owner')">Owner{{ sortIcon('owner') }}</th>
                 <th @click="toggleSort('due_date')">Due{{ sortIcon('due_date') }}</th>
+                <th><span class="sr-only">Aktionen</span></th>
               </tr>
             </thead>
             <tbody>
@@ -769,6 +782,13 @@ const PendenzenScreen = {
                 </td>
                 <td class="text-gray-400">{{ r.owner || '—' }}</td>
                 <td class="font-mono text-xs">{{ r.due_date || '—' }}</td>
+                <td class="text-right row-actions">
+                  <button class="icon-btn is-danger"
+                          data-testid="delete-todo"
+                          :aria-label="r.title + ' löschen'"
+                          title="Löschen"
+                          @click="$emit('delete-task', r)">&times;</button>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -880,7 +900,9 @@ const RisksScreen = {
         <div v-if="!filtered.length" class="card">
           <div class="empty-state">
             <div class="empty-state-title">No risks match</div>
-            <p class="text-sm">Import a JSON export or add risks with <code>hermes risk-add</code>.</p>
+            <!-- This used to name a "hermes risk-add" command, which does not
+                 exist. Risks currently enter only through a JSON import. -->
+            <p class="text-sm">Import a JSON export to populate the risk register.</p>
           </div>
         </div>
         <div v-else class="card card-flush table-scroll">

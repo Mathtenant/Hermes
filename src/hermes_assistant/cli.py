@@ -1032,7 +1032,7 @@ def task_close(
 
 @app.command(name="pendenz-add")
 def pendenz_add(
-    title: str = typer.Argument(..., help="Pendenz title."),
+    title: str = typer.Argument(..., help="Todo title."),
     source: str = typer.Option("manual", "--source", "-s", help="Source: manual|review|decision|meeting|facilitator_import."),
     source_ref: str = typer.Option("", "--source-ref", help="Id of the originating job/meeting."),
     owner: str = typer.Option("", "--owner", help="Responsible party."),
@@ -1194,7 +1194,7 @@ def dashboard(
     output: str = typer.Option("", "--output", "-o", help="Override output path (must end in .html)."),
     open_browser: bool = typer.Option(False, "--open", help="Open the file in the default browser after writing."),
 ) -> None:
-    """Render project dashboard (Grob-Zeitstrahl / Detail-Board / Pendenzen, spec §31K).
+    """Render project dashboard (Grob-Zeitstrahl / Detail-Board / Todo, spec §31K).
 
     Without --html, prints a brief status message. Use --html to generate a
     self-contained dashboard.html file with timeline, Kanban, and action items.

@@ -81,7 +81,7 @@ Screen { background: $surface; }
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("1", "goto_projects", "Projects"),
-        ("3", "goto_pendenzen", "Pendenzen"),
+        ("3", "goto_pendenzen", "Todo"),
         ("4", "goto_reviews", "Reviews"),
         ("r", "refresh", "Refresh"),
         ("d", "toggle_dark", "Theme"),

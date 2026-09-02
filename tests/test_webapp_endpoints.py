@@ -834,3 +834,174 @@ def test_create_project_rejects_an_unsafe_id(create_env, bad) -> None:
 )
 def test_create_routes_reject_a_non_object_body(create_env, endpoint) -> None:
     assert client.post(endpoint, json=["x"]).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Delete & restore (undo)
+#
+# Nothing was removable before these routes: the stores grew but never shrank,
+# so a typo or a duplicate import was permanent. Both deletes are recoverable,
+# which is what makes the UI's Undo button honest rather than decorative.
+# ---------------------------------------------------------------------------
+
+
+def _new_todo(title: str = "Wegwerfen") -> str:
+    r = client.post("/api/todos", json={"title": title})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+def test_deleting_a_todo_hides_it(create_env) -> None:
+    db, _ = create_env
+    tid = _new_todo()
+    assert client.delete(f"/api/tasks/{tid}").status_code == 200
+    assert _stored(db, tid) is None
+
+
+def test_delete_returns_an_undo_token_that_restores(create_env) -> None:
+    db, _ = create_env
+    tid = _new_todo("Zurückholen")
+    undo = client.delete(f"/api/tasks/{tid}").json()["undo"]
+
+    assert client.post("/api/tasks/restore", json=undo).status_code == 200
+    back = _stored(db, tid)
+    assert back is not None
+    assert back.title == "Zurückholen"
+
+
+def test_restore_brings_back_the_whole_subtree(create_env) -> None:
+    """Deleting a parent takes its children; undo must return all of them."""
+    db, _ = create_env
+    parent = client.post("/api/tasks", json={"title": "Paket"}).json()["id"]
+    child = client.post(
+        "/api/tasks", json={"title": "Unterpunkt", "parent_id": parent}
+    ).json()["id"]
+
+    body = client.delete(f"/api/tasks/{parent}").json()
+    assert body["deleted"] == 2
+    assert _stored(db, child) is None
+
+    client.post("/api/tasks/restore", json=body["undo"])
+    assert _stored(db, child) is not None
+
+
+def test_deleting_an_unknown_task_is_404(create_env) -> None:
+    assert client.delete("/api/tasks/does-not-exist").status_code == 404
+
+
+def test_deleting_twice_is_404_the_second_time(create_env) -> None:
+    """The row is already hidden, so there is nothing left to delete."""
+    tid = _new_todo()
+    assert client.delete(f"/api/tasks/{tid}").status_code == 200
+    assert client.delete(f"/api/tasks/{tid}").status_code == 404
+
+
+def test_restore_rejects_a_body_that_is_not_a_list_of_ids(create_env) -> None:
+    assert client.post("/api/tasks/restore", json={"ids": "abc"}).status_code == 422
+    assert client.post("/api/tasks/restore", json={"ids": [1, 2]}).status_code == 422
+
+
+def test_a_deleted_todo_stops_counting_as_open(create_env) -> None:
+    """The sidebar count reads through count_open, which must skip deleted rows."""
+    db, _ = create_env
+    tid = _new_todo()
+    store = TaskStore(str(db))
+    try:
+        before = store.count_open()
+    finally:
+        store.close()
+
+    client.delete(f"/api/tasks/{tid}")
+
+    store = TaskStore(str(db))
+    try:
+        assert store.count_open() == before - 1
+    finally:
+        store.close()
+
+
+# --- projects --------------------------------------------------------------
+
+
+def test_deleting_a_project_moves_it_out_of_the_projects_dir(create_env) -> None:
+    _, proj = create_env
+    client.post("/api/projects", json={"project_id": "wegwerf"})
+    assert client.delete("/api/projects/wegwerf").status_code == 200
+    assert not (proj / "wegwerf").exists()
+
+
+def test_a_deleted_project_keeps_the_users_own_files(create_env) -> None:
+    """The directory holds documents Hermes did not create and cannot rebuild.
+
+    This is the reason delete is a move and never an rmtree.
+    """
+    _, proj = create_env
+    client.post("/api/projects", json={"project_id": "mitdatei"})
+    (proj / "mitdatei" / "protokoll.txt").write_text("wichtig", encoding="utf-8")
+
+    undo = client.delete("/api/projects/mitdatei").json()["undo"]
+    trashed = proj.parent / ".trash" / undo["trash_name"] / "protokoll.txt"
+    assert trashed.read_text(encoding="utf-8") == "wichtig"
+
+
+def test_restoring_a_project_returns_its_files_intact(create_env) -> None:
+    _, proj = create_env
+    client.post("/api/projects", json={"project_id": "zurueck"})
+    (proj / "zurueck" / "plan.txt").write_text("inhalt", encoding="utf-8")
+
+    undo = client.delete("/api/projects/zurueck").json()["undo"]
+    assert client.post("/api/projects/restore", json=undo).status_code == 200
+    assert (proj / "zurueck" / "plan.txt").read_text(encoding="utf-8") == "inhalt"
+
+
+def test_deleting_the_same_project_id_twice_does_not_clobber_the_first(
+    create_env,
+) -> None:
+    """Recreate-then-delete must not overwrite the earlier copy in the trash."""
+    _, proj = create_env
+    client.post("/api/projects", json={"project_id": "wieder"})
+    (proj / "wieder" / "a.txt").write_text("erste", encoding="utf-8")
+    first = client.delete("/api/projects/wieder").json()["undo"]
+
+    client.post("/api/projects", json={"project_id": "wieder"})
+    (proj / "wieder" / "a.txt").write_text("zweite", encoding="utf-8")
+    second = client.delete("/api/projects/wieder").json()["undo"]
+
+    assert first["trash_name"] != second["trash_name"]
+    trash = proj.parent / ".trash"
+    assert (trash / first["trash_name"] / "a.txt").read_text(encoding="utf-8") == "erste"
+
+
+def test_deleting_an_unknown_project_is_404(create_env) -> None:
+    assert client.delete("/api/projects/gibtesnicht").status_code == 404
+
+
+def test_restore_refuses_when_the_id_is_taken_again(create_env) -> None:
+    """Restoring over a live project would silently merge two directories."""
+    _, proj = create_env
+    client.post("/api/projects", json={"project_id": "kollision"})
+    undo = client.delete("/api/projects/kollision").json()["undo"]
+    client.post("/api/projects", json={"project_id": "kollision"})
+
+    assert client.post("/api/projects/restore", json=undo).status_code == 409
+
+
+def test_the_trash_is_not_listed_as_a_project(create_env) -> None:
+    """The trash sits beside data/projects/, never inside it."""
+    _, proj = create_env
+    client.post("/api/projects", json={"project_id": "verschwunden"})
+    client.delete("/api/projects/verschwunden")
+    assert ".trash" not in [p.name for p in proj.iterdir()]
+
+
+@pytest.mark.parametrize("bad", ["../etc", "a/b", ".."])
+def test_project_restore_revalidates_the_undo_token(create_env, bad) -> None:
+    """An undo token is client-supplied text, not a reason to trust a path."""
+    r = client.post(
+        "/api/projects/restore", json={"project_id": bad, "trash_name": "x"}
+    )
+    assert r.status_code == 422
+    r = client.post(
+        "/api/projects/restore", json={"project_id": "ok", "trash_name": bad}
+    )
+    assert r.status_code == 422

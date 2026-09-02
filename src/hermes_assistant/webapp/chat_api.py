@@ -122,8 +122,20 @@ def get_chat_service() -> ChatService:
 
 
 def get_active_model() -> str:
-    """Return the model the chat router is currently using."""
-    return _active_model or settings.chat_model
+    """Return the model the chat router is currently using.
+
+    Reads the live router rather than ``_active_model``, because a model swap
+    is no longer only something the user does: the service fails over to
+    another installed model when the current one stops answering, and it does
+    that on the router. Reporting the global here would leave the picker
+    naming a dead model while every turn was already being served by another.
+
+    Falls back to the global (then the configured default) before the service
+    has been built, when there is no router to ask.
+    """
+    global _chat_service
+    router_model = getattr(getattr(_chat_service, "router", None), "model", "")
+    return router_model or _active_model or settings.chat_model
 
 
 class ModelSelection(BaseModel):

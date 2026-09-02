@@ -1759,6 +1759,72 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 
 .toast.is-error { background: var(--c-fail); color: #fff; }
 
+/* The toast becomes a row once it can carry an Undo action. */
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+}
+
+.toast-undo {
+  flex: none;
+  background: none;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  padding: 0.1875rem 0.625rem;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.toast-undo:hover  { opacity: 1; }
+.toast-undo:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+/* Row-level delete. Recessive until the row is touched, so a table of to-dos
+   does not read as a column of red crosses — the destructive affordance
+   should be reachable, not loud. */
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.375rem;
+  white-space: nowrap;
+}
+
+.icon-btn {
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--c-text-muted);
+  cursor: pointer;
+  font-size: 1.125rem;
+  line-height: 1;
+  padding: 0.125rem 0.375rem;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+tr:hover .icon-btn,
+tr:focus-within .icon-btn { opacity: 1; }
+
+/* Never hide it from keyboard users or touch devices, where there is no
+   hover to reveal it with. */
+.icon-btn:focus-visible { opacity: 1; outline: 2px solid var(--c-accent); outline-offset: 1px; }
+
+@media (hover: none) {
+  .icon-btn { opacity: 1; }
+}
+
+.icon-btn.is-danger:hover {
+  color: var(--c-fail);
+  background: color-mix(in srgb, var(--c-fail) 12%, transparent);
+}
+
 @keyframes toast-in {
   from { opacity: 0; transform: translate(-50%, 8px); }
   to   { opacity: 1; transform: translate(-50%, 0); }

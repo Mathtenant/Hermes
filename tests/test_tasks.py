@@ -232,3 +232,199 @@ def test_update_keeps_the_time_component_of_a_datetime() -> None:
         assert "14:25" in str(store.get(tid).raised_at)
     finally:
         store.close()
+
+
+# ---------------------------------------------------------------------------
+# Soft delete & restore
+#
+# TaskStore grew but never shrank: it had create, update and close_task, and no
+# way at all to remove a row. Deletion is soft so that the dashboard's Undo can
+# actually restore rather than re-create from remembered fields.
+# ---------------------------------------------------------------------------
+
+
+def _store_with_tree() -> tuple[TaskStore, str, str, str, str]:
+    """root → kid → grandkid, plus an unrelated sibling root."""
+    store = TaskStore(":memory:")
+    root = store.create(Task(id="", title="Root"))
+    kid = store.create(Task(id="", title="Kid", parent_id=root))
+    grandkid = store.create(Task(id="", title="Grandkid", parent_id=kid))
+    other = store.create(Task(id="", title="Other"))
+    return store, root, kid, grandkid, other
+
+
+def test_soft_delete_hides_the_task() -> None:
+    store, root, _, _, _ = _store_with_tree()
+    try:
+        store.soft_delete(root)
+        assert store.get(root) is None
+    finally:
+        store.close()
+
+
+def test_soft_delete_keeps_the_row_for_restore() -> None:
+    """The blob is untouched, which is what makes restore a true inverse."""
+    store, root, _, _, _ = _store_with_tree()
+    try:
+        store.soft_delete(root)
+        hidden = store.get(root, include_deleted=True)
+        assert hidden is not None
+        assert hidden.title == "Root"
+    finally:
+        store.close()
+
+
+def test_soft_delete_takes_the_whole_subtree() -> None:
+    """A visible child under a deleted parent would be orphaned in every view."""
+    store, root, kid, grandkid, _ = _store_with_tree()
+    try:
+        ids = store.soft_delete(root)
+        assert set(ids) == {root, kid, grandkid}
+        assert store.get(grandkid) is None
+    finally:
+        store.close()
+
+
+def test_soft_delete_returns_ids_parent_first() -> None:
+    store, root, _, _, _ = _store_with_tree()
+    try:
+        assert store.soft_delete(root)[0] == root
+    finally:
+        store.close()
+
+
+def test_soft_delete_leaves_unrelated_tasks_alone() -> None:
+    store, root, _, _, other = _store_with_tree()
+    try:
+        store.soft_delete(root)
+        assert store.get(other) is not None
+    finally:
+        store.close()
+
+
+def test_deleted_tasks_do_not_count_as_open() -> None:
+    store, root, _, _, _ = _store_with_tree()
+    try:
+        before = store.count_open()
+        store.soft_delete(root)
+        assert store.count_open() == before - 3
+    finally:
+        store.close()
+
+
+def test_deleted_tasks_vanish_from_list_by_parent() -> None:
+    store, root, kid, _, _ = _store_with_tree()
+    try:
+        store.soft_delete(kid)
+        assert [t.id for t in store.list_by_parent(root)] == []
+    finally:
+        store.close()
+
+
+def test_deleted_tasks_vanish_from_the_tree() -> None:
+    store, root, _, _, _ = _store_with_tree()
+    try:
+        store.soft_delete(root)
+        assert [c["id"] for c in store.tree()["children"]] != [root]
+    finally:
+        store.close()
+
+
+def test_restore_is_the_inverse_of_soft_delete() -> None:
+    store, root, kid, grandkid, _ = _store_with_tree()
+    try:
+        before = store.count_open()
+        store.restore(store.soft_delete(root))
+        assert store.count_open() == before
+        assert store.get(grandkid) is not None
+    finally:
+        store.close()
+
+
+def test_soft_delete_raises_for_an_unknown_id() -> None:
+    store = TaskStore(":memory:")
+    try:
+        with pytest.raises(KeyError):
+            store.soft_delete("nope")
+    finally:
+        store.close()
+
+
+def test_deleting_a_child_then_its_parent_does_not_widen_the_undo() -> None:
+    """Undoing the parent must not resurrect a child deleted earlier, on purpose."""
+    store, root, kid, grandkid, _ = _store_with_tree()
+    try:
+        store.soft_delete(kid)
+        parent_ids = store.soft_delete(root)
+        assert kid not in parent_ids
+        assert grandkid not in parent_ids
+
+        store.restore(parent_ids)
+        assert store.get(root) is not None
+        assert store.get(kid) is None
+    finally:
+        store.close()
+
+
+def test_restore_ignores_ids_that_are_not_deleted() -> None:
+    store, root, _, _, other = _store_with_tree()
+    try:
+        restored = store.restore([other, "ghost"])
+        assert [t.id for t in restored] == [other]
+    finally:
+        store.close()
+
+
+def test_find_by_external_ref_still_sees_deleted_rows() -> None:
+    """It answers "is this ref in the unique index?", and the index counts them.
+
+    Filtering here would make the importer try to INSERT a ref that already
+    exists and fail on the constraint.
+    """
+    store = TaskStore(":memory:")
+    try:
+        tid = store.create(Task(id="", title="Importiert", external_ref="pd/x"))
+        store.soft_delete(tid)
+        assert store.get(tid) is None
+        assert store.find_by_external_ref("pd/x") is not None
+    finally:
+        store.close()
+
+
+def test_opening_a_database_created_before_soft_delete(tmp_path) -> None:
+    """Upgrading an existing store must not need a manual migration.
+
+    Every other test here uses ``:memory:``, which is always a fresh schema —
+    so none of them can reach this path. The first version of the soft-delete
+    change put ``CREATE INDEX ... ON tasks (deleted_at)`` in the schema script,
+    which runs before the migration that adds the column: fresh databases were
+    fine and every existing one failed to open at all.
+    """
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    legacy = sqlite3.connect(db)
+    legacy.executescript(
+        """
+        CREATE TABLE tasks (
+            id           TEXT PRIMARY KEY,
+            parent_id    TEXT,
+            status       TEXT NOT NULL DEFAULT 'open',
+            node_kind    TEXT NOT NULL DEFAULT 'task',
+            blob         TEXT NOT NULL,
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL
+        );
+        """
+    )
+    legacy.commit()
+    legacy.close()
+
+    store = TaskStore(str(db))
+    try:
+        tid = store.create(Task(id="", title="Von früher"))
+        assert store.get(tid) is not None
+        store.soft_delete(tid)
+        assert store.get(tid) is None
+    finally:
+        store.close()

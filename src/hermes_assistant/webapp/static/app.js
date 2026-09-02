@@ -123,14 +123,57 @@ function toggleTheme() {
 }
 
 // ── Toast notifications ────────────────────────────────────────────────────
-const toast = reactive({ message: null, isError: false });
+// A toast can carry one action, which is how Undo reaches the user: the moment
+// after a delete is the only moment they are still thinking about it, so the
+// way back belongs there rather than in a separate trash screen.
+const toast = reactive({ message: null, isError: false, undo: null });
 let _toastTimer = null;
 
-function showToast(msg, isError = false) {
+// Undo gets longer than a plain notice — 4s is enough to read "saved", not
+// enough to decide you did not mean to delete something.
+const TOAST_MS = 4000;
+const UNDO_TOAST_MS = 12000;
+
+function showToast(msg, isError = false, undo = null) {
   toast.message = msg;
   toast.isError = isError;
+  toast.undo = undo;
   if (_toastTimer) clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => { toast.message = null; }, 4000);
+  _toastTimer = setTimeout(
+    () => { toast.message = null; toast.undo = null; },
+    undo ? UNDO_TOAST_MS : TOAST_MS,
+  );
+}
+
+function dismissToast() {
+  if (_toastTimer) clearTimeout(_toastTimer);
+  toast.message = null;
+  toast.undo = null;
+}
+
+/** Run the pending toast's undo action, then report what happened. */
+async function runUndo() {
+  const action = toast.undo;
+  if (!action) return;
+  // Clear first: a second click while the request is in flight would restore
+  // twice, and the second restore has nothing left to do but confuse.
+  dismissToast();
+  try {
+    const resp = await fetch(action.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(action.body),
+    });
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => ({}));
+      showToast(detail.detail || 'Undo failed', true);
+      return;
+    }
+    showToast(action.okMessage || 'Restored');
+    await refresh();
+  } catch {
+    showToast('Undo failed — is the server still running?', true);
+  }
 }
 
 // ── API fetch ──────────────────────────────────────────────────────────────
@@ -261,6 +304,74 @@ async function submitCreate() {
     createError.value = String(e.message || e);
   } finally {
     createBusy.value = false;
+  }
+}
+
+// ── Delete ─────────────────────────────────────────────────────────────────
+// Both deletes are recoverable server-side, so the confirm step is about
+// intent, not safety. The project confirm is the blunter of the two because a
+// project directory holds the user's own documents.
+
+/** Delete a to-do or work package, offering Undo in the toast. */
+async function deleteTask(task) {
+  if (!task || !task.id) return;
+  const label = task.title || 'Eintrag';
+  if (!window.confirm(`"${label}" löschen?`)) return;
+  try {
+    const resp = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
+      method: 'DELETE',
+    });
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => ({}));
+      showToast(detail.detail || 'Löschen fehlgeschlagen', true);
+      return;
+    }
+    const body = await resp.json();
+    // A subtree delete removes more than the row that was clicked; say so,
+    // otherwise the count in the sidebar drops by more than the user expects.
+    const extra = body.deleted > 1 ? ` (mit ${body.deleted - 1} Unterpunkten)` : '';
+    await refresh();
+    showToast(`"${label}" gelöscht${extra}`, false, {
+      url: '/api/tasks/restore',
+      body: body.undo,
+      okMessage: `"${label}" wiederhergestellt`,
+    });
+  } catch {
+    showToast('Löschen fehlgeschlagen — läuft der Server noch?', true);
+  }
+}
+
+/** Delete a project directory (moved to trash), offering Undo in the toast. */
+async function deleteProject(projectId) {
+  if (!projectId) return;
+  if (!window.confirm(
+    `Projekt "${projectId}" löschen?\n\n` +
+    'Der Ordner wird in den Papierkorb verschoben, nicht gelöscht. ' +
+    'Deine Dokumente bleiben erhalten.'
+  )) return;
+  try {
+    const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+      method: 'DELETE',
+    });
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => ({}));
+      showToast(detail.detail || 'Löschen fehlgeschlagen', true);
+      return;
+    }
+    const body = await resp.json();
+    // The detail screen would be pointing at a project that is no longer there.
+    if (state.projectId === projectId) {
+      state.projectId = null;
+      goTo('projects');
+    }
+    await refresh();
+    showToast(`Projekt "${projectId}" gelöscht`, false, {
+      url: '/api/projects/restore',
+      body: body.undo,
+      okMessage: `Projekt "${projectId}" wiederhergestellt`,
+    });
+  } catch {
+    showToast('Löschen fehlgeschlagen — läuft der Server noch?', true);
   }
 }
 
@@ -742,6 +853,8 @@ const App = {
     return {
       state, theme, toast, navItems, shortcuts, counts, version,
       toggleTheme, refresh, goTo, selectProject, clearProject,
+      // Delete & undo
+      deleteTask, deleteProject, runUndo,
       // Import wizard
       openImport, closeImport, clearImportForm, onImportFile, onDrop,
       runImport, copyPrompt, goToPasteStep,
@@ -873,6 +986,7 @@ const App = {
           :loading="state.loading"
           :error="state.error"
           @select-project="selectProject"
+          @delete-project="deleteProject"
         />
         <project-detail-screen
           v-else-if="state.screen === 'detail'"
@@ -895,6 +1009,7 @@ const App = {
           :data="state.data"
           :loading="state.loading"
           :error="state.error"
+          @delete-task="deleteTask"
         />
         <risks-screen
           v-else-if="state.screen === 'risks'"
@@ -1251,7 +1366,13 @@ const App = {
            class="toast"
            :class="{ 'is-error': toast.isError }"
            role="alert"
-           aria-live="assertive">{{ toast.message }}</div>
+           aria-live="assertive">
+        <span>{{ toast.message }}</span>
+        <button v-if="toast.undo"
+                class="toast-undo"
+                data-testid="toast-undo"
+                @click="runUndo">Rückgängig</button>
+      </div>
     </div>
   `,
 };

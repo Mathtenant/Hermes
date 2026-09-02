@@ -52,11 +52,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     blob         TEXT NOT NULL,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL,
-    external_ref TEXT
+    external_ref TEXT,
+    deleted_at   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks (parent_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
 """
+# NB: no index on deleted_at here. This script runs against databases created
+# before that column existed, where CREATE TABLE IF NOT EXISTS is a no-op but a
+# CREATE INDEX naming the missing column is a hard error — and it would fire
+# before _migrate() ever got the chance to add it. Columns added after the
+# initial schema, and their indexes, belong in _migrate() alone.
 
 
 class TaskStore:
@@ -95,6 +101,13 @@ class TaskStore:
         }
         if "external_ref" not in existing_cols:
             self._conn.execute("ALTER TABLE tasks ADD COLUMN external_ref TEXT")
+        if "deleted_at" not in existing_cols:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN deleted_at TEXT")
+        # Outside the branch above: a fresh database gets the column from
+        # _SCHEMA and so never enters it, but still needs the index.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_deleted ON tasks (deleted_at)"
+        )
         # Partial unique index: NULL is excluded so rows without external_ref
         # never conflict with each other.
         self._conn.execute(
@@ -154,18 +167,30 @@ class TaskStore:
             self._conn.commit()
             return task.id
 
-    def get(self, task_id: str) -> Task | None:
-        """Fetch a task by id, or ``None`` if not found."""
+    def get(self, task_id: str, *, include_deleted: bool = False) -> Task | None:
+        """Fetch a task by id, or ``None`` if not found.
+
+        Soft-deleted tasks are invisible by default; ``include_deleted`` is for
+        :meth:`restore`, which has to find a row precisely because it is gone.
+        """
         with self._lock:
-            row = self._conn.execute(
-                "SELECT blob FROM tasks WHERE id = ?", (task_id,)
-            ).fetchone()
+            sql = "SELECT blob FROM tasks WHERE id = ?"
+            if not include_deleted:
+                sql += " AND deleted_at IS NULL"
+            row = self._conn.execute(sql, (task_id,)).fetchone()
             return self._row_to_task(row) if row else None
 
     def find_by_external_ref(self, external_ref: str) -> Task | None:
         """Find a task by its Copilot export key (idempotency look-up).
 
         Returns the stored task, or ``None`` if no row has that external_ref.
+
+        This deliberately sees soft-deleted rows. It exists to answer "does the
+        unique index already hold this ref?", and the index counts deleted rows
+        — so filtering them here would make the importer try to INSERT a ref
+        that already exists and fail on the constraint. Seeing them also gives
+        the friendlier behaviour: re-importing something you deleted brings it
+        back (``import_json`` restores it) instead of erroring.
         """
         with self._lock:
             row = self._conn.execute(
@@ -183,7 +208,8 @@ class TaskStore:
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'open'"
+                "SELECT COUNT(*) FROM tasks "
+                "WHERE status = 'open' AND deleted_at IS NULL"
             ).fetchone()
             return int(row[0]) if row else 0
 
@@ -192,11 +218,13 @@ class TaskStore:
         with self._lock:
             if parent_id is None:
                 rows = self._conn.execute(
-                    "SELECT blob FROM tasks WHERE parent_id IS NULL ORDER BY created_at ASC"
+                    "SELECT blob FROM tasks WHERE parent_id IS NULL "
+                    "AND deleted_at IS NULL ORDER BY created_at ASC"
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    "SELECT blob FROM tasks WHERE parent_id = ? ORDER BY created_at ASC",
+                    "SELECT blob FROM tasks WHERE parent_id = ? "
+                    "AND deleted_at IS NULL ORDER BY created_at ASC",
                     (parent_id,),
                 ).fetchall()
             return [self._row_to_task(r) for r in rows]
@@ -350,6 +378,62 @@ class TaskStore:
         """Convenience method: set status = 'closed'."""
         with self._lock:
             return self.update(task_id, changed_by=changed_by, status="closed")
+
+    def soft_delete(self, task_id: str, changed_by: str = "system") -> list[str]:
+        """Hide a task and its whole subtree; return the ids that were hidden.
+
+        Deletion is soft because the UI offers Undo, and an Undo that cannot
+        actually restore is a lie. The row stays exactly as it was — the blob
+        is untouched — and only ``deleted_at`` is stamped, so :meth:`restore`
+        is a true inverse rather than a re-creation from remembered fields.
+
+        The subtree goes with it. A visible child under a deleted parent would
+        be orphaned in every tree view, and :meth:`list_by_parent` would still
+        return it for a parent nobody can see.
+
+        Returns the deleted ids parent-first, which is the order
+        :meth:`restore` needs. Already-deleted tasks are skipped, so deleting
+        twice does not widen the set a later restore would bring back.
+        """
+        with self._lock:
+            task = self.get(task_id)
+            if task is None:
+                raise KeyError(f"Task {task_id!r} not found")
+
+            ordered: list[str] = []
+            frontier = [task_id]
+            while frontier:
+                current = frontier.pop(0)
+                ordered.append(current)
+                frontier.extend(t.id for t in self.list_by_parent(current))
+
+            now = _now()
+            self._conn.executemany(
+                "UPDATE tasks SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+                [(now.isoformat(), tid) for tid in ordered],
+            )
+            self._conn.commit()
+            return ordered
+
+    def restore(self, task_ids: list[str]) -> list[Task]:
+        """Un-delete the given ids — the inverse of :meth:`soft_delete`.
+
+        Takes the exact id list ``soft_delete`` returned rather than
+        re-walking the tree, because the tree is not walkable while the rows
+        are hidden, and because a later unrelated deletion must not be swept
+        back in by an Undo that only knows the root id.
+
+        Ids that are missing or already visible are skipped. Returns the tasks
+        that are now visible again.
+        """
+        with self._lock:
+            self._conn.executemany(
+                "UPDATE tasks SET deleted_at = NULL WHERE id = ?",
+                [(tid,) for tid in task_ids],
+            )
+            self._conn.commit()
+            restored = [self.get(tid) for tid in task_ids]
+            return [t for t in restored if t is not None]
 
     def tree(self, root_id: str | None = None) -> dict[str, Any]:
         """Return a nested dict representation of the (sub)tree.

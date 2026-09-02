@@ -681,3 +681,188 @@ def test_french_message_does_not_crash():
     service = ChatService(store, _SmallTalkRouter(), FakeExecutor(), FakeLLMClient())
     turn = service.handle_turn("Bonjour, pouvez-vous m'aider ?", "proj1")
     assert turn.message.content.strip()
+
+
+# ---------------------------------------------------------------------------
+# Model failover
+#
+# A chat model that is not pulled, or is corrupt, or dies under memory pressure
+# fails on every turn. Telling the user to go pull it is a worse answer than
+# quietly using a model they already have — but only when another model could
+# actually work, which is the distinction these tests pin down.
+# ---------------------------------------------------------------------------
+
+
+class _DeadRouter:
+    """Fails for one model id, answers for any other."""
+
+    def __init__(self, broken: str = "broken:1b") -> None:
+        self.model = broken
+        self._broken = broken
+        self.tried: list[str] = []
+
+    def classify(self, message, context):  # noqa: ANN001
+        self.tried.append(self.model)
+        if self.model == self._broken:
+            raise TimeoutError(f"Timed out reading from {self.model}")
+        return IntentClassification(
+            intent="answer_question", params={}, confidence=0.9
+        )
+
+
+class _HealthClient(FakeLLMClient):
+    def __init__(self, available: bool, models: list[str]) -> None:
+        self._health = {
+            "available": available,
+            "models": models,
+            "error": None if available else "connection refused",
+        }
+
+    def health(self):  # noqa: ANN201
+        return self._health
+
+
+def _failover_service(router, client) -> ChatService:  # noqa: ANN001
+    return ChatService(ChatStore(":memory:"), router, FakeExecutor(), client)
+
+
+def test_a_dead_model_falls_back_to_an_installed_one():
+    router = _DeadRouter()
+    service = _failover_service(
+        router, _HealthClient(True, ["broken:1b", "qwen3:4b"])
+    )
+
+    _, reason = service._classify("hello", None)
+
+    assert reason == ""
+    assert router.model == "qwen3:4b"
+
+
+def test_the_failover_sticks_for_the_next_turn():
+    """Re-paying for the broken model on every turn would be the same bug."""
+    router = _DeadRouter()
+    service = _failover_service(
+        router, _HealthClient(True, ["broken:1b", "qwen3:4b"])
+    )
+
+    service._classify("hello", None)
+    router.tried.clear()
+    service._classify("again", None)
+
+    assert router.tried == ["qwen3:4b"]
+
+
+def test_no_failover_when_ollama_itself_is_down():
+    """Every model sits behind the same daemon.
+
+    Trying each in turn would repeat one failure slowly and bury the cause, so
+    the user gets the real reason instead.
+    """
+    router = _DeadRouter()
+    service = _failover_service(router, _HealthClient(False, []))
+
+    _, reason = service._classify("hello", None)
+
+    assert "TimeoutError" in reason
+    assert router.tried == ["broken:1b"]
+
+
+def test_no_failover_when_nothing_else_is_installed():
+    router = _DeadRouter()
+    service = _failover_service(router, _HealthClient(True, ["broken:1b"]))
+
+    _, reason = service._classify("hello", None)
+
+    assert "TimeoutError" in reason
+
+
+def test_the_original_reason_survives_when_every_model_fails():
+    """The message must name the real cause, not the last thing tried."""
+
+    class _AllDead(_DeadRouter):
+        def classify(self, message, context):  # noqa: ANN001
+            self.tried.append(self.model)
+            raise TimeoutError(f"Timed out reading from {self.model}")
+
+    router = _AllDead()
+    service = _failover_service(
+        router, _HealthClient(True, ["broken:1b", "a:1b", "b:1b"])
+    )
+
+    _, reason = service._classify("hello", None)
+
+    assert "TimeoutError" in reason
+    assert "a:1b" in router.tried and "b:1b" in router.tried
+
+
+def test_a_failed_candidate_does_not_strand_the_router():
+    """A candidate that fails must not be left as the router's model."""
+
+    class _OnlySecondWorks(_DeadRouter):
+        def classify(self, message, context):  # noqa: ANN001
+            self.tried.append(self.model)
+            if self.model in ("broken:1b", "a:1b"):
+                raise TimeoutError("nope")
+            return IntentClassification(
+                intent="answer_question", params={}, confidence=0.9
+            )
+
+    router = _OnlySecondWorks()
+    service = _failover_service(
+        router, _HealthClient(True, ["broken:1b", "a:1b", "zz:1b"])
+    )
+
+    _, reason = service._classify("hello", None)
+
+    assert reason == ""
+    assert router.model == "zz:1b"
+
+
+def test_candidate_order_is_reproducible():
+    router = _DeadRouter()
+    service = _failover_service(
+        router, _HealthClient(True, ["broken:1b", "zz:9b", "aa:9b"])
+    )
+
+    assert service._fallback_candidates("broken:1b") == ["aa:9b", "zz:9b"]
+
+
+def test_the_configured_model_is_tried_before_the_rest(monkeypatch):
+    from hermes_assistant.chat import service as service_mod
+
+    monkeypatch.setattr(service_mod.settings, "chat_model", "zz:9b", raising=False)
+    router = _DeadRouter()
+    service = _failover_service(
+        router, _HealthClient(True, ["broken:1b", "zz:9b", "aa:9b"])
+    )
+
+    assert service._fallback_candidates("broken:1b")[0] == "zz:9b"
+
+
+def test_a_health_check_that_raises_does_not_break_the_turn():
+    class _ExplodingHealth(FakeLLMClient):
+        def health(self):  # noqa: ANN201
+            raise OSError("socket gone")
+
+    router = _DeadRouter()
+    service = _failover_service(router, _ExplodingHealth())
+
+    _, reason = service._classify("hello", None)
+
+    assert "TimeoutError" in reason
+
+
+def test_the_ui_reports_the_model_that_is_actually_serving(monkeypatch):
+    """After a failover the picker must not keep naming the dead model."""
+    from hermes_assistant.webapp import chat_api
+
+    router = _DeadRouter()
+    service = _failover_service(
+        router, _HealthClient(True, ["broken:1b", "qwen3:4b"])
+    )
+    monkeypatch.setattr(chat_api, "_chat_service", service, raising=False)
+    monkeypatch.setattr(chat_api, "_active_model", "broken:1b", raising=False)
+
+    service._classify("hello", None)
+
+    assert chat_api.get_active_model() == "qwen3:4b"

@@ -26,6 +26,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from hermes_assistant.config import settings
+from hermes_assistant.llm.roster import ModelRole, get_model
 
 from .executor import ActionExecutor
 from .model import (
@@ -38,6 +39,10 @@ from .router import IntentRouter
 from .store import ChatStore
 
 logger = logging.getLogger(__name__)
+
+# The roster's routing model, used as the second choice when the active chat
+# model stops answering. Read once: the roster is static config, not state.
+_ROUTER_MODEL = get_model(ModelRole.ROUTER)
 
 
 class ConfidentialityGuardError(Exception):
@@ -571,6 +576,11 @@ class ChatService:
         except Exception as exc:  # noqa: BLE001 - LLM/transport failures must not 500
             reason = f"{type(exc).__name__}: {exc}"
             logger.warning("Intent classification failed — %s", reason)
+
+            fallback = self._classify_with_fallback(message, context)
+            if fallback is not None:
+                return fallback, ""
+
             # `intent` stays inside its Literal domain — the failure travels in
             # the reason string, so the router's intent vocabulary is not
             # widened with a value the model itself could never return.
@@ -578,6 +588,83 @@ class ChatService:
                 IntentClassification(intent="unknown", params={}, confidence=0.0),
                 reason,
             )
+
+    def _fallback_candidates(self, failed: str) -> list[str]:
+        """Installed models worth trying after ``failed`` did not answer.
+
+        Ordered by how likely they are to route well: the configured default
+        first, then the roster's router model, then everything else installed,
+        alphabetically so the choice is reproducible rather than dict-ordered.
+
+        Returns an empty list when Ollama itself is unreachable — every model
+        is behind the same daemon, so trying another one would just repeat the
+        same failure more slowly and bury the real cause.
+        """
+        try:
+            health = self.llm_client.health()
+        except Exception:  # noqa: BLE001 - health must never raise into a turn
+            return []
+        if not health.get("available"):
+            return []
+
+        installed = [m for m in health.get("models", []) if m and m != failed]
+        if not installed:
+            return []
+
+        preferred = [
+            m for m in (getattr(settings, "chat_model", ""), _ROUTER_MODEL)
+            if m and m in installed
+        ]
+        rest = sorted(m for m in installed if m not in preferred)
+        # dict.fromkeys: order-preserving de-duplication, since the configured
+        # model and the roster router are often the same id.
+        return list(dict.fromkeys([*preferred, *rest]))
+
+    def _classify_with_fallback(
+        self, message: str, context: ChatContext
+    ) -> IntentClassification | None:
+        """Retry classification on the next installed model, switching to it.
+
+        A model that is not pulled, or is corrupt, or dies under memory
+        pressure fails every turn, and telling the user to go pull it is a
+        worse answer than quietly using one they already have. On success the
+        router keeps the working model, so the next turn does not pay for the
+        failed one again.
+
+        Returns ``None`` when no other model works, leaving the caller to
+        report the original failure.
+        """
+        failed = self._model()
+        for candidate in self._fallback_candidates(failed):
+            try:
+                classification = self._classify_on(candidate, message, context)
+            except Exception as exc:  # noqa: BLE001 - try the next one
+                logger.warning("Fallback model %s also failed — %s", candidate, exc)
+                continue
+            logger.warning(
+                "Chat model %s was unreachable; switched to %s", failed, candidate
+            )
+            self.router.model = candidate
+            return classification
+        return None
+
+    def _classify_on(
+        self, model: str, message: str, context: ChatContext
+    ) -> IntentClassification:
+        """Classify using ``model``, restoring the router's model on failure.
+
+        The router takes its model from an attribute rather than an argument,
+        so a temporary swap is the only way to try a candidate — and it has to
+        be undone when the candidate fails, or one bad model would strand the
+        router on itself.
+        """
+        previous = self.router.model
+        self.router.model = model
+        try:
+            return self.router.classify(message, context)
+        except Exception:
+            self.router.model = previous
+            raise
 
     def _build_suggestions(
         self, context: ChatContext, classification: IntentClassification

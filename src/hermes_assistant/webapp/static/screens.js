@@ -1088,10 +1088,61 @@ const AblaufplanScreen = {
       // has no anchor to judge the bars against.
       points.push(todayMs());
       const pad = 3 * DAY_MS;
-      const min = Math.min(...points) - pad;
-      const max = Math.max(...points) + pad;
+      let min = Math.min(...points) - pad;
+      let max = Math.max(...points) + pad;
+
+      // Clamp the AXIS to the chosen window, not just the row set.
+      //
+      // This is the bug behind "it still shows June": selecting rows and
+      // sizing the axis are two different jobs, and only the first was
+      // respecting the window. One overdue bar that STARTED on 1 July is
+      // rightly kept — it is not finished — but its start date was then
+      // dragging the whole axis back two months, so a plan opened on
+      // Jun/Jul/Aug with today squeezed to the right. The bar still shows;
+      // it is clipped at the edge instead of stretching the ruler.
+      const b = windowBounds();
+      const from = b ? toMs(b.from) : (forwardStartMs());
+      const to = b ? toMs(b.to) : (forwardEndMs());
+      if (from !== null) min = Math.max(min, from);
+      if (to !== null) max = Math.min(max, to);
+      if (max <= min) max = min + DAY_MS;
+
       return { min, max, span: Math.max(max - min, DAY_MS) };
     });
+
+    /** Left edge of the forward window.
+     *
+     * Today — except that it reaches back far enough to show the OLDEST
+     * overdue deadline. Clamping hard to today looked right until an overdue
+     * bar that had also ENDED before today rendered as an empty lane: the row
+     * was listed, correctly, with nothing drawn in it. A missed deadline is
+     * the one piece of past worth the space, and it is on screen because it
+     * is still open — the axis reaching back one month is the finding, not
+     * noise.
+     */
+    function forwardStartMs() {
+      if (WINDOWS[filterWindow.value]?.mode !== 'forward') return null;
+      const today = todayISO();
+      let earliest = null;
+      for (const r of filtered.value) {
+        if (r.status === 'erledigt') continue;
+        const end = r.end || '';
+        if (!end || end >= today) continue;
+        if (earliest === null || end < earliest) earliest = end;
+      }
+      const todayStart = todayMs() - 3 * DAY_MS;
+      if (earliest === null) return todayStart;
+      return Math.min(todayStart, toMs(earliest) - 3 * DAY_MS);
+    }
+
+    /** Right edge of the forward window. */
+    function forwardEndMs() {
+      const w = WINDOWS[filterWindow.value];
+      if (w?.mode !== 'forward') return null;
+      const to = new Date();
+      to.setUTCMonth(to.getUTCMonth() + w.fwd);
+      return toMs(to.toISOString().slice(0, 10));
+    }
 
     /** Midnight UTC today, as ms. One definition, used by domain and marker. */
     function todayMs() {
@@ -1109,6 +1160,11 @@ const AblaufplanScreen = {
       const d = domain.value;
       if (!d || ms === null) return 0;
       return ((ms - d.min) / d.span) * 100;
+    }
+
+    /** pct(), held inside the track. Used for bars, which may overhang. */
+    function clampedPct(ms) {
+      return Math.min(100, Math.max(0, pct(ms)));
     }
 
     /** ISO week number, for the week-scale axis labels. */
@@ -1211,16 +1267,32 @@ const AblaufplanScreen = {
       const s = toMs(r.start || r.end);
       const e = toMs(r.end);
       if (s === null || e === null) return { display: 'none' };
-      const left = pct(s);
+      const d = domain.value;
       // +1 day so a task that starts and ends on the same date still shows a
       // bar rather than a hairline.
-      const right = pct(e + DAY_MS);
+      const endMs = e + DAY_MS;
+      // Entirely outside the window: nothing to draw. Without this a bar that
+      // ended before the window would clamp to a 0-width sliver stuck at the
+      // left edge, reading as work that is somehow happening today.
+      if (d && (endMs < d.min || s > d.max)) return { display: 'none' };
+      const left = clampedPct(s);
+      const right = clampedPct(endMs);
       return { left: left + '%', width: Math.max(right - left, 0.6) + '%' };
+    }
+
+    /** True when a bar runs past the left edge of the window and is cut off. */
+    function isClipped(r) {
+      const d = domain.value;
+      const s = toMs(r.start || r.end);
+      return !!(d && s !== null && s < d.min);
     }
 
     function milestoneStyle(r) {
       const e = toMs(r.end);
-      return e === null ? { display: 'none' } : { left: pct(e) + '%' };
+      const d = domain.value;
+      if (e === null) return { display: 'none' };
+      if (d && (e < d.min || e > d.max)) return { display: 'none' };
+      return { left: pct(e) + '%' };
     }
 
     function fmt(iso) {
@@ -1346,6 +1418,49 @@ const AblaufplanScreen = {
       recentre();
     }
 
+    // ── Drag to pan ─────────────────────────────────────────────────────
+    // The track scrolls with a wheel or a trackpad, but grabbing and dragging
+    // it — the thing everyone tries first on a timeline — did nothing.
+    //
+    // Pointer events rather than mouse events, so a touchscreen and a pen work
+    // the same way, with setPointerCapture so a drag that leaves the element
+    // still tracks instead of freezing halfway.
+    const dragging = ref(false);
+    let _dragStartX = 0;
+    let _dragStartScroll = 0;
+
+    function onTrackPointerDown(ev) {
+      // Left button only, and never start a pan on a control. The track holds
+      // no buttons today, but the table lens beside it does; the guard is here
+      // so adding one to a row cannot silently make it undraggable-to-click.
+      if (ev.button !== 0) return;
+      if (ev.target.closest('button, input, select, a')) return;
+      const el = scrollEl.value;
+      if (!el || el.scrollWidth <= el.clientWidth) return;  // nothing to pan
+
+      dragging.value = true;
+      _dragStartX = ev.clientX;
+      _dragStartScroll = el.scrollLeft;
+      ev.currentTarget.setPointerCapture?.(ev.pointerId);
+    }
+
+    function onTrackPointerMove(ev) {
+      if (!dragging.value) return;
+      const el = scrollEl.value;
+      if (!el) return;
+      const dx = ev.clientX - _dragStartX;
+      el.scrollLeft = _dragStartScroll - dx;
+      // Suppress text selection while panning; without it the drag paints the
+      // whole plan blue instead of moving it.
+      ev.preventDefault();
+    }
+
+    function onTrackPointerUp(ev) {
+      if (!dragging.value) return;
+      dragging.value = false;
+      ev.currentTarget.releasePointerCapture?.(ev.pointerId);
+    }
+
     function setScale(key) {
       const i = SCALES.findIndex((s) => s.key === key);
       if (i < 0 || i === scaleIndex.value) return;
@@ -1362,10 +1477,11 @@ const AblaufplanScreen = {
       filterWindow, outsideWindow, WINDOWS, WINDOW_ORDER,
       filterOwners, owners, UNASSIGNED, toggleOwner, clearOwners, ownerLabel,
       SCALES, scale, scaleIndex, zoomBy, setScale, scrollEl,
+      dragging, onTrackPointerDown, onTrackPointerMove, onTrackPointerUp,
       trackWidthPx, scrollToToday,
       editingOwner, ownerDraft, ownerError, beginEdit, cancelEdit, saveOwner,
       rows, phases, sources, filtered, groups, ticks, todayLeft, barStyle,
-      milestoneStyle, fmt, duration, isLate, lateCount, nextMilestone,
+      milestoneStyle, isClipped, fmt, duration, isLate, lateCount, nextMilestone,
       daysToNext, statusCounts, levelCounts,
       STATUS, STATUS_ORDER, LEVEL_ORDER,
       statusLabel: (s) => (STATUS[s] || {}).label || s,
@@ -1573,7 +1689,12 @@ const AblaufplanScreen = {
         <!-- ── Balkenplan ────────────────────────────────────────────── -->
         <div v-if="ownerError" class="notice notice-warn mb-3">{{ ownerError }}</div>
 
-        <div v-if="!asTable" class="card card-flush gantt-scroll" ref="scrollEl">
+        <div v-if="!asTable" class="card card-flush gantt-scroll" ref="scrollEl"
+             :class="{ 'is-dragging': dragging }"
+             @pointerdown="onTrackPointerDown"
+             @pointermove="onTrackPointerMove"
+             @pointerup="onTrackPointerUp"
+             @pointercancel="onTrackPointerUp">
           <!-- Width in px, derived from the scale's px-per-day, so a day at
                "Woche" is the same width whatever the plan's total length. A
                percentage width made a two-year plan and a two-month plan look
@@ -1624,10 +1745,15 @@ const AblaufplanScreen = {
                           :aria-label="r.title + ' — faellig am ' + fmt(r.end)"></span>
                   </template>
                   <template v-else>
+                    <!-- is-clipped: the bar began before the window and is cut
+                         at the edge. Without the marker it would read as work
+                         that started today, which is a different claim. -->
                     <span class="gantt-bar"
-                          :class="[statusClass(r.status), { 'is-late': isLate(r) }]"
+                          :class="[statusClass(r.status),
+                                   { 'is-late': isLate(r), 'is-clipped': isClipped(r) }]"
                           :style="barStyle(r)"
-                          :aria-label="r.title + ' — ' + fmt(r.start) + ' bis ' + fmt(r.end)">
+                          :aria-label="r.title + ' — ' + fmt(r.start) + ' bis ' + fmt(r.end)
+                                       + (isClipped(r) ? ' (beginnt vor dem Zeitraum)' : '')">
                       <span v-if="r.progress_pct !== null && r.progress_pct !== undefined"
                             class="gantt-progress"
                             :style="{ width: r.progress_pct + '%' }"></span>

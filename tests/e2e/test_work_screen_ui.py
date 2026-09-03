@@ -534,3 +534,164 @@ def test_the_whole_span_is_still_reachable(app_page: Page) -> None:
     app_page.locator('select[aria-label="Zeitraum"]').select_option("all")
     app_page.wait_for_timeout(600)
     assert app_page.locator(".gantt-row").count() > before
+
+
+# --------------------------------------------------------------------------- #
+# The axis extent
+#
+# Selecting rows and sizing the axis are two different jobs, and only the first
+# was respecting the window. One overdue bar that STARTED on 1 July is rightly
+# kept — it is not finished — but its start date dragged the whole axis back
+# two months, so the plan opened on Jun/Jul/Aug with today squeezed right.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_axis_does_not_reach_back_months_before_today(app_page: Page) -> None:
+    _open_timeline(app_page)
+    month = app_page.evaluate("() => new Date().getUTCMonth()")
+
+    left = app_page.locator(".gantt-bar, .gantt-milestone, .gantt-termin")
+    assert left.count() > 0, "nothing drawn to judge the axis by"
+
+    # The first tick may legitimately be the month before this one — the window
+    # reaches back to the oldest overdue deadline — but not further.
+    first = app_page.locator(".gantt-tick-label").first.inner_text()
+    months = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+              "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+    idx = months.index(first.strip()[:3])
+    # Distance backwards from the current month, wrapping the year.
+    back = (month - idx) % 12
+    assert back <= 2, f"axis starts {back} months before today (at {first})"
+
+
+def test_a_long_running_bar_is_clipped_not_axis_stretching(app_page: Page) -> None:
+    """A bar that began before the window is cut at the edge.
+
+    The alternative — letting it widen the axis — is what put June on screen.
+    """
+    _open_timeline(app_page)
+    clipped = app_page.locator(".gantt-bar.is-clipped")
+    if not clipped.count():
+        pytest.skip("no bar starts before the window in this data")
+    style = clipped.first.get_attribute("style") or ""
+    assert "left: 0%" in style
+
+
+def test_every_visible_row_draws_something(app_page: Page) -> None:
+    """An overdue row with no mark is worse than the problem being fixed.
+
+    Clamping the axis hard to today made an overdue bar that had also ENDED
+    before today render as an empty lane: listed, correctly, with nothing in
+    it. The window reaches back to the oldest overdue deadline for exactly
+    this reason.
+    """
+    _open_timeline(app_page)
+    rows = app_page.locator(".gantt-row")
+    assert rows.count() > 0
+    for i in range(rows.count()):
+        row = rows.nth(i)
+        marks = row.locator(".gantt-bar, .gantt-milestone, .gantt-termin")
+        visible = any(marks.nth(j).is_visible() for j in range(marks.count()))
+        label = row.inner_text().split("\n")[0][:40]
+        assert visible, f"row draws nothing: {label}"
+
+
+# --------------------------------------------------------------------------- #
+# Drag to pan
+# --------------------------------------------------------------------------- #
+
+
+def _wide_timeline(page: Page):
+    """A timeline zoomed far enough in that the track overflows."""
+    _open_timeline(page)
+    page.locator('[data-testid="zoom-level"]').select_option("woche")
+    # setScale() re-centres asynchronously; read scrollLeft before that settles
+    # and the drag is measured against a moving target.
+    page.wait_for_timeout(800)
+    scroller = page.locator(".gantt-scroll").first
+    dims = scroller.evaluate("e => ({sw: e.scrollWidth, cw: e.clientWidth})")
+    if dims["sw"] <= dims["cw"]:
+        pytest.skip("track fits; nothing to pan")
+    return scroller
+
+
+def _grab_points(page: Page, scroller) -> tuple[float, float, float]:
+    """Two x's and a y at which a press really lands on the track.
+
+    Fixed offsets from the scroller's own box are not enough: the chat widget
+    floats over the bottom-right of the viewport, so (box.x + 800, box.y + 150)
+    presses its input instead — the pan handler never fires and the test fails
+    for a reason that has nothing to do with panning. Ask the document what is
+    actually on top before deciding where to grab.
+    """
+    # elementFromPoint is viewport-relative and returns null off-screen, so a
+    # track sitting below the fold would look "obstructed" everywhere.
+    scroller.scroll_into_view_if_needed()
+    page.wait_for_timeout(200)
+    box = scroller.bounding_box()
+    probe = """([bx, by, bw, dy]) => {
+      const xs = [];
+      for (let dx = 40; dx < bw - 20; dx += 20) {
+        const el = document.elementFromPoint(bx + dx, by + dy);
+        if (el && el.closest('.gantt-track-col') && !el.closest('button, input, select, a')) {
+          xs.push(dx);
+        }
+      }
+      return xs;
+    }"""
+    for dy in (40, 60, 90, 120, 150, 200):
+        xs = page.evaluate(probe, [box["x"], box["y"], box["width"], dy])
+        if len(xs) >= 2 and xs[-1] - xs[0] >= 200:
+            return box["x"] + xs[-1], box["x"] + xs[0], box["y"] + dy
+    pytest.skip("no unobstructed stretch of track to grab")
+
+
+def _drag(page: Page, x_from: float, x_to: float, y: float) -> None:
+    page.mouse.move(x_from, y)
+    page.mouse.down()
+    page.mouse.move(x_to, y, steps=12)
+    page.mouse.up()
+    page.wait_for_timeout(250)
+
+
+def test_dragging_the_track_pans_it(app_page: Page) -> None:
+    """Grabbing and dragging is what everyone tries first on a timeline."""
+    scroller = _wide_timeline(app_page)
+    right, left, y = _grab_points(app_page, scroller)
+    before = scroller.evaluate("e => e.scrollLeft")
+
+    _drag(app_page, right, left, y)  # content moves left ⇒ scrollLeft grows
+
+    assert scroller.evaluate("e => e.scrollLeft") > before
+
+
+def test_dragging_back_returns_the_view(app_page: Page) -> None:
+    scroller = _wide_timeline(app_page)
+    right, left, y = _grab_points(app_page, scroller)
+
+    _drag(app_page, right, left, y)
+    panned = scroller.evaluate("e => e.scrollLeft")
+
+    _drag(app_page, left, right, y)
+
+    assert scroller.evaluate("e => e.scrollLeft") < panned
+
+
+def test_a_press_without_movement_leaves_the_view_alone(app_page: Page) -> None:
+    """Clicking the track is not a pan — and must not end stuck mid-drag.
+
+    A missed pointerup leaves `is-dragging` latched: the cursor stays "grabbing"
+    and text selection stays suppressed for the rest of the session, with
+    nothing on screen to explain it.
+    """
+    scroller = _wide_timeline(app_page)
+    _, left, y = _grab_points(app_page, scroller)
+    before = scroller.evaluate("e => e.scrollLeft")
+
+    app_page.mouse.move(left, y)
+    app_page.mouse.down()
+    app_page.mouse.up()
+    app_page.wait_for_timeout(200)
+
+    assert scroller.evaluate("e => e.scrollLeft") == before
+    assert "is-dragging" not in (scroller.get_attribute("class") or "")

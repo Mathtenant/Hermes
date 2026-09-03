@@ -88,9 +88,18 @@ def test_tui_binding_action_keeps_its_name() -> None:
 # The Vue dashboard
 # --------------------------------------------------------------------------- #
 
-def test_vue_sidebar_label_says_todo() -> None:
+def test_the_vue_sidebar_no_longer_says_pendenzen() -> None:
+    """The sidebar entry is now the merged "Aufgaben & Termine".
+
+    This used to assert ``label: 'Todo'``, which after the merge still matched
+    — but on the create dialog's entry, not the sidebar's. A test that passes
+    by matching something other than what its name claims is worse than no
+    test, so it asserts the absence of the old word instead, which is what
+    was actually being protected.
+    """
     source = (_STATIC / "app.js").read_text(encoding="utf-8")
-    assert "label: 'Todo'" in source
+    assert "label: 'Pendenzen'" not in source
+    assert "label: 'Aufgaben & Termine'" in source
 
 
 def test_chat_placeholder_says_todos() -> None:

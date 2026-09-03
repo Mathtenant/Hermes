@@ -136,7 +136,10 @@ def plan_page(page: Page) -> Page:
     )
     page.goto(BASE_URL)
     page.wait_for_selector(".stat-tile", timeout=10000)
-    page.click('[data-testid="nav-plan"]')
+    # The Gantt is now the Zeitstrahl lens of the merged Aufgaben & Termine
+    # screen rather than a tab of its own.
+    page.click('[data-testid="nav-work"]')
+    page.click('[data-testid="lens-zeitstrahl"]')
     page.wait_for_selector(".gantt", timeout=5000)
     # The fixture deliberately uses far-future dates so it cannot collide with
     # real data; the default time window excludes them.
@@ -149,8 +152,8 @@ def plan_page(page: Page) -> Page:
 def decisions_page(page: Page) -> Page:
     page.goto(BASE_URL)
     page.wait_for_selector(".stat-tile", timeout=10000)
-    page.click('[data-testid="nav-pendenzen"]')
-    page.click('[data-testid="tab-beschluesse"]')
+    page.click('[data-testid="nav-work"]')
+    page.click('[data-testid="lens-beschluesse"]')
     page.wait_for_selector(".decision-list", timeout=5000)
     return page
 
@@ -323,8 +326,8 @@ def test_decisions_do_not_appear_on_the_kanban_board(decisions_page: Page):
 
 def test_the_pendenz_termin_is_shown(decisions_page: Page):
     """The Due column read "—" for every row before the importer read dates."""
-    decisions_page.click('[data-testid="tab-pendenzen"]')
-    decisions_page.fill('[data-testid="pendenzen-search"]', "E2E Vertrag")
+    decisions_page.click('[data-testid="lens-liste"]')
+    decisions_page.fill('[data-testid="work-search"]', "E2E Vertrag")
     decisions_page.wait_for_timeout(400)
     assert decisions_page.locator('tbody tr:has-text("2099-03-31")').count() > 0
 
@@ -332,9 +335,9 @@ def test_the_pendenz_termin_is_shown(decisions_page: Page):
 def test_beschluesse_raise_no_console_errors(decisions_page: Page):
     errors: list[str] = []
     decisions_page.on("pageerror", lambda e: errors.append(str(e)))
-    decisions_page.click('[data-testid="tab-pendenzen"]')
+    decisions_page.click('[data-testid="lens-liste"]')
     decisions_page.wait_for_timeout(300)
-    decisions_page.click('[data-testid="tab-beschluesse"]')
+    decisions_page.click('[data-testid="lens-beschluesse"]')
     decisions_page.wait_for_timeout(300)
     assert not errors, errors
 
@@ -378,7 +381,10 @@ def sweep_page(page: Page) -> Page:
     )
     page.goto(BASE_URL)
     page.wait_for_selector(".stat-tile", timeout=10000)
-    page.click('[data-testid="nav-plan"]')
+    # The Gantt is now the Zeitstrahl lens of the merged Aufgaben & Termine
+    # screen rather than a tab of its own.
+    page.click('[data-testid="nav-work"]')
+    page.click('[data-testid="lens-zeitstrahl"]')
     page.wait_for_selector(".gantt", timeout=5000)
     page.select_option('select[aria-label="Zeitraum"]', "all")
     page.wait_for_timeout(400)
@@ -494,7 +500,8 @@ def test_owner_is_editable_and_persists(sweep_page: Page):
     # A reload proves it was written, not just re-rendered.
     sweep_page.goto(BASE_URL)
     sweep_page.wait_for_selector(".stat-tile", timeout=10000)
-    sweep_page.click('[data-testid="nav-plan"]')
+    sweep_page.click('[data-testid="nav-work"]')
+    sweep_page.click('[data-testid="lens-zeitstrahl"]')
     sweep_page.wait_for_selector(".gantt", timeout=5000)
     sweep_page.select_option('select[aria-label="Zeitraum"]', "all")
     _table(sweep_page)

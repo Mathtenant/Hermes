@@ -58,6 +58,16 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
+        # Starlette's StaticFiles sends ETag and Last-Modified but no
+        # Cache-Control. Without it a browser falls back to HEURISTIC caching
+        # and may reuse app.js for a long time WITHOUT revalidating — so a
+        # shipped UI change simply does not appear, with no error to explain
+        # it. (That is how a renamed sidebar label kept showing its old text
+        # long after the rename was on main.) "no-cache" does not mean "do not
+        # store": it means "revalidate before reuse", and the ETag above makes
+        # that a cheap 304 on every unchanged asset.
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
 
@@ -825,6 +835,23 @@ async def import_json(request: Request) -> Response:
     return Response(content=json_str, media_type="application/json")
 
 
+_ASSET_REF = re.compile(r'((?:src|href)="/static/[^"?]+)(")')
+
+
+def _stamp_asset_urls(html: str) -> str:
+    """Append ``?v=<version>`` to every local asset URL in the page.
+
+    Belt to Cache-Control's braces. Revalidation depends on the browser
+    honouring the header and on nothing in between stripping it; a changed URL
+    is a new resource to every cache there is, so a released version can never
+    be served from a stale copy of the previous one.
+
+    Only the served HTML is rewritten — index.html on disk keeps plain URLs, so
+    it stays directly openable and diffs stay readable.
+    """
+    return _ASSET_REF.sub(rf"\1?v={__version__}\2", html)
+
+
 @app.get("/{full_path:path}")
 async def spa_fallback(full_path: str) -> Response:
     """Serve index.html for all non-API paths (SPA client-side routing)."""
@@ -838,6 +865,6 @@ async def spa_fallback(full_path: str) -> Response:
             ),
         )
     return Response(
-        content=index_path.read_text(encoding="utf-8"),
+        content=_stamp_asset_urls(index_path.read_text(encoding="utf-8")),
         media_type="text/html",
     )

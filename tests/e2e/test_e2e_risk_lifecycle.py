@@ -39,7 +39,7 @@ def _require_server():
 
 @pytest.fixture
 def dashboard(page: Page) -> Page:
-    page.goto(BASE_URL)
+    page.goto(f"{BASE_URL}/#/overview")
     page.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
     return page
 
@@ -60,7 +60,7 @@ def test_create_risk_via_chat_increments_dashboard_count(dashboard: Page):
     dashboard.wait_for_selector(".chat-messages div", timeout=5000)
 
     # Refresh dashboard data to observe the new risk.
-    dashboard.goto(BASE_URL)
+    dashboard.goto(f"{BASE_URL}/#/overview")
     dashboard.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
     after = int(dashboard.locator('[data-testid="risks-count"]').inner_text() or "0")
     assert after >= before

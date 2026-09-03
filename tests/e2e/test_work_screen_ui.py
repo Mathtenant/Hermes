@@ -51,10 +51,10 @@ def app_page(page: Page) -> Page:
         "'panel-collapsed-chat-widget-body','true')}catch(e){}"
     )
     page.goto(BASE_URL)
-    page.wait_for_selector(".stat-tile", timeout=15000)
+    page.wait_for_selector(".nav-btn", timeout=15000)
     page.evaluate("try{localStorage.removeItem('hermes-nav-order')}catch(e){}")
     page.reload()
-    page.wait_for_selector(".stat-tile", timeout=15000)
+    page.wait_for_selector(".nav-btn", timeout=15000)
     return page
 
 
@@ -126,14 +126,14 @@ def test_a_stored_order_with_retired_keys_keeps_its_slot(page: Page) -> None:
     somebody deliberately arranged.
     """
     page.goto(BASE_URL)
-    page.wait_for_selector(".stat-tile", timeout=15000)
+    page.wait_for_selector(".nav-btn", timeout=15000)
     page.evaluate(
         """() => localStorage.setItem('hermes-nav-order', JSON.stringify(
             ['pendenzen', 'overview', 'projects', 'detail', 'plan',
              'risks', 'reviews']))"""
     )
     page.reload()
-    page.wait_for_selector(".stat-tile", timeout=15000)
+    page.wait_for_selector(".nav-btn", timeout=15000)
 
     assert _nav(page)[0] == "Aufgaben & Termine"
 
@@ -141,14 +141,14 @@ def test_a_stored_order_with_retired_keys_keeps_its_slot(page: Page) -> None:
 def test_a_stored_order_naming_both_retired_keys_yields_one_tab(page: Page) -> None:
     """Two old keys map to one new one, so the result must not duplicate it."""
     page.goto(BASE_URL)
-    page.wait_for_selector(".stat-tile", timeout=15000)
+    page.wait_for_selector(".nav-btn", timeout=15000)
     page.evaluate(
         """() => localStorage.setItem('hermes-nav-order', JSON.stringify(
             ['plan', 'pendenzen', 'overview', 'projects', 'detail',
              'risks', 'reviews']))"""
     )
     page.reload()
-    page.wait_for_selector(".stat-tile", timeout=15000)
+    page.wait_for_selector(".nav-btn", timeout=15000)
 
     nav = _nav(page)
     assert nav.count("Aufgaben & Termine") == 1
@@ -236,7 +236,7 @@ def test_the_merged_screen_raises_no_console_errors(page: Page) -> None:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     page.goto(BASE_URL)
-    page.wait_for_selector(".stat-tile", timeout=15000)
+    page.wait_for_selector(".nav-btn", timeout=15000)
     _open_work(page)
     for lens in ("lens-zeitstrahl", "lens-beschluesse", "lens-liste"):
         page.locator(f'[data-testid="{lens}"]').click()
@@ -257,3 +257,198 @@ def test_the_list_still_shows_todo_priority(app_page: Page) -> None:
     app_page.locator('[data-testid="work-filter-kind"]').select_option("todo")
     app_page.wait_for_timeout(400)
     assert app_page.locator(".prio-dot").count() > 0
+
+
+# --------------------------------------------------------------------------- #
+# Landing page
+# --------------------------------------------------------------------------- #
+
+
+def test_the_dashboard_opens_on_aufgaben_und_termine(page: Page) -> None:
+    """The first question on opening is "what do I owe, and by when".
+
+    Overview only summarised the answer and sent you one click further to
+    read it.
+    """
+    page.goto(BASE_URL)
+    page.wait_for_selector('[data-testid="work-search"]', timeout=15000)
+    assert page.url.endswith("#/work")
+
+
+# --------------------------------------------------------------------------- #
+# Timeline: today-sync and time-scale zoom
+# --------------------------------------------------------------------------- #
+
+
+def _open_timeline(page: Page) -> None:
+    _open_work(page)
+    page.locator('[data-testid="lens-zeitstrahl"]').click()
+    page.wait_for_selector(".gantt", timeout=10000)
+    page.wait_for_timeout(700)
+
+
+def test_the_timeline_marks_today(app_page: Page) -> None:
+    """The domain always contains today, so the anchor is always drawable.
+
+    A plan whose every dated item is in the future used to render no marker
+    at all — exactly when knowing where "now" sits matters most.
+    """
+    _open_timeline(app_page)
+    assert app_page.locator(".gantt-today").count() == 1
+
+
+def test_the_timeline_opens_centred_on_today(app_page: Page) -> None:
+    """Otherwise a zoomed track opens at the project start, months away."""
+    _open_timeline(app_page)
+    box = app_page.locator(".gantt-scroll").first.evaluate(
+        "e => ({left: e.scrollLeft, width: e.scrollWidth, view: e.clientWidth})"
+    )
+    if box["width"] <= box["view"]:
+        pytest.skip("track fits without scrolling; nothing to centre")
+    marker = app_page.locator(".gantt-today").first.evaluate(
+        "e => e.getBoundingClientRect().left"
+    )
+    container = app_page.locator(".gantt-scroll").first.evaluate(
+        "e => e.getBoundingClientRect().left + e.clientWidth / 2"
+    )
+    # Within a quarter of the viewport of centre: exact centring is not the
+    # promise, "on screen and roughly in the middle" is.
+    assert abs(marker - container) < box["view"] / 4
+
+
+@pytest.mark.parametrize(
+    ("scale", "sample"),
+    [("tag", None), ("woche", "KW"), ("monat", None), ("quartal", "Q"), ("jahr", None)],
+)
+def test_each_scale_labels_its_own_unit(app_page: Page, scale, sample) -> None:
+    """The old zoom scaled the bars and left the axis in months at every step.
+
+    Zooming in then told you nothing new, which is what made it useless.
+    """
+    _open_timeline(app_page)
+    app_page.locator('[data-testid="zoom-level"]').select_option(scale)
+    app_page.wait_for_timeout(500)
+    labels = app_page.locator(".gantt-tick-label").all_inner_texts()
+    assert labels, f"{scale} produced no axis labels at all"
+    if sample:
+        assert any(sample in t for t in labels), (scale, labels[:5])
+
+
+def test_zooming_in_narrows_the_time_unit(app_page: Page) -> None:
+    _open_timeline(app_page)
+    app_page.locator('[data-testid="zoom-level"]').select_option("monat")
+    app_page.wait_for_timeout(400)
+    app_page.locator('[data-testid="zoom-in"]').click()
+    app_page.wait_for_timeout(400)
+    assert app_page.locator('[data-testid="zoom-level"]').input_value() == "woche"
+
+
+def test_zooming_in_widens_the_track(app_page: Page) -> None:
+    """A finer scale must give each day more room, not just relabel."""
+    _open_timeline(app_page)
+    app_page.locator('[data-testid="zoom-level"]').select_option("monat")
+    app_page.wait_for_timeout(400)
+    narrow = app_page.locator(".gantt").first.evaluate("e => e.scrollWidth")
+    app_page.locator('[data-testid="zoom-level"]').select_option("woche")
+    app_page.wait_for_timeout(500)
+    wide = app_page.locator(".gantt").first.evaluate("e => e.scrollWidth")
+    assert wide > narrow
+
+
+def test_zoom_is_bounded_at_both_ends(app_page: Page) -> None:
+    """The end buttons disable rather than wrapping around or no-oping.
+
+    Written as "click while enabled": clicking a disabled button makes
+    Playwright wait for it to become enabled, so a fixed-count loop hangs on
+    exactly the correct behaviour it is checking for.
+    """
+    _open_timeline(app_page)
+    level = app_page.locator('[data-testid="zoom-level"]')
+
+    zoom_in = app_page.locator('[data-testid="zoom-in"]')
+    for _ in range(8):
+        if zoom_in.is_disabled():
+            break
+        zoom_in.click()
+        app_page.wait_for_timeout(150)
+    assert level.input_value() == "tag"
+    assert zoom_in.is_disabled()
+
+    zoom_out = app_page.locator('[data-testid="zoom-out"]')
+    for _ in range(8):
+        if zoom_out.is_disabled():
+            break
+        zoom_out.click()
+        app_page.wait_for_timeout(150)
+    assert level.input_value() == "jahr"
+    assert zoom_out.is_disabled()
+
+
+def test_the_today_button_brings_the_view_back(app_page: Page) -> None:
+    _open_timeline(app_page)
+    app_page.locator('[data-testid="zoom-level"]').select_option("tag")
+    app_page.wait_for_timeout(600)
+    scroller = app_page.locator(".gantt-scroll").first
+    scroller.evaluate("e => { e.scrollLeft = 0; }")
+    app_page.wait_for_timeout(200)
+    app_page.locator('[data-testid="jump-today"]').click()
+    app_page.wait_for_timeout(500)
+    assert scroller.evaluate("e => e.scrollLeft") > 0
+
+
+# --------------------------------------------------------------------------- #
+# Multi-select owner filter
+# --------------------------------------------------------------------------- #
+
+
+def test_several_owners_can_be_selected_at_once(app_page: Page) -> None:
+    """"What is on Meier and Brunner" was two passes over the same screen."""
+    _open_work(app_page)
+    app_page.locator('[data-testid="work-filter-owner"] summary').click()
+    options = app_page.locator('[data-testid="work-owner-option"]')
+    if options.count() < 2:
+        pytest.skip("needs at least two owners in the data")
+
+    options.nth(0).check()
+    app_page.wait_for_timeout(250)
+    one = app_page.locator(".kind-chip").count()
+    options.nth(1).check()
+    app_page.wait_for_timeout(350)
+    two = app_page.locator(".kind-chip").count()
+
+    # OR-ed, so adding a name can only widen the result.
+    assert two >= one
+
+
+def test_the_filter_button_reports_how_many_are_picked(app_page: Page) -> None:
+    _open_work(app_page)
+    summary = app_page.locator('[data-testid="work-filter-owner"] summary')
+    assert "Alle" in summary.inner_text()
+
+    summary.click()
+    options = app_page.locator('[data-testid="work-owner-option"]')
+    if options.count() < 2:
+        pytest.skip("needs at least two owners in the data")
+    options.nth(0).check()
+    options.nth(1).check()
+    app_page.wait_for_timeout(300)
+
+    assert "2 Verantwortliche" in summary.inner_text()
+
+
+def test_clearing_the_owner_selection_restores_everything(app_page: Page) -> None:
+    """An empty selection means "everyone", not "nobody"."""
+    _open_work(app_page)
+    all_rows = app_page.locator(".kind-chip").count()
+
+    app_page.locator('[data-testid="work-filter-owner"] summary').click()
+    options = app_page.locator('[data-testid="work-owner-option"]')
+    if not options.count():
+        pytest.skip("needs at least one owner in the data")
+    options.nth(0).check()
+    app_page.wait_for_timeout(300)
+    assert app_page.locator(".kind-chip").count() < all_rows
+
+    app_page.locator('[data-testid="work-owner-clear"]').click()
+    app_page.wait_for_timeout(300)
+    assert app_page.locator(".kind-chip").count() == all_rows

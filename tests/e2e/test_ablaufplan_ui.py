@@ -135,7 +135,7 @@ def plan_page(page: Page) -> Page:
         "'panel-collapsed-chat-widget-body','true')}catch(e){}"
     )
     page.goto(BASE_URL)
-    page.wait_for_selector(".stat-tile", timeout=10000)
+    page.wait_for_selector(".nav-btn", timeout=10000)
     # The Gantt is now the Zeitstrahl lens of the merged Aufgaben & Termine
     # screen rather than a tab of its own.
     page.click('[data-testid="nav-work"]')
@@ -151,7 +151,7 @@ def plan_page(page: Page) -> Page:
 @pytest.fixture
 def decisions_page(page: Page) -> Page:
     page.goto(BASE_URL)
-    page.wait_for_selector(".stat-tile", timeout=10000)
+    page.wait_for_selector(".nav-btn", timeout=10000)
     page.click('[data-testid="nav-work"]')
     page.click('[data-testid="lens-beschluesse"]')
     page.wait_for_selector(".decision-list", timeout=5000)
@@ -380,7 +380,7 @@ def sweep_page(page: Page) -> Page:
         "'panel-collapsed-chat-widget-body','true')}catch(e){}"
     )
     page.goto(BASE_URL)
-    page.wait_for_selector(".stat-tile", timeout=10000)
+    page.wait_for_selector(".nav-btn", timeout=10000)
     # The Gantt is now the Zeitstrahl lens of the merged Aufgaben & Termine
     # screen rather than a tab of its own.
     page.click('[data-testid="nav-work"]')
@@ -452,8 +452,27 @@ def test_the_time_window_hides_nothing_silently(sweep_page: Page):
 # --------------------------------------------------------------------------- #
 
 
+def _pick_owner(page: Page, name: str) -> None:
+    """Tick one name in the owner filter.
+
+    The control is a checkbox disclosure rather than a <select>, because it now
+    takes several names at once — a native <select multiple> needs ctrl-click
+    to combine, which nobody discovers.
+    """
+    summary = page.locator('[data-testid="filter-owner"] summary')
+    if page.locator('[data-testid="filter-owner"]').get_attribute("open") is None:
+        summary.click()
+    page.locator(
+        '[data-testid="filter-owner"] .filter-multi-item', has_text=name
+    ).first.locator("input").check()
+    page.wait_for_timeout(350)
+
+
 def test_owner_filter_lists_everyone_who_owns_something(sweep_page: Page):
-    opts = sweep_page.locator('[data-testid="filter-owner"] option').all_text_contents()
+    sweep_page.locator('[data-testid="filter-owner"] summary').click()
+    opts = sweep_page.locator(
+        '[data-testid="filter-owner"] .filter-multi-item'
+    ).all_text_contents()
     assert any(o.strip() == "IT" for o in opts)
     assert any(o.strip() == "Controlling" for o in opts)
     # Unassigned work is a finding, so it gets its own entry rather than being
@@ -463,17 +482,27 @@ def test_owner_filter_lists_everyone_who_owns_something(sweep_page: Page):
 
 def test_owner_filter_narrows_to_one_person(sweep_page: Page):
     before = sweep_page.locator(".gantt-row").count()
-    sweep_page.select_option('[data-testid="filter-owner"]', "Controlling")
-    sweep_page.wait_for_timeout(400)
+    _pick_owner(sweep_page, "Controlling")
     after = sweep_page.locator(".gantt-row").count()
     assert 0 < after < before
     owners = sweep_page.locator(".gantt-row-owner").all_text_contents()
     assert {o.strip() for o in owners} == {"Controlling"}
 
 
+def test_owner_filter_takes_several_people_at_once(sweep_page: Page):
+    """One name was one pass over the screen; two names took two."""
+    _pick_owner(sweep_page, "Controlling")
+    one = sweep_page.locator(".gantt-row").count()
+    _pick_owner(sweep_page, "IT")
+    two = sweep_page.locator(".gantt-row").count()
+
+    assert two > one
+    owners = {o.strip() for o in sweep_page.locator(".gantt-row-owner").all_text_contents()}
+    assert owners == {"Controlling", "IT"}
+
+
 def test_owner_filter_can_find_unassigned_work(sweep_page: Page):
-    sweep_page.select_option('[data-testid="filter-owner"]', "__ohne__")
-    sweep_page.wait_for_timeout(400)
+    _pick_owner(sweep_page, "ohne Verantwortlichen")
     rows = sweep_page.locator(".gantt-row").all_text_contents()
     assert any("E2E Go-Live" in r for r in rows)   # the fixture row with no owner
     assert not any("Controlling" in r for r in rows)
@@ -499,7 +528,7 @@ def test_owner_is_editable_and_persists(sweep_page: Page):
 
     # A reload proves it was written, not just re-rendered.
     sweep_page.goto(BASE_URL)
-    sweep_page.wait_for_selector(".stat-tile", timeout=10000)
+    sweep_page.wait_for_selector(".nav-btn", timeout=10000)
     sweep_page.click('[data-testid="nav-work"]')
     sweep_page.click('[data-testid="lens-zeitstrahl"]')
     sweep_page.wait_for_selector(".gantt", timeout=5000)
@@ -543,26 +572,40 @@ def test_zoom_widens_the_track_without_hiding_rows(sweep_page: Page):
     assert sweep_page.locator(".gantt-row").count() == rows_before
 
 
-def test_zoom_out_returns_to_the_fitted_width(sweep_page: Page):
+def test_zoom_out_returns_to_the_previous_scale(sweep_page: Page):
+    """In and back out lands on the scale you started from, not near it."""
+    before = sweep_page.locator('[data-testid="zoom-level"]').input_value()
     width_before = sweep_page.locator(".gantt").bounding_box()["width"]
     sweep_page.click('[data-testid="zoom-in"]')
-    sweep_page.wait_for_timeout(300)
+    sweep_page.wait_for_timeout(400)
     sweep_page.click('[data-testid="zoom-out"]')
-    sweep_page.wait_for_timeout(300)
+    sweep_page.wait_for_timeout(400)
+    assert sweep_page.locator('[data-testid="zoom-level"]').input_value() == before
     assert sweep_page.locator(".gantt").bounding_box()["width"] == pytest.approx(
         width_before, rel=0.02
     )
 
 
 def test_zoom_is_bounded_at_both_ends(sweep_page: Page):
-    assert sweep_page.locator('[data-testid="zoom-out"]').is_disabled()
+    """Zoom now names a time scale, so the ends are "Jahr" and "Tag".
+
+    It used to read "600%", which said how much the bars had been stretched
+    and nothing about what the axis was showing.
+    """
+    for _ in range(8):
+        if sweep_page.locator('[data-testid="zoom-out"]').is_disabled():
+            break
+        sweep_page.locator('[data-testid="zoom-out"]').click()
+        sweep_page.wait_for_timeout(150)
+    assert sweep_page.locator('[data-testid="zoom-level"]').input_value() == "jahr"
+
     for _ in range(8):
         if sweep_page.locator('[data-testid="zoom-in"]').is_disabled():
             break
         sweep_page.locator('[data-testid="zoom-in"]').click()
         sweep_page.wait_for_timeout(150)
     assert sweep_page.locator('[data-testid="zoom-in"]').is_disabled()
-    assert sweep_page.locator('[data-testid="zoom-level"]').inner_text() == "600%"
+    assert sweep_page.locator('[data-testid="zoom-level"]').input_value() == "tag"
 
 
 def test_zoom_control_is_absent_in_the_table_view(sweep_page: Page):
@@ -580,7 +623,7 @@ def test_the_detail_screen_no_longer_carries_a_timeline_tab(page: Page):
     """It plotted the same schedule.json this screen shows in full, and its
     status was derived from the date rather than stated by the plan."""
     page.goto(BASE_URL)
-    page.wait_for_selector(".stat-tile", timeout=10000)
+    page.wait_for_selector(".nav-btn", timeout=10000)
     page.click('[data-testid="nav-detail"]')
     page.wait_for_timeout(600)
     labels = [t.strip() for t in page.locator(".tab-bar .tab-btn").all_text_contents()]
@@ -590,7 +633,7 @@ def test_the_detail_screen_no_longer_carries_a_timeline_tab(page: Page):
 
 def test_the_picker_no_longer_offers_the_subsumed_exports(page: Page):
     page.goto(BASE_URL)
-    page.wait_for_selector(".stat-tile", timeout=10000)
+    page.wait_for_selector(".nav-btn", timeout=10000)
     page.click("button:has-text('Import JSON')")
     page.wait_for_selector('[data-testid="prompt-kind-faelligkeiten"]', timeout=5000)
     assert page.locator('[data-testid="prompt-kind-ablaufplan"]').count() == 0

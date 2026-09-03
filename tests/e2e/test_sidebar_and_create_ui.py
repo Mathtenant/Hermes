@@ -30,6 +30,25 @@ def _require_server():
         pytest.skip("No server on localhost:8000")
 
 
+def _wait_for_data(page: Page) -> None:
+    """Wait until the sidebar exists AND the dashboard fetch has rendered.
+
+    The app used to land on Overview, so waiting for ".stat-tile" happened to
+    prove both. It now lands on Aufgaben & Termine, whose list has no stat
+    tiles — and ".nav-btn" alone appears before any data arrives, so a test
+    reading a count badge immediately after would read 0 and compare it
+    against a populated one.
+    """
+    page.wait_for_selector(".nav-btn", timeout=10000)
+    # Not "a badge has text": an unloaded badge renders "0", which is text, so
+    # that check passes on exactly the state it is meant to exclude. Wait for
+    # something the landing screen only renders once rows exist — the search
+    # box, or the empty state if the database really is empty.
+    page.wait_for_selector(
+        '[data-testid="work-search"], .empty-state-title', timeout=15000
+    )
+
+
 @pytest.fixture
 def app_page(page: Page) -> Page:
     """A page at the shipped sidebar order.
@@ -44,10 +63,10 @@ def app_page(page: Page) -> Page:
         "'panel-collapsed-chat-widget-body','true')}catch(e){}"
     )
     page.goto(BASE_URL)
-    page.wait_for_selector(".stat-tile", timeout=10000)
+    _wait_for_data(page)
     page.evaluate("try{localStorage.removeItem('hermes-nav-order')}catch(e){}")
     page.reload()
-    page.wait_for_selector(".stat-tile", timeout=10000)
+    _wait_for_data(page)
     return page
 
 
@@ -71,6 +90,9 @@ def test_the_sidebar_never_says_pendenzen(app_page: Page):
 
 
 def test_the_overview_hero_says_todo(app_page: Page):
+    """Overview is no longer the landing screen, so navigate to it first."""
+    app_page.click('[data-testid="nav-overview"]')
+    app_page.wait_for_selector(".hero-label", timeout=10000)
     assert "Todo" in app_page.locator(".hero-label").inner_text()
 
 
@@ -136,7 +158,7 @@ def test_the_order_survives_a_reload(app_page: Page):
 
     # Not the fixture's goto: that clears the stored order on init.
     app_page.reload()
-    app_page.wait_for_selector(".stat-tile", timeout=10000)
+    app_page.wait_for_selector(".nav-btn", timeout=10000)
     assert _nav(app_page) == moved
 
 
@@ -179,7 +201,7 @@ def test_an_unknown_stored_key_is_ignored(app_page: Page):
         " JSON.stringify(['risks','gibt-es-nicht','overview']))"
     )
     app_page.reload()
-    app_page.wait_for_selector(".stat-tile", timeout=10000)
+    app_page.wait_for_selector(".nav-btn", timeout=10000)
     nav = _nav(app_page)
     assert nav[0] == "Risks"          # stored order honoured
     assert nav[1] == "Overview"
@@ -194,7 +216,7 @@ def test_corrupt_stored_order_falls_back_to_the_default(app_page: Page):
     canonical = _nav(app_page)
     app_page.evaluate("localStorage.setItem('hermes-nav-order','not json')")
     app_page.reload()
-    app_page.wait_for_selector(".stat-tile", timeout=10000)
+    app_page.wait_for_selector(".nav-btn", timeout=10000)
     assert _nav(app_page) == canonical
 
 

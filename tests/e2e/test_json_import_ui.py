@@ -179,7 +179,7 @@ class TestJsonImportUI:
 
     def test_import_refreshes_dashboard(self, page):
         """Dashboard data reloads after a successful import."""
-        page.goto(BASE_URL)
+        page.goto(f"{BASE_URL}/#/overview")
         page.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
         before = int(page.locator('[data-testid="risks-count"]').text_content() or "0")
 

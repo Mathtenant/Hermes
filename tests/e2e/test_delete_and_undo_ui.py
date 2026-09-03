@@ -50,7 +50,7 @@ def todo_page(page: Page) -> Page:
         "'panel-collapsed-chat-widget-body','true')}catch(e){}"
     )
     page.goto(BASE_URL)
-    page.wait_for_selector(".stat-tile", timeout=10000)
+    page.wait_for_selector(".nav-btn", timeout=10000)
     return page
 
 
@@ -79,7 +79,7 @@ def _make_todo(page: Page, title: str) -> None:
         title,
     )
     page.reload()
-    page.wait_for_selector(".stat-tile", timeout=10000)
+    page.wait_for_selector(".nav-btn", timeout=10000)
 
 
 def _open_todos(page: Page) -> None:
@@ -222,7 +222,7 @@ def _make_project(page: Page, pid: str) -> None:
         pid,
     )
     page.reload()
-    page.wait_for_selector(".stat-tile", timeout=10000)
+    page.wait_for_selector(".nav-btn", timeout=10000)
 
 
 def _open_projects(page: Page) -> None:

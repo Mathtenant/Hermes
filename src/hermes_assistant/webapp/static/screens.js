@@ -8,10 +8,56 @@
 (function (global) {
 'use strict';
 
-const { ref, computed } = Vue;
+const { ref, computed, nextTick, onMounted, watch } = Vue;
 
 // Shared: rank used wherever priorities are ordered.
 const PRIO_RANK = { blocker: 0, high: 1, medium: 2, low: 3 };
+
+// Plain sentinel rather than a control character: it travels through a
+// checkbox value, a test fixture and a URL without anyone having to escape
+// it, and no real role or name looks like this.
+const UNASSIGNED = '__ohne__';
+
+/** Multi-select owner filter, shared by the timeline and the list.
+ *
+ * Both screens ask the same question ("whose work is this?") and used to
+ * answer it with a single-value select each — so "Meier and Brunner" took two
+ * passes. One factory keeps the selection semantics identical in both places
+ * rather than letting two copies drift.
+ */
+function createOwnerFilter() {
+  const selected = ref([]);
+
+  function toggleOwner(name) {
+    const next = [...selected.value];
+    const at = next.indexOf(name);
+    if (at >= 0) next.splice(at, 1);
+    else next.push(name);
+    selected.value = next;
+  }
+
+  function clearOwners() {
+    selected.value = [];
+  }
+
+  /** An empty selection means "everyone", not "nobody": the filter is off. */
+  function matchesOwner(owner) {
+    if (!selected.value.length) return true;
+    if (selected.value.includes(UNASSIGNED) && !owner) return true;
+    return selected.value.includes(owner);
+  }
+
+  const ownerLabel = computed(() => {
+    const picked = selected.value;
+    if (!picked.length) return 'Alle Verantwortlichen';
+    if (picked.length === 1) {
+      return picked[0] === UNASSIGNED ? 'Ohne Verantwortliche' : picked[0];
+    }
+    return `${picked.length} Verantwortliche`;
+  });
+
+  return { selected, toggleOwner, clearOwners, matchesOwner, ownerLabel };
+}
 
 // ── OverviewScreen ─────────────────────────────────────────────────────────
 // Landing screen: headline counts (each tile navigates), plus the two lists a
@@ -817,13 +863,33 @@ const AblaufplanScreen = {
     // deleting data. The window is centred on today rather than starting
     // there, because the sweep deliberately includes what is already done.
     const filterWindow = ref('12');
-    const filterOwner = ref('');
-    // Zoom scales the track wider than its container and lets it scroll.
-    // Distinct from the time window, which changes *which rows* are shown:
-    // zoom changes how much room the same rows get, so overlapping bars in a
-    // busy month can be told apart without hiding anything.
-    const zoom = ref(1);
-    const ZOOM_STEPS = [1, 1.5, 2, 3, 4, 6];
+    const {
+      selected: filterOwners, toggleOwner, clearOwners,
+      matchesOwner: ownerMatches, ownerLabel,
+    } = createOwnerFilter();
+
+    // ── Zoom ────────────────────────────────────────────────────────────
+    // Zoom is a TIME SCALE, not a magnification factor. The old control
+    // scaled the track to 150% / 200% / 400% and left the axis labelled in
+    // months at every step, so zooming in made the bars longer without ever
+    // telling you which week you were looking at.
+    //
+    // Each scale sets both how much room a day gets AND how the axis is
+    // labelled, so "hineinzoomen" means "Wochenansicht" the way a calendar
+    // means it. Distinct from the time window, which changes *which rows*
+    // are shown; zoom only changes how much room the same rows get.
+    const SCALES = [
+      { key: 'jahr',    label: 'Jahr',    pxPerDay: 1.2,  tick: 'year' },
+      { key: 'quartal', label: 'Quartal', pxPerDay: 3,    tick: 'quarter' },
+      { key: 'monat',   label: 'Monat',   pxPerDay: 8,    tick: 'month' },
+      { key: 'woche',   label: 'Woche',   pxPerDay: 26,   tick: 'week' },
+      { key: 'tag',     label: 'Tag',     pxPerDay: 70,   tick: 'day' },
+    ];
+    // Default to month: the whole point of the sweep is a project-length
+    // view, and a week view of a two-year plan opens on a wall of scrolling.
+    const scaleIndex = ref(SCALES.findIndex((s) => s.key === 'monat'));
+    const scale = computed(() => SCALES[scaleIndex.value]);
+
     const editingOwner = ref(null);   // row id currently being edited
     const ownerDraft = ref('');
     const ownerError = ref('');
@@ -918,15 +984,9 @@ const AblaufplanScreen = {
       return seen.sort((a, b) => a.localeCompare(b));
     });
 
-    // Plain sentinel rather than a control character: it travels through a
-    // <select> value, a test fixture and a URL without anyone having to
-    // escape it, and no real role or name looks like this.
-    const UNASSIGNED = '__ohne__';
 
     function matchesOwner(r) {
-      if (!filterOwner.value) return true;
-      if (filterOwner.value === UNASSIGNED) return !r.owner;
-      return r.owner === filterOwner.value;
+      return ownerMatches(r.owner);
     }
 
     const filtered = computed(() => rows.value.filter(
@@ -990,10 +1050,28 @@ const AblaufplanScreen = {
         if (e !== null) points.push(e);
       }
       if (!points.length) return null;
+      // Today is always inside the domain, even when every dated item sits in
+      // the past or the future. Without this the "heute" marker silently
+      // disappears exactly when it matters most — a plan whose work is all
+      // ahead of it would draw no line to say where "now" is, and the reader
+      // has no anchor to judge the bars against.
+      points.push(todayMs());
       const pad = 3 * DAY_MS;
       const min = Math.min(...points) - pad;
       const max = Math.max(...points) + pad;
       return { min, max, span: Math.max(max - min, DAY_MS) };
+    });
+
+    /** Midnight UTC today, as ms. One definition, used by domain and marker. */
+    function todayMs() {
+      return Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+    }
+
+    /** How wide the track is, in px, at the current scale. */
+    const trackWidthPx = computed(() => {
+      const d = domain.value;
+      if (!d) return 0;
+      return Math.round((d.span / DAY_MS) * scale.value.pxPerDay);
     });
 
     function pct(ms) {
@@ -1002,39 +1080,101 @@ const AblaufplanScreen = {
       return ((ms - d.min) / d.span) * 100;
     }
 
-    // Month boundaries for the scale header and the background gridlines.
+    /** ISO week number, for the week-scale axis labels. */
+    function isoWeek(date) {
+      const d = new Date(Date.UTC(
+        date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()
+      ));
+      // Thursday decides the year an ISO week belongs to.
+      d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+      return Math.ceil(((d - yearStart) / DAY_MS + 1) / 7);
+    }
+
+    // Axis ticks follow the SCALE, not a fixed month grid. Zooming into a week
+    // view and still reading "Mär … Apr" is the thing that made the old zoom
+    // useless: the bars got longer and the axis said nothing new.
     const ticks = computed(() => {
       const d = domain.value;
       if (!d) return [];
+      const kind = scale.value.tick;
       const out = [];
       const cur = new Date(d.min);
-      cur.setUTCDate(1);
       cur.setUTCHours(0, 0, 0, 0);
+
+      if (kind === 'day') {
+        cur.setUTCDate(cur.getUTCDate());
+      } else if (kind === 'week') {
+        // Snap back to Monday so week labels line up with real weeks.
+        const dow = cur.getUTCDay() || 7;
+        cur.setUTCDate(cur.getUTCDate() - (dow - 1));
+      } else {
+        cur.setUTCDate(1);
+        if (kind === 'quarter') {
+          cur.setUTCMonth(Math.floor(cur.getUTCMonth() / 3) * 3);
+        } else if (kind === 'year') {
+          cur.setUTCMonth(0);
+        }
+      }
+
       // Bounded rather than while(true): a corrupt date can otherwise spin
-      // here forever and take the whole page with it.
-      for (let i = 0; i < 240; i++) {
+      // here forever and take the whole page with it. The cap scales with the
+      // granularity — a day axis over two years needs far more than 240.
+      const maxTicks = kind === 'day' ? 800 : 400;
+      for (let i = 0; i < maxTicks; i++) {
         const ms = cur.getTime();
         if (ms > d.max) break;
         if (ms >= d.min) {
-          out.push({
-            left: pct(ms),
-            label: MONTHS_DE[cur.getUTCMonth()],
-            year: cur.getUTCFullYear(),
-            isYearStart: cur.getUTCMonth() === 0,
-          });
+          let label;
+          let isYearStart = false;
+          if (kind === 'day') {
+            label = String(cur.getUTCDate());
+            isYearStart = cur.getUTCDate() === 1;
+          } else if (kind === 'week') {
+            label = `KW ${isoWeek(cur)}`;
+            isYearStart = isoWeek(cur) === 1;
+          } else if (kind === 'quarter') {
+            label = `Q${Math.floor(cur.getUTCMonth() / 3) + 1}`;
+            isYearStart = cur.getUTCMonth() === 0;
+          } else if (kind === 'year') {
+            // The year IS the label here, so isYearStart stays false rather
+            // than printing it twice.
+            label = String(cur.getUTCFullYear());
+          } else {
+            label = MONTHS_DE[cur.getUTCMonth()];
+            isYearStart = cur.getUTCMonth() === 0;
+          }
+          out.push({ left: pct(ms), label, year: cur.getUTCFullYear(), isYearStart });
         }
-        cur.setUTCMonth(cur.getUTCMonth() + 1);
+        if (kind === 'day') cur.setUTCDate(cur.getUTCDate() + 1);
+        else if (kind === 'week') cur.setUTCDate(cur.getUTCDate() + 7);
+        else if (kind === 'quarter') cur.setUTCMonth(cur.getUTCMonth() + 3);
+        else if (kind === 'year') cur.setUTCFullYear(cur.getUTCFullYear() + 1);
+        else cur.setUTCMonth(cur.getUTCMonth() + 1);
+      }
+
+      // A coarse scale over a short plan can produce NO tick at all: a domain
+      // sitting inside one calendar year has its snapped 1-January boundary
+      // before d.min and the next one after d.max, so both are skipped and the
+      // axis renders blank. One label at the start beats none — the reader
+      // still learns which year they are looking at.
+      if (!out.length) {
+        const start = new Date(d.min);
+        out.push({
+          left: 0,
+          label: kind === 'year'
+            ? String(start.getUTCFullYear())
+            : `Q${Math.floor(start.getUTCMonth() / 3) + 1}`,
+          year: start.getUTCFullYear(),
+          isYearStart: false,
+        });
       }
       return out;
     });
 
-    const todayLeft = computed(() => {
-      const d = domain.value;
-      if (!d) return null;
-      const now = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
-      if (now < d.min || now > d.max) return null;  // outside the plan — no marker
-      return pct(now);
-    });
+    // Never null now: domain always contains today (see above), so the marker
+    // is always drawable and the reader always has an anchor.
+    const todayLeft = computed(() => (domain.value ? pct(todayMs()) : null));
 
     function barStyle(r) {
       const s = toMs(r.start || r.end);
@@ -1143,18 +1283,55 @@ const AblaufplanScreen = {
       editingOwner.value = null;
     }
 
-    function zoomBy(step) {
-      const i = ZOOM_STEPS.indexOf(zoom.value);
-      zoom.value = ZOOM_STEPS[
-        Math.min(ZOOM_STEPS.length - 1, Math.max(0, i + step))
-      ];
+    // ── Zoom & follow-today ─────────────────────────────────────────────
+    const scrollEl = ref(null);
+
+    /** Put today in the middle of the visible track.
+     *
+     * The track is wider than its container at every scale but the coarsest,
+     * so without this a zoom lands wherever the previous scroll position
+     * happened to be — usually the start of the project, months away from
+     * anything anyone is working on. Centring rather than left-aligning keeps
+     * the near past visible, which is where overdue items live.
+     */
+    function scrollToToday() {
+      const el = scrollEl.value;
+      if (!el || todayLeft.value === null) return;
+      const target = (todayLeft.value / 100) * el.scrollWidth;
+      el.scrollLeft = Math.max(0, target - el.clientWidth / 2);
     }
+
+    /** Re-centre after the DOM has taken the new width. */
+    function recentre() {
+      nextTick(() => requestAnimationFrame(scrollToToday));
+    }
+
+    function zoomBy(step) {
+      const next = Math.min(SCALES.length - 1, Math.max(0, scaleIndex.value + step));
+      if (next === scaleIndex.value) return;
+      scaleIndex.value = next;
+      // Keep the same moment under the reader's eye across a zoom, rather
+      // than making them re-find today at every step.
+      recentre();
+    }
+
+    function setScale(key) {
+      const i = SCALES.findIndex((s) => s.key === key);
+      if (i < 0 || i === scaleIndex.value) return;
+      scaleIndex.value = i;
+      recentre();
+    }
+
+    // On first paint, and whenever the row set changes the domain under us.
+    onMounted(recentre);
+    watch(() => [trackWidthPx.value, asTable.value], recentre);
 
     return {
       filterPhase, filterStatus, filterLevel, filterSource, asTable, hovered,
       filterWindow, outsideWindow, WINDOWS, WINDOW_ORDER,
-      filterOwner, owners, UNASSIGNED,
-      zoom, ZOOM_STEPS, zoomBy,
+      filterOwners, owners, UNASSIGNED, toggleOwner, clearOwners, ownerLabel,
+      SCALES, scale, scaleIndex, zoomBy, setScale, scrollEl,
+      trackWidthPx, scrollToToday,
       editingOwner, ownerDraft, ownerError, beginEdit, cancelEdit, saveOwner,
       rows, phases, sources, filtered, groups, ticks, todayLeft, barStyle,
       milestoneStyle, fmt, duration, isLate, lateCount, nextMilestone,
@@ -1168,7 +1345,7 @@ const AblaufplanScreen = {
         filterStatus.value = '';
         filterLevel.value = '';
         filterSource.value = '';
-        filterOwner.value = '';
+        filterOwners.value = [];
         filterWindow.value = 'all';
       },
     };
@@ -1263,30 +1440,63 @@ const AblaufplanScreen = {
             <option value="">Alle Quellen</option>
             <option v-for="q in sources" :key="q" :value="q">{{ q }}</option>
           </select>
-          <select class="filter-select" v-model="filterOwner" aria-label="Verantwortlich filtern"
-                  data-testid="filter-owner">
-            <option value="">Alle Verantwortlichen</option>
-            <option v-for="o in owners" :key="o" :value="o">{{ o }}</option>
-            <option :value="UNASSIGNED">— ohne Verantwortlichen —</option>
-          </select>
+          <!-- A native <select multiple> shows every name as a permanently
+               open list box and needs ctrl-click to combine, which nobody
+               discovers. A disclosure with checkboxes reads as what it is. -->
+          <details class="filter-multi" data-testid="filter-owner">
+            <summary class="filter-select" role="button"
+                     aria-label="Verantwortliche filtern">
+              {{ ownerLabel }}
+            </summary>
+            <div class="filter-multi-panel">
+              <label class="filter-multi-item">
+                <input type="checkbox"
+                       :checked="filterOwners.includes(UNASSIGNED)"
+                       data-testid="owner-option-unassigned"
+                       @change="toggleOwner(UNASSIGNED)">
+                <span>— ohne Verantwortlichen —</span>
+              </label>
+              <label v-for="o in owners" :key="o" class="filter-multi-item">
+                <input type="checkbox" :checked="filterOwners.includes(o)"
+                       :data-testid="'owner-option'"
+                       @change="toggleOwner(o)">
+                <span>{{ o }}</span>
+              </label>
+              <button v-if="filterOwners.length" class="btn-link mt-1"
+                      data-testid="owner-clear" @click="clearOwners">
+                Auswahl aufheben
+              </button>
+            </div>
+          </details>
           <select class="filter-select" v-model="filterWindow" aria-label="Zeitraum">
             <option v-for="w in WINDOW_ORDER" :key="w" :value="w">{{ WINDOWS[w].label }}</option>
           </select>
-          <button v-if="filterPhase || filterStatus || filterLevel || filterSource || filterOwner"
+          <button v-if="filterPhase || filterStatus || filterLevel || filterSource || filterOwners.length"
                   class="btn btn-ghost" @click="resetFilters">
             Filter zurücksetzen
           </button>
           <!-- The table view is the accessible equal of the chart, not a
                fallback: every value the bars encode is readable as text. -->
+          <!-- Zoom reads as a time scale, because that is what it is: the
+               level name tells you what the axis is about to say. -->
           <div v-if="!asTable" class="zoom-control ml-auto" role="group" aria-label="Zoom">
-            <button class="btn btn-ghost" :disabled="zoom === ZOOM_STEPS[0]"
+            <button class="btn btn-ghost" :disabled="scaleIndex === 0"
                     aria-label="Herauszoomen" title="Herauszoomen"
                     data-testid="zoom-out" @click="zoomBy(-1)">−</button>
-            <span class="zoom-level" data-testid="zoom-level">{{ Math.round(zoom * 100) }}%</span>
+            <select class="filter-select zoom-scale" :value="scale.key"
+                    aria-label="Zeitskala" data-testid="zoom-level"
+                    @change="setScale($event.target.value)">
+              <option v-for="sc in SCALES" :key="sc.key" :value="sc.key">
+                {{ sc.label }}
+              </option>
+            </select>
             <button class="btn btn-ghost"
-                    :disabled="zoom === ZOOM_STEPS[ZOOM_STEPS.length - 1]"
+                    :disabled="scaleIndex === SCALES.length - 1"
                     aria-label="Hineinzoomen" title="Hineinzoomen"
                     data-testid="zoom-in" @click="zoomBy(1)">+</button>
+            <button class="btn btn-ghost" title="Auf heute zentrieren"
+                    aria-label="Auf heute zentrieren"
+                    data-testid="jump-today" @click="scrollToToday">Heute</button>
           </div>
           <div class="segmented" :class="{ 'ml-auto': asTable }" role="group"
                aria-label="Darstellung">
@@ -1329,8 +1539,14 @@ const AblaufplanScreen = {
         <!-- ── Balkenplan ────────────────────────────────────────────── -->
         <div v-if="ownerError" class="notice notice-warn mb-3">{{ ownerError }}</div>
 
-        <div v-if="!asTable" class="card card-flush gantt-scroll">
-          <div class="gantt" :style="{ width: (100 * zoom) + '%' }">
+        <div v-if="!asTable" class="card card-flush gantt-scroll" ref="scrollEl">
+          <!-- Width in px, derived from the scale's px-per-day, so a day at
+               "Woche" is the same width whatever the plan's total length. A
+               percentage width made a two-year plan and a two-month plan look
+               identical at the same zoom level. min-width keeps a short plan
+               from collapsing narrower than its container. -->
+          <div class="gantt"
+               :style="{ width: Math.max(trackWidthPx, 0) + 'px', minWidth: '100%' }">
             <div class="gantt-head">
               <div class="gantt-label-col">Vorgang</div>
               <div class="gantt-track-col">
@@ -1501,14 +1717,13 @@ const WorkScreen = {
   setup(props) {
     const lens = ref('liste');
     const query = ref('');
-    const filterOwner = ref('');
+    const {
+      selected: filterOwners, toggleOwner, clearOwners,
+      matchesOwner: ownerMatches, ownerLabel,
+    } = createOwnerFilter();
     const filterStatus = ref('');
     const filterKind = ref('');
 
-    // Same sentinel as the Gantt's owner filter, for the same reason: it
-    // travels through a <select> value and a test fixture without escaping,
-    // and no real name looks like this.
-    const UNASSIGNED = '__ohne__';
 
     // Both sources describe the same four states in different vocabularies.
     // Normalising once here is what lets one row template render both.
@@ -1581,8 +1796,7 @@ const WorkScreen = {
       if (q && !(`${r.title} ${r.owner}`.toLowerCase().includes(q))) return false;
       if (filterStatus.value && r.status !== filterStatus.value) return false;
       if (filterKind.value && r.kind !== filterKind.value) return false;
-      if (filterOwner.value === UNASSIGNED) return !r.owner;
-      if (filterOwner.value && r.owner !== filterOwner.value) return false;
+      if (!ownerMatches(r.owner)) return false;
       return true;
     }
 
@@ -1643,7 +1857,7 @@ const WorkScreen = {
 
     function resetFilters() {
       query.value = '';
-      filterOwner.value = '';
+      filterOwners.value = [];
       filterStatus.value = '';
       filterKind.value = '';
     }
@@ -1695,7 +1909,8 @@ const WorkScreen = {
     }
 
     return {
-      lens, query, filterOwner, filterStatus, filterKind,
+      lens, query, filterOwners, filterStatus, filterKind,
+      toggleOwner, clearOwners, ownerLabel,
       owners, statuses, UNASSIGNED, STATUS_LABEL,
       rows, filtered, grouped, undatedCount,
       statusChip, resetFilters, relativeDays,
@@ -1762,13 +1977,31 @@ const WorkScreen = {
             <input class="text-input" type="search" v-model="query"
                    placeholder="Titel oder Verantwortliche suchen…"
                    aria-label="Suchen" data-testid="work-search">
-            <select class="filter-select" v-model="filterOwner"
-                    aria-label="Nach Verantwortlichen filtern"
-                    data-testid="work-filter-owner">
-              <option value="">Alle Verantwortlichen</option>
-              <option :value="UNASSIGNED">Ohne Verantwortliche</option>
-              <option v-for="o in owners" :key="o" :value="o">{{ o }}</option>
-            </select>
+            <details class="filter-multi" data-testid="work-filter-owner">
+              <summary class="filter-select" role="button"
+                       aria-label="Nach Verantwortlichen filtern">
+                {{ ownerLabel }}
+              </summary>
+              <div class="filter-multi-panel">
+                <label class="filter-multi-item">
+                  <input type="checkbox"
+                         :checked="filterOwners.includes(UNASSIGNED)"
+                         data-testid="work-owner-unassigned"
+                         @change="toggleOwner(UNASSIGNED)">
+                  <span>Ohne Verantwortliche</span>
+                </label>
+                <label v-for="o in owners" :key="o" class="filter-multi-item">
+                  <input type="checkbox" :checked="filterOwners.includes(o)"
+                         data-testid="work-owner-option"
+                         @change="toggleOwner(o)">
+                  <span>{{ o }}</span>
+                </label>
+                <button v-if="filterOwners.length" class="btn-link mt-1"
+                        data-testid="work-owner-clear" @click="clearOwners">
+                  Auswahl aufheben
+                </button>
+              </div>
+            </details>
             <select class="filter-select" v-model="filterStatus" aria-label="Nach Status filtern">
               <option value="">Alle Status</option>
               <option v-for="s in statuses" :key="s" :value="s">{{ STATUS_LABEL[s] }}</option>

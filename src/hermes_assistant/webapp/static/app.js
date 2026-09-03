@@ -100,7 +100,10 @@ function dropNav(dragKey, targetKey) {
 
 // ── Global reactive state ──────────────────────────────────────────────────
 const state = reactive({
-  screen: 'overview',  // one of SCREENS
+  // Aufgaben & Termine, not Overview: the first question on opening the
+  // dashboard is "what do I owe and by when", and Overview only summarised
+  // the answer before sending you one click further to read it.
+  screen: 'work',      // one of SCREENS
   projectId: null,     // currently selected project ID
   data: null,          // DashboardData from API
   loading: false,

@@ -130,11 +130,21 @@ def test_message_alignment(page_with_chat: Page):
 
 
 def test_input_field_clears_after_send(page_with_chat: Page):
+    """Wait for the message inside the CHAT, not for the word anywhere.
+
+    A bare "text=Test" matched six elements once the dashboard started
+    landing on Aufgaben & Termine, whose rows include titles like "Testdaten
+    liefern" — so the wait resolved against a to-do that was on screen before
+    the message was ever sent. Scoping to the chat log also makes the test
+    say what it means.
+    """
     field = page_with_chat.locator(".chat-input")
     field.fill("Test")
     assert field.input_value() == "Test"
     page_with_chat.locator(".chat-send").click()
-    page_with_chat.wait_for_selector("text=Test", timeout=5000)
+    page_with_chat.locator(".chat-messages", has_text="Test").first.wait_for(
+        timeout=5000
+    )
     assert page_with_chat.locator(".chat-input").input_value() == ""
 
 

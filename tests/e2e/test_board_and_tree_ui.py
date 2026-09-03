@@ -41,7 +41,7 @@ def _require_server():
 
 def _open_tab(page: Page, tab: str) -> None:
     page.goto(BASE_URL)
-    page.wait_for_selector(".stat-tile", timeout=10000)
+    page.wait_for_selector(".nav-btn", timeout=10000)
     page.click('[data-testid="nav-detail"]')
     page.click(f'button.tab-btn:has-text("{tab}")')
 
@@ -217,7 +217,7 @@ def test_status_change_survives_a_reload(board_page: Page):
     board_page.wait_for_timeout(2000)
 
     board_page.goto(BASE_URL)
-    board_page.wait_for_selector(".stat-tile", timeout=10000)
+    board_page.wait_for_selector(".nav-btn", timeout=10000)
     board_page.click('[data-testid="nav-detail"]')
     board_page.click('button.tab-btn:has-text("Kanban")')
     board_page.wait_for_selector(".kanban-board", timeout=5000)

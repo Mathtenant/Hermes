@@ -862,7 +862,7 @@ const AblaufplanScreen = {
     // everything real into a few pixels at one end, with no way back except
     // deleting data. The window is centred on today rather than starting
     // there, because the sweep deliberately includes what is already done.
-    const filterWindow = ref('12');
+    const filterWindow = ref('heute');
     const {
       selected: filterOwners, toggleOwner, clearOwners,
       matchesOwner: ownerMatches, ownerLabel,
@@ -926,16 +926,24 @@ const AblaufplanScreen = {
     const LEVEL_ORDER = ['meilenstein', 'arbeitspaket', 'aufgabe'];
 
     // months back, months forward
+    // The default used to reach three months BACK, so a plan opened onto a
+    // wall of finished work with today pushed off the right-hand edge — months
+    // of green bars nobody needs to look at again.
+    //
+    // "Ab heute" is not "drop everything before today": an OVERDUE item is in
+    // the past and is the most urgent thing on the board. Finished past work
+    // is what is irrelevant, so the rule is by STATUS, not by date alone.
     const WINDOWS = {
+      'heute': { label: 'Ab heute (12 Monate)', mode: 'forward', fwd: 12 },
       '12': { label: '15 Monate um heute', back: 3, fwd: 12 },
       '36': { label: '3 Jahre um heute', back: 12, fwd: 24 },
       'all': { label: 'Ganzer Zeitraum', back: null, fwd: null },
     };
-    const WINDOW_ORDER = ['12', '36', 'all'];
+    const WINDOW_ORDER = ['heute', '12', '36', 'all'];
 
     function windowBounds() {
       const w = WINDOWS[filterWindow.value];
-      if (!w || w.back === null) return null;
+      if (!w || w.mode === 'forward' || w.back === null) return null;
       const from = new Date();
       from.setUTCMonth(from.getUTCMonth() - w.back);
       const to = new Date();
@@ -944,11 +952,34 @@ const AblaufplanScreen = {
     }
 
     function inWindow(r) {
+      const w = WINDOWS[filterWindow.value];
+      if (w?.mode === 'forward') {
+        const today = todayISO();
+        const end = r.end || '';
+        // Overdue stays, however far back it is dated: that is what overdue
+        // MEANS, and hiding it would empty the screen of exactly the rows a
+        // lead opens the plan to find.
+        if (r.status !== 'erledigt' && end && end < today) return true;
+        // Forward is still BOUNDED. Dropping the upper limit let a single
+        // typo'd year (a 2099 date in the fixtures) stretch the axis 33 years
+        // and squeeze every real bar into a few pixels — the exact failure the
+        // window was introduced to prevent. Anything past the bound is counted
+        // in outsideWindow and reachable via "Ganzer Zeitraum".
+        const to = new Date();
+        to.setUTCMonth(to.getUTCMonth() + w.fwd);
+        const limit = to.toISOString().slice(0, 10);
+        return end >= today && (r.start || end) <= limit;
+      }
       const b = windowBounds();
       if (!b) return true;
       // An item overlaps the window if it has not ended before it starts and
       // does not begin after it ends — a long bar spanning the window counts.
       return (r.end >= b.from) && ((r.start || r.end) <= b.to);
+    }
+
+    /** Today as YYYY-MM-DD, for comparing against the ISO dates rows carry. */
+    function todayISO() {
+      return new Date().toISOString().slice(0, 10);
     }
 
     const rows = computed(() => props.data?.ablaufplan ?? []);
@@ -1346,7 +1377,10 @@ const AblaufplanScreen = {
         filterLevel.value = '';
         filterSource.value = '';
         filterOwners.value = [];
-        filterWindow.value = 'all';
+        // Back to the default, not to "everything": resetting the filters
+        // should return the screen someone started from, and that screen does
+        // not open onto months of finished work.
+        filterWindow.value = 'heute';
       },
     };
   },

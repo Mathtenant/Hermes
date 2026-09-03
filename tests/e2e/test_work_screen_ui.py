@@ -452,3 +452,85 @@ def test_clearing_the_owner_selection_restores_everything(app_page: Page) -> Non
     app_page.locator('[data-testid="work-owner-clear"]').click()
     app_page.wait_for_timeout(300)
     assert app_page.locator(".kind-chip").count() == all_rows
+
+
+# --------------------------------------------------------------------------- #
+# The default time window
+#
+# The timeline used to open three months BACK, so a plan presented a wall of
+# finished green bars with today pushed off the right-hand edge. "Ab heute" is
+# not "hide everything before today", though: an overdue item is in the past
+# and is the most urgent row on the board.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_timeline_opens_from_today_not_months_back(app_page: Page) -> None:
+    _open_timeline(app_page)
+    window = app_page.locator('select[aria-label="Zeitraum"]')
+    assert window.input_value() == "heute"
+
+
+def test_finished_past_work_is_not_shown_by_default(app_page: Page) -> None:
+    """Months of completed bars are exactly what nobody needs to re-read."""
+    _open_timeline(app_page)
+    statuses = app_page.locator(".gantt-row .chip").all_inner_texts()
+    assert "Erledigt" not in [s.strip() for s in statuses]
+
+
+def test_overdue_work_survives_the_default_window(app_page: Page) -> None:
+    """The one thing "from today" must NOT drop.
+
+    An overdue item is dated in the past and is the most relevant row there
+    is; filtering purely by date would hide it.
+    """
+    _open_timeline(app_page)
+    today = app_page.evaluate("() => new Date().toISOString().slice(0, 10)")
+    overdue = app_page.evaluate(
+        """async (today) => {
+            const r = await fetch('/api/dashboard');
+            const d = await r.json();
+            return d.ablaufplan.filter(
+                x => (x.end || '') < today && x.status !== 'erledigt'
+            ).map(x => x.title);
+        }""",
+        today,
+    )
+    if not overdue:
+        pytest.skip("no overdue rows in the data")
+    shown = " ".join(app_page.locator(".gantt-row").all_inner_texts())
+    for title in overdue:
+        assert title[:25] in shown, f"overdue row hidden: {title}"
+
+
+def test_a_far_future_outlier_does_not_stretch_the_axis(app_page: Page) -> None:
+    """One typo'd year must not squeeze every real bar into a few pixels.
+
+    Removing the forward bound to get "from today" did exactly that: a 2099
+    date in the data ran the axis out to 2059 and made the track 213,000 px
+    wide. The forward window stays bounded.
+    """
+    _open_timeline(app_page)
+    labels = app_page.locator(".gantt-tick-label").all_inner_texts()
+    years = [int(t) for label in labels for t in [label[-4:]] if t.isdigit()]
+    this_year = int(app_page.evaluate("() => new Date().getUTCFullYear()"))
+    assert all(y <= this_year + 3 for y in years), labels[-5:]
+
+    width = app_page.locator(".gantt").first.evaluate("e => e.scrollWidth")
+    assert width < 20000, f"track is {width}px wide"
+
+
+def test_what_the_window_hides_is_stated_not_silent(app_page: Page) -> None:
+    """A filter that quietly drops rows is worse than no filter."""
+    _open_timeline(app_page)
+    hidden = app_page.locator("text=ausserhalb des gewählten Zeitraums")
+    if not hidden.count():
+        pytest.skip("nothing outside the window in this data")
+    assert app_page.locator("text=Ganzen Zeitraum zeigen").count() == 1
+
+
+def test_the_whole_span_is_still_reachable(app_page: Page) -> None:
+    _open_timeline(app_page)
+    before = app_page.locator(".gantt-row").count()
+    app_page.locator('select[aria-label="Zeitraum"]').select_option("all")
+    app_page.wait_for_timeout(600)
+    assert app_page.locator(".gantt-row").count() > before

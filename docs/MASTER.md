@@ -643,11 +643,96 @@ echo "Bootstrap done. Run: bash scripts/bench.sh to confirm token rates."
 
 ### 24. Design rationale & boundaries
 
-- **Why ICS, not Graph/Outlook API:** a `.ics` file is a local artifact. The assistant writes it; you import it manually. No programmatic M365 access, no credentials, nothing leaves the box until *you* choose to import.
+- **Why ICS, not Graph/Outlook API:** a `.ics` file is a local artifact. The assistant writes it; you import it manually. No programmatic M365 access, no credentials, nothing leaves the box until *you* choose to import. *(Calendar export still works exactly this way. The one exception to "no M365 access" anywhere in HERMES is the opt-in Copilot API proof of concept — see §24-B; it is off by default and touches nothing here.)*
 - **Division of labor:** the assistant **derives and exports**; the calendar app **stores, displays, and notifies**. No reminder daemon, no clock polling.
 - **Content boundary (important):** ICS files carry only **structural schedule metadata** — item title, dates, reminder lead time, project tag, and a short non-confidential note. **No confidential deliverable content** goes into an `.ics` summary/description.
 - **Re-import hygiene:** every component carries a **stable deterministic `UID`** (e.g. `hermes-{project_id}-{item_id}@local`) and a bumped `SEQUENCE` on change, so re-importing updates existing entries instead of duplicating.
 
+
+### 24-B. Microsoft 365 Copilot APIs — proof of concept (opt-in, off by default)
+
+> **Status: unverified against a live tenant.** The clients implement the
+> documented contracts and are tested against them offline. Nobody has yet run
+> them with a real token, a real licence and real SharePoint content. Treat
+> everything below as "built to spec", not "known to work".
+
+Two official APIs change what is worth building here.
+
+**Retrieval API** — `POST /beta/copilot/retrieval`. Send a natural-language
+sentence, get back permission-trimmed, semantically ranked text extracts from
+SharePoint / OneDrive / connectors. **Microsoft does the chunking and the
+ranking**, which removes the reason to download files through Graph and parse
+them locally: no vector index of our own, no copy of tenant content on disk,
+and no way to see more than the signed-in person already could.
+
+**Chat API** — `POST /beta/copilot/conversations/{id}/chat`. Multi-turn
+conversation with Copilot from Python, grounded in tenant content. This is the
+cleaner replacement for the old "Option B" (Direct Line): the export prompts
+could run as API calls instead of copy-paste.
+
+#### The limits that shape the design
+
+| Limit | Consequence |
+|---|---|
+| `queryString` ≤ 1,500 characters | A long prompt must be split, not truncated. Enforced client-side. |
+| `maximumNumberOfResults` ≤ 25 | One call is a sample, not a sweep. Broad coverage means several queries. |
+| One `dataSource` per call | "Search everything" does not exist; SharePoint and OneDrive are separate calls. |
+| Chat is **text-only** | No file creation, no mail, no code interpreter, no long-running tasks. |
+| **Delegated permissions only** | No service identity. Every call runs as a signed-in person; there is no unattended mode. |
+
+The last two decide what this can and cannot replace. Text-only means the Chat
+API is right for **state capture** — reading the project's own state back out —
+and still wrong for **document generation**, which stays in the interactive
+Copilot UI. Delegated-only means a nightly unattended sync is not possible as
+designed; a human signs in, and the token expires.
+
+#### The failure mode worth knowing
+
+A malformed `filterExpression` **does not fail**. Microsoft's documentation is
+explicit: *"If the filterExpression request parameter has incorrect KQL syntax,
+the query successfully executes with no scoping."* A typo in a site path
+therefore does not error — it silently widens the search to the entire tenant
+and returns confident results from everywhere. `_check_kql()` rejects the easy
+version of that mistake (an unbalanced quote) before the request goes out.
+
+#### Why it is off by default
+
+Everything else in HERMES runs on this machine. These are the only calls that
+leave it, so `HERMES_M365_ENABLED` is a separate, deliberate switch:
+credentials sitting in the environment are **not** treated as consent to use
+them. The token cache holds refresh tokens — credentials, not data — so it is
+written mode `0600` under the data directory, never in the repository.
+
+#### Setup
+
+An Entra app registration, **public client** (`Allow public client flows` = yes,
+required for device code), with delegated consent for the scopes in `auth.py`.
+Then:
+
+```bash
+pip install -e '.[m365]'
+export HERMES_M365_ENABLED=1
+export HERMES_M365_TENANT_ID=...  HERMES_M365_CLIENT_ID=...
+hermes m365-login                       # device code, one-time
+hermes m365-retrieve "Wann ist die Abnahme des Fachtests?" --site "https://host/sites/P/" -n 10
+hermes m365-chat "Fasse den Projektstatus zusammen."
+```
+
+#### Where this could go next
+
+The obvious payoff is wiring retrieval into the existing import pipeline: the
+`faelligkeiten` sweep currently arrives as pasted JSON, and the same questions
+could be asked directly. That is deliberately **not** built yet — it needs one
+verified round trip against a real tenant first, because a pipeline built on an
+unverified response shape is a pipeline that silently imports nothing.
+
+| Piece | Where |
+|---|---|
+| Clients | `src/hermes_assistant/m365/client.py` |
+| Delegated auth (device code) | `src/hermes_assistant/m365/auth.py` |
+| Typed payloads | `src/hermes_assistant/m365/models.py` |
+| CLI | `hermes m365-login` / `m365-logout` / `m365-retrieve` / `m365-chat` |
+| Tests (offline) | `tests/test_m365_copilot.py` |
 ### 25. What ICS (RFC 5545) supports — and the Outlook reality
 
 | Need | ICS mechanism | Outlook reality |

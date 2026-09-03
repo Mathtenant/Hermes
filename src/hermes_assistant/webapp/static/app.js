@@ -582,6 +582,9 @@ function openImport() {
 }
 
 function closeImport() {
+  // Drop any pending auto-close: a dialog the user reopened must not be shut
+  // again by a timer the previous import left running.
+  cancelAutoClose();
   state.showImport = false;
 }
 
@@ -627,8 +630,77 @@ function onDrop(e) {
   }
 }
 
+// Where each imported entity type shows up. Counts alone do not say what
+// landed or where to look for it, which made a work-breakdown import feel
+// like nothing had happened.
+const ENTITY_DESTINATIONS = {
+  tasks: { label: 'Arbeitspakete', screen: 'Strukturplan & Kanban' },
+  schedule: { label: 'Termine & Fristen', screen: 'Aufgaben & Termine → Zeitstrahl' },
+  beschluesse: { label: 'Beschlüsse', screen: 'Aufgaben & Termine → Beschlüsse' },
+  risks: { label: 'Risiken', screen: 'Risks' },
+  pendenzen: { label: 'Todos', screen: 'Aufgaben & Termine → Liste' },
+  projects: { label: 'Projekte', screen: 'Projects' },
+  plans: { label: 'Plan-Versionen', screen: 'nicht im Dashboard sichtbar' },
+};
+
+/** Turn an import result's entity counts into "3 Todos → Aufgaben & Termine". */
+function describeImportDestinations(result) {
+  const counts = result && result.entity_counts;
+  if (!counts) return [];
+  return Object.entries(counts)
+    .filter(([, n]) => n > 0)
+    .map(([type, n]) => ({
+      type,
+      count: n,
+      label: (ENTITY_DESTINATIONS[type] || {}).label || type,
+      screen: (ENTITY_DESTINATIONS[type] || {}).screen || type,
+    }));
+}
+
+// Long enough for the green success panel to register as an answer rather
+// than a flicker, short enough that nobody reaches for the close button first.
+const IMPORT_AUTO_CLOSE_MS = 1200;
+let _importCloseTimer = null;
+// Counts imports, so a pending timer can tell whether it still belongs to the
+// result on screen. Identity comparison against importResult.value does NOT
+// work: assigning an object to a Vue ref stores a reactive Proxy, so
+// `importResult.value === data` is false even for the very object just
+// assigned, and the timer would never fire.
+let _importSeq = 0;
+
+function cancelAutoClose() {
+  if (_importCloseTimer) {
+    clearTimeout(_importCloseTimer);
+    _importCloseTimer = null;
+  }
+}
+
+/** Close the import dialog after a clean import, and only after a clean one.
+ *
+ * "Clean" excludes a partial success. The server can return ok with a list of
+ * items it could not import, and that list exists only inside this dialog —
+ * closing on top of it would report success while hiding what was dropped.
+ * The whole point of auto-closing is to save a click on the boring path, not
+ * to hurry someone past the one screen that says something went wrong.
+ */
+function maybeAutoClose(result, seq) {
+  cancelAutoClose();
+  if (!result || !result.ok) return;
+  if (Array.isArray(result.errors) && result.errors.length) return;
+
+  _importCloseTimer = setTimeout(() => {
+    _importCloseTimer = null;
+    // Only close if this is still the import the user is looking at: they may
+    // have closed and reopened the dialog, or started another import.
+    if (state.showImport && _importSeq === seq) closeImport();
+  }, IMPORT_AUTO_CLOSE_MS);
+}
+
 async function runImport() {
   if (importLoading.value) return;
+  // A second import must not be closed by the first one's pending timer.
+  cancelAutoClose();
+  const seq = ++_importSeq;
   const jsonStr = currentJsonString();
   if (!jsonStr) {
     importError.value = 'No JSON provided.';
@@ -658,11 +730,20 @@ async function runImport() {
         : (detail && detail.errors ? detail.errors.join('; ') : `HTTP ${resp.status}`);
     } else {
       importResult.value = data;
+      // The dialog says two things the toast did not: where each entity type
+      // landed, and which individual items had problems. Closing must not
+      // silently take either away — so the destinations move into the toast,
+      // and a partial success keeps the dialog open (see maybeAutoClose).
+      const where = describeImportDestinations(data)
+        .map((w) => `${w.count} ${w.label} → ${w.screen}`)
+        .join(' · ');
       showToast(
         `Import done — ${data.created} created, ${data.updated} updated`
         + (data.skipped ? `, ${data.skipped} skipped` : '')
+        + (where ? `. ${where}` : '')
       );
       await refresh();
+      maybeAutoClose(data, seq);
     }
   } catch (e) {
     importError.value = String(e.message || e);
@@ -845,28 +926,12 @@ const App = {
     // Where each imported entity type becomes visible. Without this the user
     // is told "66 updated" with no hint that the result lives two clicks away
     // on another screen.
-    const ENTITY_DESTINATIONS = {
-      tasks: { label: 'Arbeitspakete', screen: 'Strukturplan & Kanban' },
-      schedule: { label: 'Termine & Fristen', screen: 'Aufgaben & Termine → Zeitstrahl' },
-      beschluesse: { label: 'Beschlüsse', screen: 'Aufgaben & Termine → Beschlüsse' },
-      risks: { label: 'Risiken', screen: 'Risks' },
-      pendenzen: { label: 'Todos', screen: 'Aufgaben & Termine → Liste' },
-      projects: { label: 'Projekte', screen: 'Projects' },
-      plans: { label: 'Plan-Versionen', screen: 'nicht im Dashboard sichtbar' },
-    };
-
-    const importedWhere = computed(() => {
-      const counts = importResult.value && importResult.value.entity_counts;
-      if (!counts) return [];
-      return Object.entries(counts)
-        .filter(([, n]) => n > 0)
-        .map(([type, n]) => ({
-          type,
-          count: n,
-          label: (ENTITY_DESTINATIONS[type] || {}).label || type,
-          screen: (ENTITY_DESTINATIONS[type] || {}).screen || type,
-        }));
-    });
+    // Module-level: the dialog renders this list and runImport folds the same
+    // list into the toast, so both must read one definition. See
+    // describeImportDestinations().
+    const importedWhere = computed(
+      () => describeImportDestinations(importResult.value)
+    );
 
     const activePromptHint = computed(() => {
       const kind = PROMPT_KINDS.find((k) => k.key === promptKind.value);

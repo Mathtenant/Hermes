@@ -9,6 +9,14 @@ import socket
 
 import pytest
 
+# This file drives a real browser against a live server — the definition of
+# the e2e marker — but was the only such file missing it, so its tests ran in
+# the default suite. That went unnoticed while they merely passed; adding more
+# of them surfaced it, because Playwright's loop collides with the anyio one in
+# test_simulation_bueroumzug ("Cannot run the event loop while another loop is
+# running"). Marking the file matches every sibling and its own skip fixture.
+pytestmark = pytest.mark.e2e
+
 BASE_URL = "http://localhost:8000"
 
 
@@ -146,20 +154,32 @@ class TestJsonImportUI:
         assert "Missing required field" in errors.text_content()
 
     def test_modal_stays_open_so_warnings_can_be_read(self, page):
-        """The dialog deliberately stays open after a successful import.
+        """A successful import that still reported something keeps the dialog.
 
-        An import can succeed while still reporting warnings — redacted email
-        addresses, skipped sections — and auto-closing would hide them.
+        This used to assert the dialog stays open after ANY success, because
+        nothing closed it. The dialog now closes itself on a clean import —
+        but the reason behind this test is untouched, so it is asserted
+        directly instead of by side effect: an import can succeed *and* report
+        a redacted email address, and that warning is shown nowhere but here.
+
+        The payload contains a real address so the confidentiality guard fires
+        and the server returns ok=true with a warning in ``errors`` — which is
+        the state that must not auto-close.
         """
         _open_paste_step(page)
-        _submit(page, {"risks": [{"title": "Risk"}]})
+        _submit(page, {"risks": [{"title": "Kontakt anna.muster@contoso.com"}]})
         page.locator("text=Successfully imported").wait_for(timeout=5000)
-        page.wait_for_timeout(1500)
+
+        warnings = page.locator('[data-testid="import-errors"]')
+        assert "E-Mail" in warnings.text_content()
+
+        # Well past the auto-close window: the warning is still on screen.
+        page.wait_for_timeout(2300)
         assert page.locator('[data-testid="json-import-modal"]').is_visible()
 
     def test_import_refreshes_dashboard(self, page):
         """Dashboard data reloads after a successful import."""
-        page.goto(BASE_URL)
+        page.goto(f"{BASE_URL}/#/overview")
         page.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
         before = int(page.locator('[data-testid="risks-count"]').text_content() or "0")
 
@@ -269,3 +289,106 @@ class TestJsonImportUI:
             page.wait_for_timeout(400)
             text = page.locator('[data-testid="copilot-prompt-text"]').text_content()
             assert f'"schema": "{schema}"' in text, key
+
+
+class TestImportDialogAutoClose:
+    """The dialog closes itself after an import — but only after a clean one.
+
+    Auto-closing saves a click on the boring path. It must not save that click
+    by hurrying somebody past the one screen that says something went wrong:
+    the per-item error list exists ONLY inside this dialog, so closing over it
+    would report success while hiding what was dropped.
+
+    The three outcomes are driven by stubbing the endpoint rather than by
+    crafting payloads. The importer turned out to be lenient about the fields
+    a first attempt used to provoke errors — it accepted them and reported
+    none — so a payload-driven test silently checked nothing.
+    """
+
+    @staticmethod
+    def _import_returning(page, body: dict) -> None:
+        page.route(
+            "**/api/import/json",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(body),
+            ),
+        )
+        _open_paste_step(page)
+        page.locator('[data-testid="raw-json-input"]').fill(
+            '{"schema": "hermes.pendenzen/v1", "pendenzen": []}'
+        )
+        page.locator('[data-testid="import-submit-btn"]').click()
+        page.wait_for_selector('[data-testid="import-result"]', timeout=15000)
+
+    def test_a_clean_import_closes_the_dialog(self, page):
+        self._import_returning(
+            page,
+            {"ok": True, "created": 2, "updated": 0, "skipped": 0,
+             "errors": [], "entity_counts": {"pendenzen": 2}},
+        )
+        page.wait_for_selector(
+            '[data-testid="json-import-modal"]', state="detached", timeout=8000
+        )
+
+    def test_the_result_is_readable_before_it_closes(self, page):
+        """Closing instantly would make the success panel a flicker."""
+        self._import_returning(
+            page,
+            {"ok": True, "created": 1, "updated": 0, "skipped": 0,
+             "errors": [], "entity_counts": {"pendenzen": 1}},
+        )
+        assert page.locator('[data-testid="json-import-modal"]').count() == 1
+
+    def test_a_partial_import_keeps_the_dialog_open(self, page):
+        """ok=True with per-item errors is not a clean import.
+
+        Those errors are shown nowhere else, so this is the case that decides
+        the whole design.
+        """
+        self._import_returning(
+            page,
+            {"ok": True, "created": 1, "updated": 0, "skipped": 1,
+             "errors": ["row 2: unparseable due date"],
+             "entity_counts": {"pendenzen": 1}},
+        )
+        page.wait_for_timeout(2300)
+        assert page.locator('[data-testid="json-import-modal"]').count() == 1
+
+    def test_a_failed_import_keeps_the_dialog_open(self, page):
+        self._import_returning(
+            page,
+            {"ok": False, "created": 0, "updated": 0, "skipped": 0,
+             "errors": ["unknown schema"], "entity_counts": {}},
+        )
+        page.wait_for_timeout(2300)
+        assert page.locator('[data-testid="json-import-modal"]').count() == 1
+
+    def test_closing_carries_the_destinations_into_the_toast(self, page):
+        """The dialog said where each entity type landed; the toast must too.
+
+        Auto-closing otherwise removes the only answer to "did that do
+        anything, and where do I look?".
+        """
+        self._import_returning(
+            page,
+            {"ok": True, "created": 3, "updated": 0, "skipped": 0,
+             "errors": [], "entity_counts": {"pendenzen": 3}},
+        )
+        toast = page.locator(".toast").inner_text()
+        assert "3 Todos" in toast
+        assert "Aufgaben & Termine" in toast
+
+    def test_reopening_the_dialog_is_not_shut_by_the_old_timer(self, page):
+        """A pending close must not slam a dialog the user just reopened."""
+        self._import_returning(
+            page,
+            {"ok": True, "created": 1, "updated": 0, "skipped": 0,
+             "errors": [], "entity_counts": {"pendenzen": 1}},
+        )
+        # Close by hand immediately, then reopen inside the auto-close window.
+        page.locator('[data-testid="import-cancel"]').click()
+        _open_modal(page)
+        page.wait_for_timeout(2300)
+        assert page.locator('[data-testid="json-import-modal"]').count() == 1

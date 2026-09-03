@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-assistant"
-version = "0.3.0"
+version = "0.5.0"
 description = "Fully-local AI assistant for HERMES 2022 project management"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,6 +32,10 @@ dependencies = [
 
 [project.optional-dependencies]
 tui = ["textual>=0.47,<1.0"]
+# Microsoft 365 Copilot APIs. An extra, not a base dependency: HERMES runs
+# fully local by default, and a machine that never signs in to a tenant should
+# not carry an auth library it will never import.
+m365 = ["msal>=1.28,<2.0"]
 webapp = [
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",

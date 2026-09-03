@@ -112,7 +112,7 @@ def test_successful_import_populates_risk_count(import_modal: Page):
     import_modal.locator('[data-testid="import-submit-btn"]').click()
     import_modal.locator("text=Successfully imported").wait_for(timeout=5000)
 
-    import_modal.goto(BASE_URL)
+    import_modal.goto(f"{BASE_URL}/#/overview")
     import_modal.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
     after = int(import_modal.locator('[data-testid="risks-count"]').inner_text() or "0")
     assert after >= before
@@ -140,12 +140,12 @@ def test_reimport_same_json_does_not_duplicate(page: Page):
         page.locator("text=Successfully imported").wait_for(timeout=5000)
 
     _do_import()
-    page.goto(BASE_URL)
+    page.goto(f"{BASE_URL}/#/overview")
     page.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
     count_after_first = int(page.locator('[data-testid="risks-count"]').inner_text() or "0")
 
     _do_import()
-    page.goto(BASE_URL)
+    page.goto(f"{BASE_URL}/#/overview")
     page.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
     count_after_second = int(page.locator('[data-testid="risks-count"]').inner_text() or "0")
 

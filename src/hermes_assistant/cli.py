@@ -1264,5 +1264,132 @@ def tui() -> None:
     run()
 
 
+# --------------------------------------------------------------------------- #
+# Phase POC — Microsoft 365 Copilot APIs
+#
+# The only commands in HERMES that talk to anything off this machine. Each one
+# refuses to run unless the integration was explicitly switched on, so the
+# local-first default cannot be crossed by accident or by a stray credential
+# left in the environment.
+# --------------------------------------------------------------------------- #
+
+
+def _require_m365() -> None:
+    """Refuse unless the integration was deliberately enabled."""
+    if not settings.m365_enabled:
+        console.print(
+            "[red]error[/red] The Microsoft 365 integration is off. "
+            "Everything else in HERMES stays on this machine; these commands do "
+            "not. Enable deliberately with HERMES_M365_ENABLED=1 and set "
+            "HERMES_M365_TENANT_ID / HERMES_M365_CLIENT_ID."
+        )
+        raise typer.Exit(code=2)
+
+
+@app.command(name="m365-login")
+def m365_login() -> None:
+    """Sign in to Microsoft 365 for the Copilot APIs (device code)."""
+    _require_m365()
+    from hermes_assistant.m365.auth import CHAT_SCOPES, DeviceCodeAuth, M365AuthError
+
+    auth = DeviceCodeAuth()
+    try:
+        auth.token(list(CHAT_SCOPES), interactive=True)
+    except M365AuthError as exc:
+        console.print(f"[red]sign-in failed[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print("[green]signed in[/green] token cached at "
+                  f"{auth.cache_path} (mode 0600)")
+
+
+@app.command(name="m365-logout")
+def m365_logout() -> None:
+    """Delete the cached Microsoft 365 tokens."""
+    from hermes_assistant.m365.auth import DeviceCodeAuth
+
+    removed = DeviceCodeAuth().sign_out()
+    console.print("[green]signed out[/green]" if removed else "nothing cached")
+
+
+@app.command(name="m365-retrieve")
+def m365_retrieve(
+    query: str = typer.Argument(..., help="One natural-language sentence (max 1500 chars)."),
+    data_source: str = typer.Option("sharePoint", "--source", help="sharePoint|oneDriveBusiness|externalItem."),
+    site: str = typer.Option("", "--site", help='Scope to a site, e.g. https://host/sites/X/ .'),
+    limit: int = typer.Option(10, "--limit", "-n", help="Max results (1-25)."),
+) -> None:
+    """Retrieve permission-trimmed extracts from SharePoint or OneDrive.
+
+    Microsoft does the chunking and ranking; nothing is indexed locally, and
+    what comes back is text the signed-in account could already open.
+    """
+    _require_m365()
+    from hermes_assistant.m365.client import CopilotAPIError, CopilotClient
+
+    client = CopilotClient()
+    try:
+        result = client.retrieve(
+            query,
+            data_source=data_source,
+            filter_expression=f'path:"{site}"' if site else None,
+            resource_metadata=["title", "author"],
+            maximum_results=limit,
+        )
+    except (CopilotAPIError, ValueError) as exc:
+        console.print(f"[red]error[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if not result.retrieval_hits:
+        console.print("no hits")
+        return
+
+    console.print(
+        f"[bold]{len(result.retrieval_hits)} documents[/bold] · "
+        f"{result.extract_count} extracts"
+    )
+    for hit in result.retrieval_hits:
+        label = hit.sensitivity_label.display_name if hit.sensitivity_label else ""
+        console.print(f"\n[bold]{hit.title}[/bold]" + (f"  [yellow]{label}[/yellow]" if label else ""))
+        console.print(f"[dim]{hit.web_url}[/dim]")
+        for extract in hit.extracts:
+            score = f"{extract.relevance_score:.2f}" if extract.relevance_score is not None else "—"
+            pages = f" p.{','.join(str(p) for p in extract.page_numbers)}" if extract.page_numbers else ""
+            console.print(f"  [dim]({score}{pages})[/dim] {extract.text.strip()[:400]}")
+
+
+@app.command(name="m365-chat")
+def m365_chat(
+    message: str = typer.Argument(..., help="What to ask Copilot."),
+    conversation: str = typer.Option("", "--conversation", "-c", help="Continue an existing conversation id."),
+    time_zone: str = typer.Option("", "--tz", help='e.g. "W. Europe Standard Time".'),
+) -> None:
+    """Ask Microsoft 365 Copilot a question, grounded in tenant content.
+
+    Text answers only — the Chat API cannot create files, send mail or run
+    code. Good for reading project state back out; document generation stays
+    in the interactive Copilot UI.
+    """
+    _require_m365()
+    from hermes_assistant.m365.client import CopilotAPIError, CopilotClient
+
+    try:
+        answer = CopilotClient().chat(
+            message,
+            conversation_id=conversation or None,
+            time_zone=time_zone or None,
+        )
+    except (CopilotAPIError, ValueError) as exc:
+        console.print(f"[red]error[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(answer.text or "[dim](empty answer)[/dim]")
+    if answer.attributions:
+        console.print("\n[bold]Quellen[/bold]")
+        for a in answer.attributions:
+            console.print(f"  · {a.provider_display_name or a.attribution_type or '?'} "
+                          f"[dim]{a.see_more_web_url or ''}[/dim]")
+    console.print(f"\n[dim]conversation: {answer.conversation_id}[/dim]")
+
+
 if __name__ == "__main__":
     app()

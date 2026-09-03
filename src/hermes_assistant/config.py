@@ -132,6 +132,30 @@ class Settings(BaseSettings):
     # until the server restarts.
     chat_model: str = "qwen3:4b"
 
+    # --- Microsoft 365 Copilot APIs (proof of concept) ------------------- #
+    # OFF BY DEFAULT, and deliberately so. Everything else in HERMES runs on
+    # this machine; these settings are the one path by which a query can leave
+    # it. Turning the flag on is a decision about where project data goes, so
+    # it is made once, explicitly, in the environment — never inferred from
+    # the mere presence of credentials.
+    #
+    # The app registration must be a PUBLIC client ("Allow public client
+    # flows" = yes) because the Retrieval API supports delegated permissions
+    # only: there is no service identity, every call runs as a signed-in
+    # person, and results are trimmed to what that person can already open.
+    m365_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("HERMES_M365_ENABLED", "m365_enabled"),
+    )
+    m365_tenant_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("HERMES_M365_TENANT_ID", "m365_tenant_id"),
+    )
+    m365_client_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("HERMES_M365_CLIENT_ID", "m365_client_id"),
+    )
+
     # --- RAG (Phase 1) --------------------------------------------------- #
     # Single Chroma collection for the whole corpus; a per-model collection
     # split is deferred to Phase 2 (see rag/store.py).

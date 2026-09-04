@@ -1039,7 +1039,17 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
   border-bottom: 1px solid var(--c-border);
 }
 
+/* Pinned. Panning the track must not take the task names with it — a bar with
+   no name beside it is unreadable, and that is exactly the state a scrolled
+   timeline used to end in. Sticky rather than a second scroller, so the rows
+   stay aligned with their bars by construction. It needs an opaque background
+   of its own: without one the bars slide visibly underneath the text. */
 .gantt-label-col {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--c-bg-card);
+  border-right: 1px solid var(--c-border);
   padding: 0 0.875rem;
   min-width: 0;
   font-size: 0.75rem;
@@ -1048,6 +1058,14 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
   align-items: baseline;
   gap: 0.5rem;
 }
+
+/* The pinned column has to repeat every background the row behind it paints,
+   or it flashes card-coloured over a tinted row. */
+.gantt-phase .gantt-label-col,
+.gantt-row:hover .gantt-label-col { background: var(--c-bg-subtle); }
+
+/* Top-left corner: sticky in both axes, so it outranks both neighbours. */
+.gantt-head .gantt-label-col { z-index: 3; }
 
 .gantt-track-col { position: relative; height: 100%; }
 
@@ -2440,6 +2458,28 @@ tr:focus-within .icon-btn { opacity: 1; }
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
   border-left: 3px dotted var(--c-bg-card);
+}
+
+/* The window now starts at today, so an item whose deadline has already passed
+   has nowhere on the ruler to live. It is still on screen — it is overdue and
+   open, which is the whole point — so it gets a stub against the left edge
+   rather than an empty lane. Leaning it left says "this belongs off-screen to
+   the left"; it must never read as a bar sitting on today.
+
+   An arrow rather than a rectangle: .gantt-bar clips its overflow, so the
+   "continues off-screen" cue has to be cut out of the mark itself. */
+.gantt-bar.is-past {
+  border-radius: 0;
+  clip-path: polygon(0 50%, 55% 0, 100% 0, 100% 100%, 55% 100%);
+}
+
+/* Diamonds and ticks keep their shape — they are already distinguishable marks
+   and reshaping them would confuse a gate with a deadline. Sitting flush at the
+   edge plus the overdue ring is the signal. */
+.gantt-milestone.is-past,
+.gantt-termin.is-past {
+  margin-left: 0;
+  box-shadow: 0 0 0 2px var(--st-critical);
 }
 
 /* Drag to pan the timeline. The cursor is the only affordance saying the

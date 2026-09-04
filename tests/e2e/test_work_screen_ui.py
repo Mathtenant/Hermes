@@ -297,23 +297,25 @@ def test_the_timeline_marks_today(app_page: Page) -> None:
     assert app_page.locator(".gantt-today").count() == 1
 
 
-def test_the_timeline_opens_centred_on_today(app_page: Page) -> None:
-    """Otherwise a zoomed track opens at the project start, months away."""
+def test_the_timeline_opens_on_today(app_page: Page) -> None:
+    """Otherwise a zoomed track opens at the project start, months away.
+
+    This asked for today near the *centre*, which was right while the axis
+    still reached into the past. It starts on today now, so the marker sits at
+    the left edge by construction and centring is not a promise anyone can
+    keep. What survives — and is what the test was ever really for — is that
+    the marker is on screen when the plan opens, at any zoom.
+    """
     _open_timeline(app_page)
-    box = app_page.locator(".gantt-scroll").first.evaluate(
-        "e => ({left: e.scrollLeft, width: e.scrollWidth, view: e.clientWidth})"
-    )
-    if box["width"] <= box["view"]:
-        pytest.skip("track fits without scrolling; nothing to centre")
-    marker = app_page.locator(".gantt-today").first.evaluate(
-        "e => e.getBoundingClientRect().left"
-    )
-    container = app_page.locator(".gantt-scroll").first.evaluate(
-        "e => e.getBoundingClientRect().left + e.clientWidth / 2"
-    )
-    # Within a quarter of the viewport of centre: exact centring is not the
-    # promise, "on screen and roughly in the middle" is.
-    assert abs(marker - container) < box["view"] / 4
+    scroller = app_page.locator(".gantt-scroll").first
+    for scale in ("monat", "woche", "tag"):
+        app_page.locator('[data-testid="zoom-level"]').select_option(scale)
+        app_page.wait_for_timeout(600)
+        marker = app_page.locator(".gantt-today").first.bounding_box()
+        view = scroller.bounding_box()
+        assert view["x"] <= marker["x"] <= view["x"] + view["width"], (
+            f"today is off screen at scale {scale}"
+        )
 
 
 @pytest.mark.parametrize(
@@ -385,15 +387,30 @@ def test_zoom_is_bounded_at_both_ends(app_page: Page) -> None:
 
 
 def test_the_today_button_brings_the_view_back(app_page: Page) -> None:
+    """Scroll away, press Heute, land back on today.
+
+    This used to scroll to 0 and assert the button moved the view right, back
+    to a today sitting somewhere in the middle. Today is the LEFT EDGE of the
+    axis now, so that test asserted the button could not do its job. Pan away
+    first and check the marker is on screen afterwards — which is the promise,
+    whatever position it happens to correspond to.
+    """
     _open_timeline(app_page)
     app_page.locator('[data-testid="zoom-level"]').select_option("tag")
     app_page.wait_for_timeout(600)
     scroller = app_page.locator(".gantt-scroll").first
-    scroller.evaluate("e => { e.scrollLeft = 0; }")
+    scroller.evaluate("e => { e.scrollLeft = 900; }")
     app_page.wait_for_timeout(200)
+    assert scroller.evaluate("e => e.scrollLeft") > 0, "could not pan away"
+
     app_page.locator('[data-testid="jump-today"]').click()
     app_page.wait_for_timeout(500)
-    assert scroller.evaluate("e => e.scrollLeft") > 0
+
+    marker = app_page.locator(".gantt-today").first.bounding_box()
+    view = scroller.bounding_box()
+    assert view["x"] <= marker["x"] <= view["x"] + view["width"], (
+        "the Heute marker is not in view after pressing Heute"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -546,22 +563,47 @@ def test_the_whole_span_is_still_reachable(app_page: Page) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_the_axis_does_not_reach_back_months_before_today(app_page: Page) -> None:
+def test_the_axis_starts_on_today_and_not_a_day_earlier(app_page: Page) -> None:
+    """The earliest date on the ruler is today. No past months, at all.
+
+    This used to allow the month before, so the axis could reach back to the
+    oldest overdue deadline and give an already-ended bar somewhere to draw.
+    One bar's lane is not worth putting July on a September plan; those bars
+    are stubs against the edge now (see the is-past tests below).
+    """
     _open_timeline(app_page)
+    assert app_page.locator(".gantt-bar, .gantt-milestone, .gantt-termin").count() > 0
+
     month = app_page.evaluate("() => new Date().getUTCMonth()")
-
-    left = app_page.locator(".gantt-bar, .gantt-milestone, .gantt-termin")
-    assert left.count() > 0, "nothing drawn to judge the axis by"
-
-    # The first tick may legitimately be the month before this one — the window
-    # reaches back to the oldest overdue deadline — but not further.
     first = app_page.locator(".gantt-tick-label").first.inner_text()
     months = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
               "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
-    idx = months.index(first.strip()[:3])
-    # Distance backwards from the current month, wrapping the year.
-    back = (month - idx) % 12
-    assert back <= 2, f"axis starts {back} months before today (at {first})"
+    assert months.index(first.strip()[:3]) == month, (
+        f"axis opens at {first}, but today is {months[month]}"
+    )
+
+
+def test_the_day_scale_opens_on_todays_date(app_page: Page) -> None:
+    """The month name is coarse enough to hide an off-by-a-week start."""
+    _open_timeline(app_page)
+    app_page.locator('[data-testid="zoom-level"]').select_option("tag")
+    app_page.wait_for_timeout(700)
+    first = app_page.locator(".gantt-tick-label").first.inner_text().strip()
+    today = app_page.evaluate("() => new Date().getUTCDate()")
+    assert first == str(today), f"day axis opens on {first}, today is {today}"
+
+
+def test_the_first_stretch_of_the_axis_is_labelled(app_page: Page) -> None:
+    """An axis starting mid-month must still name the month it starts in.
+
+    Ticks land on month boundaries, so an axis beginning on the 4th had its
+    first label at 1 October — the weeks the reader is actually standing in
+    went unnamed, and the plan appeared to open in the wrong month.
+    """
+    _open_timeline(app_page)
+    first = app_page.locator(".gantt-tick-label").first
+    left = first.evaluate("e => parseFloat(e.style.left) || 0")
+    assert left < 4, f"first axis label sits {left}% in, leaving a blank run"
 
 
 def test_a_long_running_bar_is_clipped_not_axis_stretching(app_page: Page) -> None:
@@ -577,13 +619,35 @@ def test_a_long_running_bar_is_clipped_not_axis_stretching(app_page: Page) -> No
     assert "left: 0%" in style
 
 
+def test_an_item_whose_deadline_has_passed_is_pinned_to_the_edge(app_page: Page) -> None:
+    """It ended before the window, so it has no place on the ruler — but it is
+    on screen because it is overdue and open, and an empty lane hides exactly
+    the finding the reader came for."""
+    _open_timeline(app_page)
+    past = app_page.locator(".is-past")
+    if not past.count():
+        pytest.skip("nothing overdue-and-ended in this data")
+    for i in range(past.count()):
+        style = past.nth(i).get_attribute("style") or ""
+        assert "left: 0%" in style, f"is-past mark not at the edge: {style}"
+        assert past.nth(i).is_visible()
+
+
+def test_a_past_bar_is_told_apart_from_one_starting_today(app_page: Page) -> None:
+    """Both sit at x=0. Only the class and the label say which is which."""
+    _open_timeline(app_page)
+    bar = app_page.locator(".gantt-bar.is-past").first
+    if not bar.count():
+        pytest.skip("no fully-past bar in this data")
+    assert "verstrichen" in (bar.get_attribute("aria-label") or "")
+
+
 def test_every_visible_row_draws_something(app_page: Page) -> None:
     """An overdue row with no mark is worse than the problem being fixed.
 
-    Clamping the axis hard to today made an overdue bar that had also ENDED
-    before today render as an empty lane: listed, correctly, with nothing in
-    it. The window reaches back to the oldest overdue deadline for exactly
-    this reason.
+    Clamping the axis to today made an overdue bar that had also ENDED before
+    today render as an empty lane: listed, correctly, with nothing in it. The
+    axis stays clamped — those bars are drawn as stubs at the edge instead.
     """
     _open_timeline(app_page)
     rows = app_page.locator(".gantt-row")
@@ -675,6 +739,40 @@ def test_dragging_back_returns_the_view(app_page: Page) -> None:
     _drag(app_page, left, right, y)
 
     assert scroller.evaluate("e => e.scrollLeft") < panned
+
+
+def test_the_task_names_stay_put_while_the_track_pans(app_page: Page) -> None:
+    """A bar with no name beside it says nothing.
+
+    That is the state a scrolled timeline ended in before the label column was
+    pinned: pan far enough and every row became an anonymous coloured stripe.
+    """
+    scroller = _wide_timeline(app_page)
+    label = app_page.locator(".gantt-row .gantt-label-col").first
+    head = app_page.locator(".gantt-head .gantt-label-col").first
+    before = label.bounding_box()["x"]
+    head_before = head.bounding_box()["x"]
+    text_before = label.inner_text()
+
+    scroller.evaluate("e => { e.scrollLeft = 700; }")
+    app_page.wait_for_timeout(300)
+    assert scroller.evaluate("e => e.scrollLeft") > 0, "track did not actually pan"
+
+    assert abs(label.bounding_box()["x"] - before) < 1
+    assert abs(head.bounding_box()["x"] - head_before) < 1, "the header cell drifted"
+    assert label.inner_text() == text_before
+    assert label.is_visible()
+
+
+def test_the_pinned_column_is_opaque(app_page: Page) -> None:
+    """Without a background of its own the bars slide visibly under the text."""
+    scroller = _wide_timeline(app_page)
+    label = app_page.locator(".gantt-row .gantt-label-col").first
+    bg = label.evaluate("e => getComputedStyle(e).backgroundColor")
+    assert bg not in ("rgba(0, 0, 0, 0)", "transparent"), bg
+    assert scroller.evaluate(
+        "e => getComputedStyle(e.querySelector('.gantt-label-col')).position"
+    ) == "sticky"
 
 
 def test_a_press_without_movement_leaves_the_view_alone(app_page: Page) -> None:

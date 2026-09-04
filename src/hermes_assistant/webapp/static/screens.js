@@ -1110,29 +1110,19 @@ const AblaufplanScreen = {
       return { min, max, span: Math.max(max - min, DAY_MS) };
     });
 
-    /** Left edge of the forward window.
+    /** Left edge of the forward window: today, exactly.
      *
-     * Today — except that it reaches back far enough to show the OLDEST
-     * overdue deadline. Clamping hard to today looked right until an overdue
-     * bar that had also ENDED before today rendered as an empty lane: the row
-     * was listed, correctly, with nothing drawn in it. A missed deadline is
-     * the one piece of past worth the space, and it is on screen because it
-     * is still open — the axis reaching back one month is the finding, not
-     * noise.
+     * It used to reach back to the oldest overdue deadline so that an overdue
+     * item which had also ENDED before today still had somewhere to draw. That
+     * bought one bar its lane at the cost of the whole ruler: a deadline missed
+     * in July put July on the axis, which is precisely the "why am I looking at
+     * June?" the window exists to prevent. The past is now off the axis
+     * entirely, and those bars are drawn as a stub pinned to the left edge
+     * (see barStyle) rather than given real estate on the ruler.
      */
     function forwardStartMs() {
       if (WINDOWS[filterWindow.value]?.mode !== 'forward') return null;
-      const today = todayISO();
-      let earliest = null;
-      for (const r of filtered.value) {
-        if (r.status === 'erledigt') continue;
-        const end = r.end || '';
-        if (!end || end >= today) continue;
-        if (earliest === null || end < earliest) earliest = end;
-      }
-      const todayStart = todayMs() - 3 * DAY_MS;
-      if (earliest === null) return todayStart;
-      return Math.min(todayStart, toMs(earliest) - 3 * DAY_MS);
+      return todayMs();
     }
 
     /** Right edge of the forward window. */
@@ -1240,18 +1230,27 @@ const AblaufplanScreen = {
         else cur.setUTCMonth(cur.getUTCMonth() + 1);
       }
 
-      // A coarse scale over a short plan can produce NO tick at all: a domain
-      // sitting inside one calendar year has its snapped 1-January boundary
-      // before d.min and the next one after d.max, so both are skipped and the
-      // axis renders blank. One label at the start beats none — the reader
-      // still learns which year they are looking at.
-      if (!out.length) {
+      // Label the start of the axis whenever no tick already falls near it.
+      //
+      // Two cases, one cure. A coarse scale over a short plan can produce NO
+      // tick at all — a domain inside one calendar year has its snapped
+      // 1-January boundaries on either side of it, so both are skipped and the
+      // axis renders blank. And now that the axis begins on TODAY rather than
+      // a month boundary, the stretch from today to the 1st of next month is
+      // unlabelled: an axis opening "Okt · Nov · Dez" silently drops the weeks
+      // the reader is actually standing in.
+      const nearStart = out.length && out[0].left < 4;
+      if (!nearStart) {
         const start = new Date(d.min);
-        out.push({
+        let label;
+        if (kind === 'year') label = String(start.getUTCFullYear());
+        else if (kind === 'quarter') label = `Q${Math.floor(start.getUTCMonth() / 3) + 1}`;
+        else if (kind === 'week') label = `KW ${isoWeek(start)}`;
+        else if (kind === 'day') label = String(start.getUTCDate());
+        else label = MONTHS_DE[start.getUTCMonth()];
+        out.unshift({
           left: 0,
-          label: kind === 'year'
-            ? String(start.getUTCFullYear())
-            : `Q${Math.floor(start.getUTCMonth() / 3) + 1}`,
+          label,
           year: start.getUTCFullYear(),
           isYearStart: false,
         });
@@ -1271,10 +1270,13 @@ const AblaufplanScreen = {
       // +1 day so a task that starts and ends on the same date still shows a
       // bar rather than a hairline.
       const endMs = e + DAY_MS;
-      // Entirely outside the window: nothing to draw. Without this a bar that
-      // ended before the window would clamp to a 0-width sliver stuck at the
-      // left edge, reading as work that is somehow happening today.
-      if (d && (endMs < d.min || s > d.max)) return { display: 'none' };
+      // Off the right-hand end there is genuinely nothing to say yet, so draw
+      // nothing. Off the LEFT end is different: the row is on screen because
+      // it is overdue and still open, and an empty lane hides exactly the
+      // finding the reader came for. Those get a stub against the edge —
+      // see isBeforeWindow / the .is-past styling.
+      if (d && s > d.max) return { display: 'none' };
+      if (d && endMs < d.min) return { left: '0%', width: '0.9%' };
       const left = clampedPct(s);
       const right = clampedPct(endMs);
       return { left: left + '%', width: Math.max(right - left, 0.6) + '%' };
@@ -1287,11 +1289,22 @@ const AblaufplanScreen = {
       return !!(d && s !== null && s < d.min);
     }
 
+    /** True when the whole item lies before the window — deadline already
+     *  missed. Drawn as a stub at the edge, not on the ruler. */
+    function isBeforeWindow(r) {
+      const d = domain.value;
+      const e = toMs(r.end);
+      return !!(d && e !== null && e + DAY_MS < d.min);
+    }
+
     function milestoneStyle(r) {
       const e = toMs(r.end);
       const d = domain.value;
       if (e === null) return { display: 'none' };
-      if (d && (e < d.min || e > d.max)) return { display: 'none' };
+      if (d && e > d.max) return { display: 'none' };
+      // A missed date pins to the edge for the same reason a missed bar does:
+      // it is on this screen precisely because it is late.
+      if (d && e < d.min) return { left: '0%' };
       return { left: pct(e) + '%' };
     }
 
@@ -1481,7 +1494,8 @@ const AblaufplanScreen = {
       trackWidthPx, scrollToToday,
       editingOwner, ownerDraft, ownerError, beginEdit, cancelEdit, saveOwner,
       rows, phases, sources, filtered, groups, ticks, todayLeft, barStyle,
-      milestoneStyle, isClipped, fmt, duration, isLate, lateCount, nextMilestone,
+      milestoneStyle, isClipped, isBeforeWindow, fmt, duration, isLate,
+      lateCount, nextMilestone,
       daysToNext, statusCounts, levelCounts,
       STATUS, STATUS_ORDER, LEVEL_ORDER,
       statusLabel: (s) => (STATUS[s] || {}).label || s,
@@ -1731,29 +1745,37 @@ const AblaufplanScreen = {
 
                   <template v-if="r.kind === 'meilenstein'">
                     <span class="gantt-milestone"
-                          :class="[statusClass(r.status), { 'is-late': isLate(r) }]"
+                          :class="[statusClass(r.status),
+                                   { 'is-late': isLate(r), 'is-past': isBeforeWindow(r) }]"
                           :style="milestoneStyle(r)"
-                          :aria-label="r.title + ' — Meilenstein am ' + fmt(r.end)"></span>
+                          :aria-label="r.title + ' — Meilenstein am ' + fmt(r.end)
+                                       + (isBeforeWindow(r) ? ' (Termin verstrichen)' : '')"></span>
                   </template>
                   <!-- A dated obligation with no span: a to-do with a
                        deadline. Its own mark, so it cannot be mistaken for a
                        project gate. -->
                   <template v-else-if="r.kind === 'termin'">
                     <span class="gantt-termin"
-                          :class="[statusClass(r.status), { 'is-late': isLate(r) }]"
+                          :class="[statusClass(r.status),
+                                   { 'is-late': isLate(r), 'is-past': isBeforeWindow(r) }]"
                           :style="milestoneStyle(r)"
-                          :aria-label="r.title + ' — faellig am ' + fmt(r.end)"></span>
+                          :aria-label="r.title + ' — faellig am ' + fmt(r.end)
+                                       + (isBeforeWindow(r) ? ' (Termin verstrichen)' : '')"></span>
                   </template>
                   <template v-else>
                     <!-- is-clipped: the bar began before the window and is cut
-                         at the edge. Without the marker it would read as work
-                         that started today, which is a different claim. -->
+                         at the edge. is-past: it ENDED before it too, so the
+                         stub against the edge is all there is. Without either
+                         marker the bar would read as work happening today,
+                         which is a different claim. -->
                     <span class="gantt-bar"
                           :class="[statusClass(r.status),
-                                   { 'is-late': isLate(r), 'is-clipped': isClipped(r) }]"
+                                   { 'is-late': isLate(r), 'is-clipped': isClipped(r),
+                                     'is-past': isBeforeWindow(r) }]"
                           :style="barStyle(r)"
                           :aria-label="r.title + ' — ' + fmt(r.start) + ' bis ' + fmt(r.end)
-                                       + (isClipped(r) ? ' (beginnt vor dem Zeitraum)' : '')">
+                                       + (isBeforeWindow(r) ? ' (Frist verstrichen)'
+                                          : isClipped(r) ? ' (beginnt vor dem Zeitraum)' : '')">
                       <span v-if="r.progress_pct !== null && r.progress_pct !== undefined"
                             class="gantt-progress"
                             :style="{ width: r.progress_pct + '%' }"></span>

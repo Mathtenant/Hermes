@@ -100,7 +100,7 @@ function dropNav(dragKey, targetKey) {
 
 // ── Global reactive state ──────────────────────────────────────────────────
 const state = reactive({
-  // Aufgaben & Termine, not Overview: the first question on opening the
+  // Planung, not Overview: the first question on opening the
   // dashboard is "what do I owe and by when", and Overview only summarised
   // the answer before sending you one click further to read it.
   screen: 'work',      // one of SCREENS
@@ -247,10 +247,75 @@ const CREATE_KINDS = [
 ];
 
 const createKind = ref('todo');
+
+// ── Frist ────────────────────────────────────────────────────────────────
+// A bare date input asks "which day?" when the question in someone's head is
+// "how soon?". Three answers cover almost every to-do anyone types in a hurry;
+// the fourth opens the calendar for the rest.
+//
+// "Ohne" stays the default and stays first. It is what the form did before,
+// and inventing a deadline nobody set would put a false date on the timeline
+// and, a week later, a false overdue count. The hint below the row says what
+// the honest blank costs — the item will not appear on the timeline.
+const DUE_PRESETS = [
+  { key: 'none', label: 'Ohne' },
+  { key: 'today', label: 'Heute' },
+  { key: 'week', label: 'Diese Woche' },
+  { key: 'date', label: 'Datum …' },
+];
+
+/** Local calendar date as YYYY-MM-DD.
+ *
+ * toISOString() would answer in UTC, which is the day BEFORE for anyone east
+ * of Greenwich late in the evening — "Heute" landing on yesterday is exactly
+ * the kind of bug nobody reports and everybody distrusts.
+ */
+function localISODate(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Friday of the current working week; on Sat/Sun, the coming Friday.
+ *
+ * Friday rather than Sunday: "diese Woche" from someone planning work means
+ * by the end of the working week, and a deadline landing on a weekend is one
+ * nobody is going to meet anyway.
+ */
+function endOfWeekISO(today = new Date()) {
+  const d = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const dow = d.getDay();                    // 0 = Sunday
+  const delta = dow === 0 ? 5 : dow === 6 ? 6 : 5 - dow;
+  d.setDate(d.getDate() + delta);
+  return localISODate(d);
+}
+
+/** The date a preset stands for. 'date' keeps whatever the calendar holds. */
+function dueDateFor(preset, explicit) {
+  if (preset === 'today') return localISODate(new Date());
+  if (preset === 'week') return endOfWeekISO();
+  if (preset === 'date') return explicit || '';
+  return '';
+}
+
 const createForm = reactive({
   title: '', owner: '', priority: 'medium', due_date: '', description: '',
+  due_preset: 'none',
   node_kind: 'task', status: 'open', project_id: '',
 });
+
+function setDuePreset(key) {
+  createForm.due_preset = key;
+  // The calendar deliberately KEEPS its value while another preset is
+  // selected, so clicking away and back does not silently lose a date
+  // already picked. Nothing leaks from it: createPayload reads the field
+  // only when 'date' is the live choice.
+}
+
+/** What will actually be submitted — shown under the row, so the choice is
+ *  never a guess about what "Diese Woche" resolved to. */
+const dueDateResolved = computed(
+  () => dueDateFor(createForm.due_preset, createForm.due_date),
+);
 const createBusy = ref(false);
 const createError = ref('');
 
@@ -266,6 +331,7 @@ function closeCreate() {
 function resetCreateForm() {
   Object.assign(createForm, {
     title: '', owner: '', priority: 'medium', due_date: '', description: '',
+    due_preset: 'none',
     node_kind: 'task', status: 'open', project_id: '',
   });
 }
@@ -286,7 +352,9 @@ function createPayload() {
     title: createForm.title.trim(),
     owner: createForm.owner.trim(),
     priority: createForm.priority,
-    due_date: createForm.due_date,
+    // Resolved here, not on click: a dialog left open past midnight would
+    // otherwise submit yesterday's "Heute".
+    due_date: dueDateFor(createForm.due_preset, createForm.due_date),
     description: createForm.description.trim(),
   };
 }
@@ -638,15 +706,15 @@ function onDrop(e) {
 // like nothing had happened.
 const ENTITY_DESTINATIONS = {
   tasks: { label: 'Arbeitspakete', screen: 'Strukturplan & Kanban' },
-  schedule: { label: 'Termine & Fristen', screen: 'Aufgaben & Termine → Zeitstrahl' },
-  beschluesse: { label: 'Beschlüsse', screen: 'Aufgaben & Termine → Beschlüsse' },
+  schedule: { label: 'Termine & Fristen', screen: 'Planung → Zeitstrahl' },
+  beschluesse: { label: 'Beschlüsse', screen: 'Planung → Beschlüsse' },
   risks: { label: 'Risiken', screen: 'Risks' },
-  pendenzen: { label: 'Todos', screen: 'Aufgaben & Termine → Liste' },
+  pendenzen: { label: 'Todos', screen: 'Planung → Liste' },
   projects: { label: 'Projekte', screen: 'Projects' },
   plans: { label: 'Plan-Versionen', screen: 'nicht im Dashboard sichtbar' },
 };
 
-/** Turn an import result's entity counts into "3 Todos → Aufgaben & Termine". */
+/** Turn an import result's entity counts into "3 Todos → Planung". */
 function describeImportDestinations(result) {
   const counts = result && result.entity_counts;
   if (!counts) return [];
@@ -863,7 +931,7 @@ const App = {
       { key: 'projects',  label: 'Projects',  icon: NAV_ICONS.projects,  count: counts.value.projects },
       { key: 'detail',    label: 'Timeline & WBS', icon: NAV_ICONS.detail,
         count: counts.value.tasks + counts.value.timeline },
-      { key: 'work', label: 'Aufgaben & Termine', icon: NAV_ICONS.work,
+      { key: 'work', label: 'Planung', icon: NAV_ICONS.work,
         count: counts.value.ablaufplan + counts.value.pendenzen },
       { key: 'risks',     label: 'Risks',     icon: NAV_ICONS.risks,     count: counts.value.risks },
       { key: 'reviews',   label: 'Reviews',   icon: NAV_ICONS.reviews,   count: counts.value.reviews },
@@ -958,6 +1026,7 @@ const App = {
       onNavDragStart, onNavDrop,
       // Create dialog
       openCreate, closeCreate, submitCreate, createKind, createForm,
+      DUE_PRESETS, setDuePreset, dueDateResolved,
       createBusy, createError, createValid, CREATE_KINDS,
     };
   },
@@ -1185,11 +1254,33 @@ const App = {
                     <option value="low">Tief</option>
                   </select>
                 </label>
-                <label class="form-row">
-                  <span class="form-label">Termin</span>
-                  <input class="text-input w-full" type="date"
-                         v-model="createForm.due_date" data-testid="create-due">
-                </label>
+              </div>
+
+              <!-- Frist: "how soon" first, "which day" only if none of the
+                   quick answers fit. -->
+              <div class="form-row">
+                <span class="form-label" id="due-label">Frist</span>
+                <div class="segmented segmented-wrap" role="group"
+                     aria-labelledby="due-label" data-testid="create-due-presets">
+                  <button v-for="p in DUE_PRESETS" :key="p.key" type="button"
+                          :class="{ active: createForm.due_preset === p.key }"
+                          :aria-pressed="createForm.due_preset === p.key"
+                          :data-testid="'create-due-' + p.key"
+                          @click="setDuePreset(p.key)">{{ p.label }}</button>
+                </div>
+                <input v-if="createForm.due_preset === 'date'"
+                       class="text-input w-full mt-2" type="date"
+                       v-model="createForm.due_date" data-testid="create-due"
+                       aria-label="Frist-Datum">
+                <p v-if="createForm.due_preset === 'none'" class="form-hint"
+                   data-testid="create-due-hint">
+                  Ohne Frist erscheint das Todo nicht im Zeitstrahl — nur in der
+                  Liste unter „Ohne Termin“.
+                </p>
+                <p v-else-if="dueDateResolved" class="form-hint"
+                   data-testid="create-due-resolved">
+                  Fällig am {{ dueDateResolved.split('-').reverse().join('.') }}
+                </p>
               </div>
               <label class="form-row">
                 <span class="form-label">Beschreibung</span>

@@ -83,7 +83,10 @@ def _make_todo(page: Page, title: str) -> None:
 
 
 def _open_todos(page: Page) -> None:
-    page.get_by_role("button", name="Aufgaben & Termine").first.click()
+    page.get_by_role("button", name="Planung").first.click()
+    # Planung opens on the timeline; these tests all work the list.
+    page.wait_for_selector('[data-testid="lens-liste"]', timeout=10000)
+    page.locator('[data-testid="lens-liste"]').click()
     page.wait_for_selector('[data-testid="work-search"]', timeout=10000)
 
 

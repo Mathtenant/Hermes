@@ -136,7 +136,7 @@ def plan_page(page: Page) -> Page:
     )
     page.goto(BASE_URL)
     page.wait_for_selector(".nav-btn", timeout=10000)
-    # The Gantt is now the Zeitstrahl lens of the merged Aufgaben & Termine
+    # The Gantt is now the Zeitstrahl lens of the merged Planung
     # screen rather than a tab of its own.
     page.click('[data-testid="nav-work"]')
     page.click('[data-testid="lens-zeitstrahl"]')
@@ -381,7 +381,7 @@ def sweep_page(page: Page) -> Page:
     )
     page.goto(BASE_URL)
     page.wait_for_selector(".nav-btn", timeout=10000)
-    # The Gantt is now the Zeitstrahl lens of the merged Aufgaben & Termine
+    # The Gantt is now the Zeitstrahl lens of the merged Planung
     # screen rather than a tab of its own.
     page.click('[data-testid="nav-work"]')
     page.click('[data-testid="lens-zeitstrahl"]')

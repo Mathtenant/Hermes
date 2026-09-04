@@ -1,4 +1,4 @@
-"""E2E browser tests for the merged "Aufgaben & Termine" screen.
+"""E2E browser tests for the merged "Planung" screen.
 
 Todo and Termine & Fristen were never two kinds of thing. They were one
 question — what does somebody owe, and by when — split by whether an item
@@ -66,7 +66,15 @@ def _nav(page: Page) -> list[str]:
 
 
 def _open_work(page: Page) -> None:
-    page.get_by_role("button", name="Aufgaben & Termine").first.click()
+    """Open Planung on the LIST lens.
+
+    The screen opens on the timeline now, so "open the screen" and "look at
+    the list" stopped being the same act. Every caller below was written
+    against the list, so the switch lives here rather than in forty places.
+    """
+    page.get_by_role("button", name="Planung").first.click()
+    page.wait_for_selector('[data-testid="lens-liste"]', timeout=10000)
+    page.locator('[data-testid="lens-liste"]').click()
     page.wait_for_selector('[data-testid="work-search"]', timeout=10000)
 
 
@@ -83,7 +91,7 @@ def test_the_two_old_tabs_are_gone(app_page: Page) -> None:
 
 
 def test_one_merged_tab_replaces_them(app_page: Page) -> None:
-    assert "Aufgaben & Termine" in _nav(app_page)
+    assert "Planung" in _nav(app_page)
 
 
 def test_the_merged_tab_counts_both_sources(app_page: Page) -> None:
@@ -96,7 +104,7 @@ def test_the_merged_tab_counts_both_sources(app_page: Page) -> None:
         }"""
     )
     badge = app_page.locator(
-        '.nav-btn:has-text("Aufgaben & Termine") .nav-count'
+        '.nav-btn:has-text("Planung") .nav-count'
     ).first
     assert badge.inner_text().strip() == str(counts)
 
@@ -109,13 +117,13 @@ def test_the_merged_tab_counts_both_sources(app_page: Page) -> None:
 def test_an_old_pendenzen_bookmark_still_lands_somewhere(page: Page) -> None:
     """A retired key must forward, not fall through to the default screen."""
     page.goto(f"{BASE_URL}/#/pendenzen")
-    page.wait_for_selector('[data-testid="work-search"]', timeout=15000)
+    page.wait_for_selector('[data-testid="lens-liste"]', timeout=15000)
     expect(page.locator('[data-testid="lens-liste"]')).to_be_visible()
 
 
 def test_an_old_plan_bookmark_still_lands_somewhere(page: Page) -> None:
     page.goto(f"{BASE_URL}/#/plan")
-    page.wait_for_selector('[data-testid="work-search"]', timeout=15000)
+    page.wait_for_selector('[data-testid="lens-liste"]', timeout=15000)
     expect(page.locator('[data-testid="lens-liste"]')).to_be_visible()
 
 
@@ -135,7 +143,7 @@ def test_a_stored_order_with_retired_keys_keeps_its_slot(page: Page) -> None:
     page.reload()
     page.wait_for_selector(".nav-btn", timeout=15000)
 
-    assert _nav(page)[0] == "Aufgaben & Termine"
+    assert _nav(page)[0] == "Planung"
 
 
 def test_a_stored_order_naming_both_retired_keys_yields_one_tab(page: Page) -> None:
@@ -151,7 +159,7 @@ def test_a_stored_order_naming_both_retired_keys_yields_one_tab(page: Page) -> N
     page.wait_for_selector(".nav-btn", timeout=15000)
 
     nav = _nav(page)
-    assert nav.count("Aufgaben & Termine") == 1
+    assert nav.count("Planung") == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -264,15 +272,29 @@ def test_the_list_still_shows_todo_priority(app_page: Page) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_the_dashboard_opens_on_aufgaben_und_termine(page: Page) -> None:
+def test_the_dashboard_opens_on_planung(page: Page) -> None:
     """The first question on opening is "what do I owe, and by when".
 
     Overview only summarised the answer and sent you one click further to
     read it.
     """
     page.goto(BASE_URL)
-    page.wait_for_selector('[data-testid="work-search"]', timeout=15000)
+    page.wait_for_selector('[data-testid="lens-liste"]', timeout=15000)
     assert page.url.endswith("#/work")
+
+
+def test_the_dashboard_opens_on_the_timeline_lens(page: Page) -> None:
+    """"What is coming" is a shape, not a list.
+
+    The list was the default while it was the only lens that could show every
+    item; the count notice above the track covers what the timeline leaves
+    out, and links to the list for the rest.
+    """
+    page.goto(BASE_URL)
+    page.wait_for_selector(".gantt", timeout=15000)
+    expect(page.locator('[data-testid="lens-zeitstrahl"]')).to_have_attribute(
+        "aria-selected", "true"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -281,7 +303,8 @@ def test_the_dashboard_opens_on_aufgaben_und_termine(page: Page) -> None:
 
 
 def _open_timeline(page: Page) -> None:
-    _open_work(page)
+    page.get_by_role("button", name="Planung").first.click()
+    page.wait_for_selector('[data-testid="lens-zeitstrahl"]', timeout=10000)
     page.locator('[data-testid="lens-zeitstrahl"]').click()
     page.wait_for_selector(".gantt", timeout=10000)
     page.wait_for_timeout(700)

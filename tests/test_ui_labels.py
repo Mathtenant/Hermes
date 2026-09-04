@@ -89,7 +89,7 @@ def test_tui_binding_action_keeps_its_name() -> None:
 # --------------------------------------------------------------------------- #
 
 def test_the_vue_sidebar_no_longer_says_pendenzen() -> None:
-    """The sidebar entry is now the merged "Aufgaben & Termine".
+    """The sidebar entry is now "Planung" — the merged screen, renamed.
 
     This used to assert ``label: 'Todo'``, which after the merge still matched
     — but on the create dialog's entry, not the sidebar's. A test that passes
@@ -99,7 +99,7 @@ def test_the_vue_sidebar_no_longer_says_pendenzen() -> None:
     """
     source = (_STATIC / "app.js").read_text(encoding="utf-8")
     assert "label: 'Pendenzen'" not in source
-    assert "label: 'Aufgaben & Termine'" in source
+    assert "label: 'Planung'" in source
 
 
 def test_chat_placeholder_says_todos() -> None:

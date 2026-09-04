@@ -2254,6 +2254,22 @@ tr:focus-within .icon-btn { opacity: 1; }
   gap: 0.75rem;
 }
 
+/* Four presets do not fit one line in a narrow dialog, and .segmented is
+   inline-flex with no wrap — the last chip would sit outside the frame. */
+.segmented.segmented-wrap {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+/* What the choice costs, or what it resolved to. Below the control rather
+   than beside it, so a resolved date never pushes the chips around. */
+.form-hint {
+  margin-top: 0.375rem;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--c-text-faint);
+}
+
 @media (max-width: 520px) {
   .form-grid { grid-template-columns: 1fr; }
 }

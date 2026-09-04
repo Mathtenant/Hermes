@@ -133,7 +133,7 @@ def test_input_field_clears_after_send(page_with_chat: Page):
     """Wait for the message inside the CHAT, not for the word anywhere.
 
     A bare "text=Test" matched six elements once the dashboard started
-    landing on Aufgaben & Termine, whose rows include titles like "Testdaten
+    landing on Planung, whose rows include titles like "Testdaten
     liefern" — so the wait resolved against a to-do that was on screen before
     the message was ever sent. Scoping to the chat log also makes the test
     say what it means.

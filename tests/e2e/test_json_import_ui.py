@@ -378,7 +378,7 @@ class TestImportDialogAutoClose:
         )
         toast = page.locator(".toast").inner_text()
         assert "3 Todos" in toast
-        assert "Aufgaben & Termine" in toast
+        assert "Planung" in toast
 
     def test_reopening_the_dialog_is_not_shut_by_the_old_timer(self, page):
         """A pending close must not slam a dialog the user just reopened."""

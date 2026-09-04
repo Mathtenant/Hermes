@@ -1516,7 +1516,7 @@ const AblaufplanScreen = {
   },
   template: `
     <div>
-      <!-- Hidden when embedded as a lens of Aufgaben & Termine: that screen
+      <!-- Hidden when embedded as a lens of Planung: that screen
            already carries the page title, and two <h1>s stacked would be
            wrong both visually and for a screen reader walking the headings. -->
       <div v-if="!embedded" class="page-header">
@@ -1868,7 +1868,7 @@ const AblaufplanScreen = {
 
 
 // ── WorkScreen ─────────────────────────────────────────────────────────────
-// "Aufgaben & Termine" — the merge of the old Todo and Termine & Fristen tabs.
+// "Planung" — the merge of the old Todo and Termine & Fristen tabs.
 //
 // Those two were never two kinds of thing. They were one question — what does
 // somebody owe, and by when — split by whether an item happened to carry a
@@ -1884,10 +1884,13 @@ const AblaufplanScreen = {
 //               work is the first thing on screen.
 //   Zeitstrahl— the existing Gantt, unchanged, for the dated items.
 //
-// The list is the default because it is the lens that can show every item;
-// the timeline structurally cannot show an undated one. A count chip says how
-// many items the timeline is therefore not showing, so the lens never lies by
-// omission.
+// The TIMELINE is the default: the first question on opening the dashboard is
+// "what is coming", and that is a shape, not a list. The list was the default
+// while it was the only lens that could show every item — the timeline
+// structurally cannot show an undated one — but a count chip above the track
+// says how many items it is therefore not showing and links straight to the
+// list, so the lens does not lie by omission. Whoever wants the full inventory
+// is one click away; whoever wants the plan is already there.
 const WorkScreen = {
   // The Gantt is 660 lines of working timeline code with its own filters,
   // zoom and inline owner editing. It is reused whole as the timeline lens
@@ -1897,7 +1900,7 @@ const WorkScreen = {
   props: ['data', 'loading', 'error'],
   emits: ['delete-task', 'changed'],
   setup(props) {
-    const lens = ref('liste');
+    const lens = ref('zeitstrahl');
     const query = ref('');
     const {
       selected: filterOwners, toggleOwner, clearOwners,
@@ -1927,6 +1930,43 @@ const WorkScreen = {
     function todayISO() {
       return new Date().toISOString().slice(0, 10);
     }
+
+    /** The data the timeline lens sees: imported schedule rows PLUS every
+     *  to-do that carries a deadline.
+     *
+     * The Gantt reads `data.ablaufplan`, which holds only what a sweep
+     * imported. That was invisible while the list was the landing lens and
+     * to-dos were created rarely. It is not invisible now: the timeline opens
+     * first, and a to-do you just gave a deadline to would not be on it — the
+     * one place you would go looking for it. So the lens is handed an
+     * augmented copy rather than the raw payload.
+     *
+     * Dated to-dos map to `kind: 'termin'`, the mark the Gantt already has for
+     * "a dated obligation with no span" — which is exactly what a to-do with a
+     * deadline is. No new mark, no new legend entry.
+     */
+    const timelineData = computed(() => {
+      const base = props.data || {};
+      const extra = [];
+      for (const p of base.pendenzen ?? []) {
+        if (!p.due_date) continue;                 // undated: the notice covers it
+        extra.push({
+          id: `todo:${p.id}`,                      // namespaced: ids collide otherwise
+          title: p.title,
+          owner: p.owner || '',
+          phase: 'Todos',
+          start: p.due_date,
+          end: p.due_date,
+          status: STATUS_FROM_TODO[p.status] || 'offen',
+          level: 'todo',
+          kind: 'termin',
+          source_hint: p.source || 'Todo',
+          progress_pct: null,
+        });
+      }
+      if (!extra.length) return base;
+      return { ...base, ablaufplan: [...(base.ablaufplan ?? []), ...extra] };
+    });
 
     /** Both sources, flattened into one row shape. */
     const rows = computed(() => {
@@ -2091,7 +2131,7 @@ const WorkScreen = {
     }
 
     return {
-      lens, query, filterOwners, filterStatus, filterKind,
+      lens, query, timelineData, filterOwners, filterStatus, filterKind,
       toggleOwner, clearOwners, ownerLabel,
       owners, statuses, UNASSIGNED, STATUS_LABEL,
       rows, filtered, grouped, undatedCount,
@@ -2106,7 +2146,7 @@ const WorkScreen = {
     <div class="screen">
       <div class="page-head">
         <div>
-          <h1 class="page-title">Aufgaben &amp; Termine</h1>
+          <h1 class="page-title">Planung</h1>
           <div class="page-subtitle">
             Alles, was jemand schuldet — mit und ohne Datum, aus allen Quellen.
           </div>
@@ -2319,7 +2359,7 @@ const WorkScreen = {
             <button class="link-btn" @click="lens = 'liste'">in der Liste ansehen</button>.
           </p>
           <ablaufplan-screen
-            :data="data" :loading="loading" :error="error" :embedded="true"
+            :data="timelineData" :loading="loading" :error="error" :embedded="true"
             @changed="$emit('changed')" />
         </div>
       </div>

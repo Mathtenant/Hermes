@@ -6,6 +6,7 @@ skips cleanly when either is missing.
 
 from __future__ import annotations
 
+import json
 import socket
 from datetime import date, timedelta
 
@@ -420,3 +421,111 @@ def test_a_todo_without_a_deadline_stays_off_the_timeline(app_page: Page):
     app_page.fill('[data-testid="work-search"]', title)
     app_page.wait_for_timeout(500)
     assert app_page.locator(f'tbody tr:has-text("{title}")').count() > 0
+
+
+# --------------------------------------------------------------------------- #
+# Smart capture
+#
+# The model is routed here rather than run: Ollama is not up in CI, and a test
+# that silently skips when it is missing is not a test. What the browser has to
+# prove is what the browser owns — that an answer reaches the right fields, and
+# that a model which is not there leaves a dialog somebody can still use.
+# --------------------------------------------------------------------------- #
+
+
+def _route_capture(page: Page, status: int, body: str) -> None:
+    page.route(
+        "**/api/todos/parse",
+        lambda route: route.fulfill(
+            status=status, content_type="application/json", body=body
+        ),
+    )
+
+
+def test_a_sentence_fills_every_field(app_page: Page):
+    _route_capture(app_page, 200, json.dumps({
+        "title": "Rechnung Lieferant X pruefen",
+        "owner": "Controlling",
+        "priority": "blocker",
+        "due_date": "2027-09-10",
+        "model": "qwen3:4b",
+    }))
+    _open_create(app_page)
+    app_page.fill('[data-testid="capture-input"]', "Rechnung bis Freitag, Controlling")
+    app_page.click('[data-testid="capture-submit"]')
+    app_page.wait_for_selector('[data-testid="capture-note"]', timeout=8000)
+
+    assert app_page.locator('[data-testid="create-title"]').input_value() == (
+        "Rechnung Lieferant X pruefen"
+    )
+    assert app_page.locator('[data-testid="create-owner"]').input_value() == "Controlling"
+    assert app_page.locator('[data-testid="create-priority"]').input_value() == "blocker"
+    # A returned date has to reach the Frist control, not just the hidden input:
+    # leaving the preset on "Ohne" would submit no deadline at all.
+    assert app_page.locator('[data-testid="create-due-date"]').get_attribute(
+        "aria-pressed"
+    ) == "true"
+    assert app_page.locator('[data-testid="create-due"]').input_value() == "2027-09-10"
+
+
+def test_the_answer_names_the_model_that_gave_it(app_page: Page):
+    """Worth knowing which model read the sentence, when it read it badly."""
+    _route_capture(app_page, 200, json.dumps({
+        "title": "x", "owner": "", "priority": "medium",
+        "due_date": "", "model": "qwen3:4b",
+    }))
+    _open_create(app_page)
+    app_page.fill('[data-testid="capture-input"]', "irgendwas")
+    app_page.click('[data-testid="capture-submit"]')
+    app_page.wait_for_selector('[data-testid="capture-note"]', timeout=8000)
+    assert "qwen3:4b" in app_page.locator('[data-testid="capture-note"]').inner_text()
+
+
+def test_an_empty_title_falls_back_to_what_was_typed(app_page: Page):
+    """A model that returns nothing should leave the person their own words,
+    not an empty form."""
+    _route_capture(app_page, 200, json.dumps({
+        "title": "", "owner": "", "priority": "medium",
+        "due_date": "", "model": "qwen3:4b",
+    }))
+    _open_create(app_page)
+    app_page.fill('[data-testid="capture-input"]', "Vertrag kuendigen")
+    app_page.click('[data-testid="capture-submit"]')
+    app_page.wait_for_selector('[data-testid="capture-note"]', timeout=8000)
+    assert app_page.locator('[data-testid="create-title"]').input_value() == (
+        "Vertrag kuendigen"
+    )
+
+
+def test_an_unreachable_model_leaves_a_usable_dialog(app_page: Page):
+    """The feature is a shortcut, never a dependency."""
+    _route_capture(app_page, 503, json.dumps({
+        "detail": "Kein lokales Modell erreichbar — bitte Felder von Hand füllen."
+    }))
+    _open_create(app_page)
+    app_page.fill('[data-testid="capture-input"]', "irgendwas")
+    app_page.click('[data-testid="capture-submit"]')
+    app_page.wait_for_selector('[data-testid="capture-error"]', timeout=8000)
+
+    assert "von Hand" in app_page.locator('[data-testid="capture-error"]').inner_text()
+    # And the form still works by hand.
+    app_page.fill('[data-testid="create-title"]', "Von Hand getippt")
+    assert app_page.locator('[data-testid="create-submit"]').is_enabled()
+
+
+def test_the_button_is_dead_until_something_is_typed(app_page: Page):
+    _open_create(app_page)
+    assert app_page.locator('[data-testid="capture-submit"]').is_disabled()
+    app_page.fill('[data-testid="capture-input"]', "x")
+    assert app_page.locator('[data-testid="capture-submit"]').is_enabled()
+
+
+def test_capture_is_offered_for_todos_only(app_page: Page):
+    """A work-breakdown node or a project directory is not the thing anyone
+    types in one hurried sentence mid-meeting."""
+    _open_create(app_page)
+    assert app_page.locator('[data-testid="capture-input"]').count() == 1
+    app_page.click('[data-testid="create-kind-task"]')
+    assert app_page.locator('[data-testid="capture-input"]').count() == 0
+    app_page.click('[data-testid="create-kind-project"]')
+    assert app_page.locator('[data-testid="capture-input"]').count() == 0

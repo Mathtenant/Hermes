@@ -6,13 +6,14 @@ import json as _json
 import logging
 import re
 import shutil
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -299,6 +300,7 @@ _MAX_TITLE_LEN = 200
 _MAX_DESCRIPTION_LEN = 2000
 
 _PRIORITIES = ("low", "medium", "high", "blocker")
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # "pendenz" is excluded on purpose: that is what POST /api/todos creates,
 # and offering two routes for one thing invites them to drift.
 # "assumption" holds internal planning notes the dashboard never renders.
@@ -340,6 +342,137 @@ def _json_body(raw: bytes) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=422, detail="Body must be a JSON object")
     return body
+
+
+# --------------------------------------------------------------------------- #
+# Smart capture
+# --------------------------------------------------------------------------- #
+
+_MAX_CAPTURE_LEN = 500
+
+
+class _ParsedTodo(BaseModel):
+    """What the model is allowed to return, and nothing else.
+
+    A grammar-constrained schema rather than "give me JSON": the same choke
+    point every other structured call in this codebase goes through, so a
+    small local model cannot answer with prose, a code fence, or a sixth field
+    nobody asked for.
+    """
+
+    title: str = Field(description="The action itself, imperative, without the date or the owner")
+    owner: str = Field(default="", description="Person or role named in the text; empty if none is")
+    priority: str = Field(default="medium", description="one of: low, medium, high, blocker")
+    due_date: str = Field(default="", description="YYYY-MM-DD, or empty if no date is stated")
+
+
+_CAPTURE_SYSTEM = """Du zerlegst einen einzelnen, frei formulierten Satz in ein Todo.
+
+Regeln:
+- title: nur die Handlung. Ohne Datum, ohne Namen, ohne Prioritätswort.
+- owner: nur wenn im Text eine Person oder Rolle GENANNT wird. Sonst leer.
+  Rate nie einen Namen.
+- priority: blocker nur bei "blockiert"/"dringend"/"sofort", high bei
+  "wichtig"/"hoch", low bei "irgendwann"/"nice to have", sonst medium.
+- due_date: nur wenn im Text eine Frist steht. Relative Angaben rechnest du
+  gegen HEUTE aus. Kein Datum genannt: leer lassen. Erfinde nie eine Frist.
+- Antworte ausschliesslich im vorgegebenen JSON-Schema."""
+
+
+def _clean_model_text(value: str, field: str, limit: int) -> str:
+    """Redact and TRUNCATE one field the model produced.
+
+    Deliberately not :func:`_clean_text`, which rejects anything past the
+    limit with a 422. That is right for a person — they typed it, they can
+    shorten it — and wrong for a model: a small one asked for a title will
+    occasionally return the whole sentence back, or a paragraph of reasoning,
+    and refusing the request would fail the person for something the model
+    did. Cut it and let them edit; the field is a draft in an open dialog.
+
+    Truncating happens after redaction rather than before, because redaction
+    LENGTHENS text: a 199-character title ending in an address comes back
+    longer than it went in, and would otherwise slip past the create
+    endpoint's own limit on submit.
+    """
+    text = _clean_text((value or "")[: limit * 4], field, limit * 8)
+    return text[:limit].strip()
+
+
+@app.post("/api/todos/parse")
+@confidentiality_guard
+async def parse_todo(request: Request) -> dict[str, Any]:
+    """Turn one free-text line into the fields of the create form.
+
+    This FILLS the dialog; it does not create anything. A local model reading
+    a hurried sentence will sometimes read it wrong, and the difference
+    between a wrong draft you can see and correct, and a wrong row already in
+    the database, is the whole design. The endpoint returns fields; the
+    person presses Anlegen.
+
+    Body: ``{"text": "Rechnung Lieferant X bis Freitag prüfen, Controlling"}``.
+    """
+    from hermes_assistant.llm.client import OllamaClient, OllamaError
+
+    body = _json_body(await request.body())
+    text = _clean_text(body.get("text"), "text", _MAX_CAPTURE_LEN, required=True)
+
+    today = datetime.now(UTC).date()
+    # Weekday and ISO date both: "bis Freitag" is unanswerable without knowing
+    # which day today is, and models are markedly worse at deriving the name
+    # from the date than at being told it.
+    weekday = ("Montag", "Dienstag", "Mittwoch", "Donnerstag",
+               "Freitag", "Samstag", "Sonntag")[today.weekday()]
+    prompt = f"HEUTE ist {weekday}, der {today.isoformat()}.\n\nSatz: {text}"
+
+    model = chat_api.get_active_model()
+    try:
+        parsed = OllamaClient().structured(
+            model,
+            [{"role": "user", "content": prompt}],
+            _ParsedTodo,
+            system=_CAPTURE_SYSTEM,
+            temperature=0.0,
+        )
+    except OllamaError as exc:
+        # 503, not 500: the service is fine, the model is not reachable. The
+        # dialog stays open with whatever was typed, and the person fills the
+        # fields in by hand — the feature is a shortcut, never a dependency.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Kein lokales Modell erreichbar — bitte Felder von Hand füllen. "
+                "Prüfe, ob Ollama läuft (`ollama serve`) und das Modell geladen "
+                f"ist (`ollama pull {model}`). Details: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        ) from exc
+
+    # Everything below is the model being untrusted, not the user. It is a
+    # small local model doing best-effort extraction: it can return a
+    # 400-character "title", a priority it invented, or "nächsten Freitag" in
+    # a field documented as YYYY-MM-DD. Each of those would otherwise reach
+    # the create endpoint as a 422 the person cannot act on.
+    title = _clean_model_text(parsed.title, "title", _MAX_TITLE_LEN)
+    owner = _clean_model_text(parsed.owner, "owner", _MAX_OWNER_LEN)
+    priority = parsed.priority if parsed.priority in _PRIORITIES else "medium"
+
+    due = (parsed.due_date or "").strip()
+    if not _ISO_DATE.fullmatch(due):
+        due = ""
+    else:
+        # Well-formed but impossible ("2026-02-31") is still no date.
+        try:
+            date.fromisoformat(due)
+        except ValueError:
+            due = ""
+
+    return {
+        "title": title,
+        "owner": owner,
+        "priority": priority,
+        "due_date": due,
+        "model": model,
+    }
 
 
 @app.post("/api/todos")

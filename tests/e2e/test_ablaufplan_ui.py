@@ -264,8 +264,30 @@ def test_status_filter_narrows_the_chart(plan_page: Page):
     assert plan_page.locator(".gantt-bar.is-done").count() == 0
 
 
-def test_the_view_has_exactly_one_hero_figure(plan_page: Page):
-    assert plan_page.locator(".hero-value").count() == 1
+def test_the_view_leads_with_one_line_not_a_wall_of_numbers(plan_page: Page):
+    """This used to assert exactly one hero figure. There are none now.
+
+    The hero said "41 days to Abnahme Fachtest" directly above a timeline on
+    which that milestone is a diamond you can point at, and six tiles beside
+    it restated the bar colours the legend already names — 250px of restatement
+    on the screen the app opens on. The promise the test was protecting ("one
+    figure, not a wall") survives in a stronger form: one line, no tiles.
+    """
+    assert plan_page.locator(".hero-value").count() == 0
+    assert plan_page.locator(".stat-tile").count() == 0
+    summary = plan_page.locator('[data-testid="plan-summary"]')
+    assert summary.count() == 1
+    assert "Vorgänge" in summary.inner_text()
+
+
+def test_the_status_counts_moved_into_the_filter(plan_page: Page):
+    """A count you can act on beats one you can only read — the pattern the
+    level filter had been using all along."""
+    options = plan_page.locator(
+        'select[aria-label="Status filtern"] option'
+    ).all_text_contents()
+    # Every status option but "Alle Status" carries its count in brackets.
+    assert sum("(" in o for o in options) == len(options) - 1
 
 
 def test_gantt_raises_no_console_errors(plan_page: Page):
@@ -437,14 +459,17 @@ def test_the_time_window_hides_nothing_silently(sweep_page: Page):
     """One far-future date used to crush the axis with no way back."""
     sweep_page.select_option('select[aria-label="Zeitraum"]', "12")
     sweep_page.wait_for_timeout(400)
-    notice = sweep_page.locator(".notice-info")
+    # A line, not a boxed card: the screen stacks this directly beneath a
+    # second "what you are not seeing" notice, and two framed boxes in a row
+    # read as an error state rather than a footnote.
+    notice = sweep_page.locator('[data-testid="window-notice"]')
     assert notice.count() == 1
     assert "ausserhalb" in notice.inner_text()
 
     # And the way back is one click.
-    sweep_page.click('button:has-text("Ganzen Zeitraum zeigen")')
+    sweep_page.click('button:has-text("ganzen Zeitraum zeigen")')
     sweep_page.wait_for_timeout(400)
-    assert sweep_page.locator(".notice-info").count() == 0
+    assert sweep_page.locator('[data-testid="window-notice"]').count() == 0
 
 
 # --------------------------------------------------------------------------- #

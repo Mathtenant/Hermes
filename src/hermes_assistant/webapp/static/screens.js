@@ -138,10 +138,18 @@ const OverviewScreen = {
       <div v-else-if="error" class="card notice-error">{{ error }}</div>
 
       <template v-else>
-        <!-- Headline: one hero figure — the open work a lead actually acts
-             on — with the remaining counts as secondary tiles. Each is a
-             shortcut into its screen. -->
-        <div class="overview-head">
+        <!-- One hero figure: the open work a lead actually acts on.
+
+             The six tiles that used to sit beside it — Projects, Timeline
+             items, Arbeitspakete, Risks, Reviews, Todos gesamt — were the
+             sidebar's own count badges, restated. The sidebar is on screen at
+             all times and is already the way to those screens, so the grid
+             was a second navigation showing second copies of five numbers.
+             What it uniquely held (the 22/98 split behind the "Timeline &
+             WBS" badge, and how many todos are closed) moved into this tile's
+             hint and the panels below, which say something the badges cannot:
+             WHICH items need attention. -->
+        <div class="overview-head is-single">
           <button class="hero-tile" @click="$emit('navigate', 'work')">
             <span class="hero-label">Offene Todos</span>
             <span class="hero-value">{{ openPendenzen.length }}</span>
@@ -151,48 +159,13 @@ const OverviewScreen = {
               </template>
               <template v-else-if="counts.pendenzen">nichts blockiert</template>
               <template v-else>keine Todos erfasst</template>
+              <!-- The closed count was the one thing the removed "Todos
+                   gesamt" tile said that the sidebar badge does not. -->
+              <template v-if="counts.pendenzen > openPendenzen.length">
+                · {{ counts.pendenzen - openPendenzen.length }} erledigt
+              </template>
             </span>
           </button>
-
-          <div class="stat-grid">
-            <button class="stat-tile" @click="$emit('navigate', 'projects')">
-              <span class="stat-label">Projects</span>
-              <span class="stat-value">{{ counts.projects }}</span>
-              <span class="stat-hint">View all projects</span>
-            </button>
-
-            <button class="stat-tile" @click="$emit('navigate', 'detail')">
-              <span class="stat-label">Timeline items</span>
-              <span class="stat-value">{{ counts.timeline }}</span>
-              <span class="stat-hint">{{ upcoming.length }} upcoming</span>
-            </button>
-
-            <button class="stat-tile" @click="$emit('navigate', 'detail')">
-              <span class="stat-label">Arbeitspakete</span>
-              <span class="stat-value" data-testid="tasks-count">{{ counts.tasks }}</span>
-              <span class="stat-hint">Strukturplan &amp; Kanban</span>
-            </button>
-
-            <button class="stat-tile" @click="$emit('navigate', 'risks')">
-              <span class="stat-label">Risks</span>
-              <span class="stat-value" data-testid="risks-count">{{ counts.risks }}</span>
-              <span class="stat-hint">{{ openRisks.length }} open</span>
-            </button>
-
-            <button class="stat-tile" @click="$emit('navigate', 'reviews')">
-              <span class="stat-label">Reviews</span>
-              <span class="stat-value">{{ counts.reviews }}</span>
-              <span class="stat-hint">Rubric verdicts</span>
-            </button>
-
-            <button class="stat-tile" @click="$emit('navigate', 'work')">
-              <span class="stat-label">Todos gesamt</span>
-              <span class="stat-value">{{ counts.pendenzen }}</span>
-              <span class="stat-hint">
-                {{ counts.pendenzen - openPendenzen.length }} closed
-              </span>
-            </button>
-          </div>
         </div>
 
         <!-- Nothing imported yet -->
@@ -1547,40 +1520,34 @@ const AblaufplanScreen = {
       </div>
 
       <template v-else>
-        <!-- One hero figure: the next gate, and how long there is left. -->
-        <div class="overview-head">
-          <div class="hero-tile" style="cursor:default">
-            <span class="hero-label">
-              {{ nextMilestone ? 'Bis zum nächsten Meilenstein' : 'Meilensteine' }}
-            </span>
-            <span class="hero-value" v-if="daysToNext !== null">{{ daysToNext }}</span>
-            <span class="hero-value" v-else>—</span>
-            <span class="hero-hint" v-if="nextMilestone">
-              Tage · {{ nextMilestone.title }} am {{ fmt(nextMilestone.end) }}
-            </span>
-            <span class="hero-hint" v-else>keine offenen Meilensteine</span>
-          </div>
+        <!-- One line where a hero card and six tiles used to stand.
 
-          <div class="stat-grid" style="grid-template-columns:repeat(2,1fr)">
-            <div class="stat-tile" style="cursor:default">
-              <span class="stat-label">Vorgänge</span>
-              <span class="stat-value">{{ filtered.length }}</span>
-              <span class="stat-hint">in {{ phases.length }} Phasen</span>
-            </div>
-            <div class="stat-tile" style="cursor:default">
-              <span class="stat-label">Terminlage</span>
-              <span class="stat-value">{{ lateCount }}</span>
-              <span class="stat-hint" :class="{ 'is-alert': lateCount > 0 }">
-                {{ lateCount === 1 ? 'Vorgang überfällig' : 'Vorgänge überfällig' }}
-              </span>
-            </div>
-            <div v-for="s in STATUS_ORDER" :key="s"
-                 class="stat-tile" style="cursor:default; grid-column: span 1">
-              <span class="stat-label">{{ statusLabel(s) }}</span>
-              <span class="stat-value">{{ statusCounts[s] }}</span>
-            </div>
-          </div>
-        </div>
+             The card said "41 days to Abnahme Fachtest" directly above a
+             timeline on which that milestone is a diamond you can see and
+             point at — a headline restating the picture below it, costing
+             160px on the screen the app opens on. The four status tiles
+             restated the bar colours the legend already names; they moved
+             into the status filter, where the level filter had been carrying
+             its counts all along. A count you can act on beats one you can
+             only read.
+
+             What survives is what the plan itself cannot say at a glance:
+             how much is in view, how much is late, and how long to the next
+             gate. -->
+        <p class="plan-summary" data-testid="plan-summary">
+          <strong>{{ filtered.length }}</strong>
+          {{ filtered.length === 1 ? 'Vorgang' : 'Vorgänge' }}
+          in {{ phases.length }} {{ phases.length === 1 ? 'Phase' : 'Phasen' }}
+          <template v-if="lateCount">
+            · <span class="is-alert"><strong>{{ lateCount }}</strong> überfällig</span>
+          </template>
+          <template v-if="nextMilestone && daysToNext !== null">
+            · nächster Meilenstein in <strong>{{ daysToNext }}</strong>
+            {{ daysToNext === 1 ? 'Tag' : 'Tagen' }}:
+            {{ nextMilestone.title }} ({{ fmt(nextMilestone.end) }})
+          </template>
+        </p>
+
 
         <div class="filter-bar">
           <select class="filter-select" v-model="filterPhase" aria-label="Phase filtern">
@@ -1589,7 +1556,9 @@ const AblaufplanScreen = {
           </select>
           <select class="filter-select" v-model="filterStatus" aria-label="Status filtern">
             <option value="">Alle Status</option>
-            <option v-for="s in STATUS_ORDER" :key="s" :value="s">{{ statusLabel(s) }}</option>
+            <option v-for="s in STATUS_ORDER" :key="s" :value="s">
+              {{ statusLabel(s) }} ({{ statusCounts[s] }})
+            </option>
           </select>
           <select class="filter-select" v-model="filterLevel" aria-label="Ebene filtern">
             <option value="">Jede Flughöhe</option>
@@ -1670,15 +1639,17 @@ const AblaufplanScreen = {
         </div>
 
         <!-- Whatever the window leaves out is said out loud, with one click
-             back to the full extent. -->
-        <div v-if="outsideWindow" class="notice notice-info mb-3">
+             back to the full extent. A line rather than a boxed card: the
+             screen already stacks this directly beneath a second "what you
+             are not seeing" notice, and two framed boxes in a row read as an
+             error state rather than a footnote. -->
+        <p v-if="outsideWindow" class="notice-inline" data-testid="window-notice">
           {{ outsideWindow }}
           {{ outsideWindow === 1 ? 'Eintrag liegt' : 'Einträge liegen' }}
-          ausserhalb des gewählten Zeitraums.
-          <button class="btn-link ml-2" @click="filterWindow = 'all'">
-            Ganzen Zeitraum zeigen
-          </button>
-        </div>
+          ausserhalb des gewählten Zeitraums —
+          <button class="link-btn" @click="filterWindow = 'all'">
+            ganzen Zeitraum zeigen</button>.
+        </p>
 
         <!-- Legend — identity never rests on colour alone. -->
         <div class="gantt-legend" v-if="!asTable">

@@ -2431,3 +2431,22 @@ tr:focus-within .icon-btn { opacity: 1; }
   padding-top: 0.25rem;
   padding-bottom: 0.25rem;
 }
+
+/* A bar that began before the window is cut at the left edge. Squaring that
+   edge and adding a hatched cap says "continues off-screen" — a rounded end
+   would claim the work started exactly at the window boundary, which is a
+   different and false statement. */
+.gantt-bar.is-clipped {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 3px dotted var(--c-bg-card);
+}
+
+/* Drag to pan the timeline. The cursor is the only affordance saying the
+   track can be grabbed, so it is worth setting even at rest. */
+.gantt-scroll { cursor: grab; }
+.gantt-scroll.is-dragging {
+  cursor: grabbing;
+  /* Without this the drag selects the plan's text instead of moving it. */
+  user-select: none;
+}

@@ -19,6 +19,7 @@ skips cleanly when either is missing.
 
 from __future__ import annotations
 
+import re
 import socket
 
 import pytest
@@ -586,6 +587,121 @@ def test_the_whole_span_is_still_reachable(app_page: Page) -> None:
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# Every task is a bar
+#
+# A deadline used to be a 1px tick: it said WHEN something was due and nothing
+# about how much time was left to do it, which is the question a plan is for.
+# The bar spans the runway instead — today to the deadline, or the deadline to
+# today once it is overrun. That is a real quantity and it grows every day the
+# item stays open. It is also NOT a schedule anybody wrote, so it has to be
+# told apart from a bar that is one.
+# --------------------------------------------------------------------------- #
+
+
+def test_no_task_is_drawn_as_a_bare_tick_any_more(app_page: Page) -> None:
+    _open_timeline(app_page)
+    assert app_page.locator(".gantt-termin").count() == 0
+    assert app_page.locator(".gantt-bar").count() > 0
+
+
+def test_deadline_only_tasks_are_drawn_as_runway_bars(app_page: Page) -> None:
+    """The precondition every test below depends on — and it must FAIL, not
+    skip, when the feature is gone.
+
+    Guarding each of those with "skip if no runway bar in view" made them all
+    skip cleanly against the old rendering, which reports green and proves
+    nothing. This one has no escape hatch.
+    """
+    _open_timeline(app_page)
+    assert app_page.locator(".gantt-bar.is-runway").count() > 0
+
+
+def test_a_gate_is_still_a_diamond(app_page: Page) -> None:
+    """"Any task" is not "everything": a milestone is an instant, not work,
+    and drawing it as a bar would invent a duration for it."""
+    _open_timeline(app_page)
+    if not app_page.locator(".gantt-milestone").count():
+        pytest.skip("no milestone in view")
+    for i in range(app_page.locator(".gantt-milestone").count()):
+        assert app_page.locator(".gantt-milestone").nth(i).is_visible()
+
+
+def test_a_deadline_bar_reaches_the_today_line(app_page: Page) -> None:
+    """The runway starts at now. A bar floating clear of the today marker
+    would be describing some other stretch of time.
+    """
+    _open_timeline(app_page)
+    runway = app_page.locator(".gantt-bar.is-runway:not(.is-clipped):not(.is-past)")
+    if not runway.count():
+        pytest.skip("no un-clipped runway bar in view")
+    # Rendered positions, not style strings: the today marker's `left` is a
+    # calc() spanning the label column, so parsing it as a number gives NaN
+    # and the comparison silently passes on nonsense.
+    bar = runway.first.bounding_box()
+    today = app_page.locator(".gantt-today").first.bounding_box()
+    assert abs(bar["x"] - today["x"]) < 3, (
+        f'runway starts at x={bar["x"]}, today marker at x={today["x"]}'
+    )
+
+
+def test_a_later_deadline_draws_a_longer_bar(app_page: Page) -> None:
+    """The length has to MEAN the runway, not merely exist.
+
+    Two bars whose widths do not track their deadlines would be decoration.
+    """
+    _open_timeline(app_page)
+    rows = app_page.evaluate(
+        """() => [...document.querySelectorAll('.gantt-bar.is-runway')]
+             .filter(e => !e.className.includes('is-clipped')
+                       && !e.className.includes('is-past'))
+             .map(e => ({w: parseFloat(e.style.width),
+                         label: e.getAttribute('aria-label') || ''}))"""
+    )
+    dated = []
+    for r in rows:
+        m = re.search(r"noch (\d+) Tage", r["label"])
+        if m:
+            dated.append((int(m.group(1)), r["w"]))
+    if len(dated) < 2:
+        pytest.skip("need two future deadlines to compare")
+    dated.sort()
+    assert dated[0][1] < dated[-1][1], dated
+
+
+def test_a_planned_bar_is_not_marked_as_a_runway(app_page: Page) -> None:
+    """A bar with a real start and end is a schedule; saying otherwise would
+    make the distinction meaningless."""
+    _open_timeline(app_page)
+    planned = app_page.locator(".gantt-bar:not(.is-runway)")
+    if not planned.count():
+        pytest.skip("no planned bar in view")
+    label = planned.first.get_attribute("aria-label") or ""
+    assert " bis " in label      # start AND end, not a deadline
+
+
+def test_an_overdue_task_says_how_long_it_has_been_overdue(app_page: Page) -> None:
+    _open_timeline(app_page)
+    bars = app_page.locator(".gantt-bar.is-runway")
+    labels = [
+        bars.nth(i).get_attribute("aria-label") or "" for i in range(bars.count())
+    ]
+    overdue = [x for x in labels if "ueberfaellig" in x]
+    if not overdue:
+        pytest.skip("nothing overdue in this data")
+    assert re.search(r"seit \d+ Tagen ueberfaellig", overdue[0]), overdue[0]
+
+
+def test_a_finished_task_is_not_given_a_runway(app_page: Page) -> None:
+    """Extending a done item to today would draw it as still running."""
+    _open_timeline(app_page)
+    # Without a finished dated item on screen this proves nothing, so say so
+    # rather than passing vacuously.
+    if not app_page.locator(".gantt-bar.is-done").count():
+        pytest.skip("nothing finished in view")
+    assert app_page.locator(".gantt-bar.is-done.is-runway").count() == 0
+
+
 def test_the_axis_starts_on_today_and_not_a_day_earlier(app_page: Page) -> None:
     """The earliest date on the ruler is today. No past months, at all.
 
@@ -595,7 +711,7 @@ def test_the_axis_starts_on_today_and_not_a_day_earlier(app_page: Page) -> None:
     are stubs against the edge now (see the is-past tests below).
     """
     _open_timeline(app_page)
-    assert app_page.locator(".gantt-bar, .gantt-milestone, .gantt-termin").count() > 0
+    assert app_page.locator(".gantt-bar, .gantt-milestone").count() > 0
 
     month = app_page.evaluate("() => new Date().getUTCMonth()")
     first = app_page.locator(".gantt-tick-label").first.inner_text()
@@ -677,7 +793,7 @@ def test_every_visible_row_draws_something(app_page: Page) -> None:
     assert rows.count() > 0
     for i in range(rows.count()):
         row = rows.nth(i)
-        marks = row.locator(".gantt-bar, .gantt-milestone, .gantt-termin")
+        marks = row.locator(".gantt-bar, .gantt-milestone")
         visible = any(marks.nth(j).is_visible() for j in range(marks.count()))
         label = row.inner_text().split("\n")[0][:40]
         assert visible, f"row draws nothing: {label}"

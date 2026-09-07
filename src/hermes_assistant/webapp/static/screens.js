@@ -1235,39 +1235,87 @@ const AblaufplanScreen = {
     // is always drawable and the reader always has an anchor.
     const todayLeft = computed(() => (domain.value ? pct(todayMs()) : null));
 
-    function barStyle(r) {
-      const s = toMs(r.start || r.end);
+    /** The stretch of time one row occupies — the single definition every
+     *  mark decision reads from.
+     *
+     * Three shapes, and the distinction between the first two is the whole
+     * reason this function exists:
+     *
+     *   PLANNED  — start and end, and they differ. Somebody scheduled this.
+     *              The bar is that schedule.
+     *   RUNWAY   — a deadline and nothing else, which is what almost every
+     *              to-do is. It has no planned start, so a bar drawn from
+     *              some invented one would assert a schedule nobody wrote.
+     *              What IS true is the time left: from today to the deadline,
+     *              or — once the deadline has passed — from the deadline to
+     *              today, which is the overrun. That is a real quantity, it
+     *              grows every day the item stays open, and it is the one a
+     *              lead is looking for. Marked `runway` so it can be drawn
+     *              differently; see .is-runway.
+     *   DONE     — a finished item has no runway, only the date it was due.
+     *              Extending it to today would draw it as still running.
+     */
+    function span(r) {
       const e = toMs(r.end);
-      if (s === null || e === null) return { display: 'none' };
+      if (e === null) return null;
+      const s = toMs(r.start);
+      if (s !== null && s < e) return { from: s, to: e + DAY_MS, runway: false };
+      if (r.status === 'erledigt') return { from: e, to: e + DAY_MS, runway: false };
+      const t = todayMs();
+      return e >= t
+        ? { from: t, to: e + DAY_MS, runway: true }      // time left
+        : { from: e, to: t + DAY_MS, runway: true };     // time over
+    }
+
+    function isRunway(r) {
+      const sp = span(r);
+      return !!(sp && sp.runway);
+    }
+
+    function barStyle(r) {
+      const sp = span(r);
+      if (!sp) return { display: 'none' };
       const d = domain.value;
-      // +1 day so a task that starts and ends on the same date still shows a
-      // bar rather than a hairline.
-      const endMs = e + DAY_MS;
       // Off the right-hand end there is genuinely nothing to say yet, so draw
       // nothing. Off the LEFT end is different: the row is on screen because
       // it is overdue and still open, and an empty lane hides exactly the
       // finding the reader came for. Those get a stub against the edge —
       // see isBeforeWindow / the .is-past styling.
-      if (d && s > d.max) return { display: 'none' };
-      if (d && endMs < d.min) return { left: '0%', width: '0.9%' };
-      const left = clampedPct(s);
-      const right = clampedPct(endMs);
+      if (d && sp.from > d.max) return { display: 'none' };
+      if (d && sp.to < d.min) return { left: '0%', width: '0.9%' };
+      const left = clampedPct(sp.from);
+      const right = clampedPct(sp.to);
+      // A minimum width so a span that survives clipping down to nothing is
+      // still a mark somebody can see and hover.
       return { left: left + '%', width: Math.max(right - left, 0.6) + '%' };
     }
 
     /** True when a bar runs past the left edge of the window and is cut off. */
     function isClipped(r) {
       const d = domain.value;
-      const s = toMs(r.start || r.end);
-      return !!(d && s !== null && s < d.min);
+      const sp = span(r);
+      return !!(d && sp && sp.from < d.min);
     }
 
     /** True when the whole item lies before the window — deadline already
-     *  missed. Drawn as a stub at the edge, not on the ruler. */
+     *  missed. Drawn as a stub at the edge, not on the ruler.
+     *
+     * Rarer than it was: an overdue OPEN item now runs from its deadline to
+     * today, so it reaches the window by construction and draws as a clipped
+     * bar instead of a stub. What still lands here is finished work dated
+     * before today, which has no runway to reach with.
+     */
     function isBeforeWindow(r) {
       const d = domain.value;
+      const sp = span(r);
+      return !!(d && sp && sp.to < d.min);
+    }
+
+    /** Days of runway left (negative once it is overrun), or null. */
+    function runwayDays(r) {
       const e = toMs(r.end);
-      return !!(d && e !== null && e + DAY_MS < d.min);
+      if (e === null) return null;
+      return Math.round((e - todayMs()) / DAY_MS);
     }
 
     function milestoneStyle(r) {
@@ -1467,7 +1515,8 @@ const AblaufplanScreen = {
       trackWidthPx, scrollToToday,
       editingOwner, ownerDraft, ownerError, beginEdit, cancelEdit, saveOwner,
       rows, phases, sources, filtered, groups, ticks, todayLeft, barStyle,
-      milestoneStyle, isClipped, isBeforeWindow, fmt, duration, isLate,
+      milestoneStyle, isClipped, isBeforeWindow, isRunway, runwayDays,
+      fmt, duration, isLate,
       lateCount, nextMilestone,
       daysToNext, statusCounts, levelCounts,
       STATUS, STATUS_ORDER, LEVEL_ORDER,
@@ -1662,8 +1711,8 @@ const AblaufplanScreen = {
             Meilenstein
           </span>
           <span class="gantt-legend-item">
-            <span class="gantt-key is-termin" aria-hidden="true"></span>
-            Termin ohne Dauer
+            <span class="gantt-key is-runway" aria-hidden="true"></span>
+            Frist — Balken zeigt die Restzeit
           </span>
           <span class="gantt-legend-item">
             <span class="gantt-key is-today" aria-hidden="true"></span>
@@ -1722,29 +1771,34 @@ const AblaufplanScreen = {
                           :aria-label="r.title + ' — Meilenstein am ' + fmt(r.end)
                                        + (isBeforeWindow(r) ? ' (Termin verstrichen)' : '')"></span>
                   </template>
-                  <!-- A dated obligation with no span: a to-do with a
-                       deadline. Its own mark, so it cannot be mistaken for a
-                       project gate. -->
-                  <template v-else-if="r.kind === 'termin'">
-                    <span class="gantt-termin"
-                          :class="[statusClass(r.status),
-                                   { 'is-late': isLate(r), 'is-past': isBeforeWindow(r) }]"
-                          :style="milestoneStyle(r)"
-                          :aria-label="r.title + ' — faellig am ' + fmt(r.end)
-                                       + (isBeforeWindow(r) ? ' (Termin verstrichen)' : '')"></span>
-                  </template>
+                  <!-- Everything that is WORK is a bar — a task with a
+                       deadline and nothing else included. It used to be a
+                       1px tick, which said when it was due and nothing about
+                       how much time was left to do it; a lane of ticks is a
+                       list with extra steps. Only a milestone stays a
+                       diamond, because a gate is an instant, not work.
+
+                       is-runway: the span is time remaining, not a schedule
+                       somebody wrote (see span()). It is drawn open at the
+                       left and capped at the deadline so it cannot be read
+                       as "planned to start today".
+                       is-clipped: the bar begins before the window and is cut
+                       at the edge. is-past: it ENDED before the window too,
+                       so the stub against the edge is all there is. Without
+                       either marker the bar would read as work happening
+                       today, which is a different claim. -->
                   <template v-else>
-                    <!-- is-clipped: the bar began before the window and is cut
-                         at the edge. is-past: it ENDED before it too, so the
-                         stub against the edge is all there is. Without either
-                         marker the bar would read as work happening today,
-                         which is a different claim. -->
                     <span class="gantt-bar"
                           :class="[statusClass(r.status),
                                    { 'is-late': isLate(r), 'is-clipped': isClipped(r),
-                                     'is-past': isBeforeWindow(r) }]"
+                                     'is-past': isBeforeWindow(r),
+                                     'is-runway': isRunway(r) }]"
                           :style="barStyle(r)"
-                          :aria-label="r.title + ' — ' + fmt(r.start) + ' bis ' + fmt(r.end)
+                          :aria-label="r.title + (isRunway(r)
+                                         ? ' — faellig am ' + fmt(r.end) + (runwayDays(r) < 0
+                                             ? ' (seit ' + (-runwayDays(r)) + ' Tagen ueberfaellig)'
+                                             : ' (noch ' + runwayDays(r) + ' Tage)')
+                                         : ' — ' + fmt(r.start) + ' bis ' + fmt(r.end))
                                        + (isBeforeWindow(r) ? ' (Frist verstrichen)'
                                           : isClipped(r) ? ' (beginnt vor dem Zeitraum)' : '')">
                       <span v-if="r.progress_pct !== null && r.progress_pct !== undefined"

@@ -413,22 +413,48 @@ def sweep_page(page: Page) -> Page:
     return page
 
 
-def test_sweep_draws_all_three_marks(sweep_page: Page):
-    """A gate, a span and a dated errand each get their own shape."""
+def test_work_is_a_bar_and_only_a_gate_is_a_diamond(sweep_page: Page):
+    """This used to assert three shapes: a gate, a span, and a 1px tick for a
+    dated errand. There are two now.
+
+    The tick said when an errand was due and nothing about how much time was
+    left to do it — a lane of ticks is a list with extra steps. Everything
+    that is work is a bar; the diamond stays, because a gate is an instant.
+    """
     assert sweep_page.locator(".gantt-milestone").count() > 0
     assert sweep_page.locator(".gantt-bar").count() > 0
-    assert sweep_page.locator(".gantt-termin").count() > 0
+    assert sweep_page.locator(".gantt-termin").count() == 0
 
 
-def test_a_dated_todo_is_a_tick_not_a_diamond(sweep_page: Page):
+def test_a_dated_todo_is_a_bar_not_a_diamond(sweep_page: Page):
     row = sweep_page.locator(".gantt-row").filter(has_text="E2E Rechnung pruefen").first
-    assert row.locator(".gantt-termin").count() == 1
+    assert row.locator(".gantt-bar").count() == 1
     assert row.locator(".gantt-milestone").count() == 0
-    assert row.locator(".gantt-bar").count() == 0
 
 
-def test_the_legend_names_the_third_mark(sweep_page: Page):
-    assert "Termin ohne Dauer" in sweep_page.locator(".gantt-legend").inner_text()
+def test_a_deadline_only_bar_is_told_apart_from_a_planned_one(sweep_page: Page):
+    """It spans the time LEFT, which is real — but it is not a schedule
+    anybody wrote, and a plain filled bar would claim it was."""
+    row = sweep_page.locator(".gantt-row").filter(has_text="E2E Rechnung pruefen").first
+    bar = row.locator(".gantt-bar").first
+    assert "is-runway" in (bar.get_attribute("class") or "")
+    # A bar with a real start and end must NOT be marked that way.
+    planned = sweep_page.locator(".gantt-bar:not(.is-runway)")
+    assert planned.count() > 0
+
+
+def test_a_runway_bar_says_how_long_is_left(sweep_page: Page):
+    """The number the bar's length encodes, spelled out for a screen reader."""
+    bar = sweep_page.locator(".gantt-bar.is-runway").first
+    label = bar.get_attribute("aria-label") or ""
+    assert "faellig am" in label
+    assert "noch" in label or "ueberfaellig" in label
+
+
+def test_the_legend_names_what_the_open_ended_bar_means(sweep_page: Page):
+    legend = sweep_page.locator(".gantt-legend").inner_text()
+    assert "Termin ohne Dauer" not in legend
+    assert "Restzeit" in legend
 
 
 def test_altitude_can_be_filtered_down_to_the_gates(sweep_page: Page):
@@ -437,7 +463,7 @@ def test_altitude_can_be_filtered_down_to_the_gates(sweep_page: Page):
     sweep_page.select_option('select[aria-label="Ebene filtern"]', "meilenstein")
     sweep_page.wait_for_timeout(400)
     assert sweep_page.locator(".gantt-row").count() < before
-    assert sweep_page.locator(".gantt-termin").count() == 0
+    # Only gates survive the filter, and a gate is never a bar.
     assert sweep_page.locator(".gantt-bar").count() == 0
 
 

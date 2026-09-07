@@ -4,6 +4,7 @@ from __future__ import annotations
 import functools
 import json as _json
 import logging
+import os
 import re
 import shutil
 from datetime import UTC, date, datetime
@@ -739,6 +740,31 @@ async def restore_project(request: Request) -> dict[str, Any]:
     return {"project_id": project_id, "restored": True}
 
 
+def _read_schedule(path: Path):
+    """Load one project's schedule, or 404/500 the way its writers expect."""
+    from hermes_assistant.scheduling.model import Schedule
+
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Project has no schedule")
+    try:
+        return Schedule.model_validate_json(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="Internal error") from exc
+
+
+def _write_schedule(path: Path, schedule) -> None:
+    """Write a schedule back, atomically.
+
+    Via a temp file in the same directory and os.replace: a plan is the
+    project's own record, and a half-written schedule.json — a crash, a full
+    disk — takes the whole dashboard down with a parse error rather than
+    losing one edit.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(schedule.model_dump_json(indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 @app.post("/api/schedule/{project_id}/items/{item_id}/owner")
 @confidentiality_guard
 async def set_schedule_item_owner(
@@ -802,13 +828,109 @@ async def set_schedule_item_owner(
     else:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    sched_file.write_text(schedule.model_dump_json(indent=2), encoding="utf-8")
+    _write_schedule(sched_file, schedule)
     return {
         "project_id": project_id,
         "item_id": item_id,
         "owner": owner,
         "redacted": redactions,
     }
+
+
+@app.delete("/api/schedule/{project_id}/items/{item_id}")
+@confidentiality_guard
+async def delete_schedule_item(project_id: str, item_id: str) -> dict[str, Any]:
+    """Remove one dated obligation from a project's plan.
+
+    The list on Planung merges two stores — to-dos from the task database and
+    dated items swept out of each project's ``schedule.json`` — and offered a
+    delete button on every row of the merged table. Only the first half could
+    honour it: the other rows were sent to ``DELETE /api/tasks/<id>`` with an
+    id that store has never seen, and came back "Task not found".
+
+    Deleting the row rather than hiding the button, because these are
+    imported rows a plan owner has every reason to strike: a line the sweep
+    read out of a protocol twice, or an obligation that no longer exists.
+
+    The item's position is part of the undo token. Re-appending it on restore
+    would silently reorder a plan somebody may have arranged, and an undo that
+    does not undo is worse than no undo.
+    """
+    from hermes_assistant.scheduling.model import Schedule
+    from hermes_assistant.webapp.import_json import _is_safe_path_segment
+
+    # Same guard as the owner edit: the id builds a path, so it must not be
+    # able to climb out of the projects root.
+    if not _is_safe_path_segment(project_id):
+        raise HTTPException(status_code=422, detail="Invalid project_id")
+
+    sched_file = Path(settings.projects_path) / project_id / "schedule.json"
+    if not sched_file.is_file():
+        raise HTTPException(status_code=404, detail="Project has no schedule")
+
+    try:
+        schedule = Schedule.model_validate_json(sched_file.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="Internal error") from exc
+
+    index = next(
+        (i for i, it in enumerate(schedule.items) if it.item_id == item_id), None
+    )
+    if index is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    removed = schedule.items.pop(index)
+    # negative_float names item_ids; leaving a dangling one behind would keep
+    # colouring a row that no longer exists on the next import.
+    schedule.negative_float = [x for x in schedule.negative_float if x != item_id]
+    _write_schedule(sched_file, schedule)
+
+    return {
+        "deleted": 1,
+        "undo": {
+            "kind": "schedule",
+            "project_id": project_id,
+            "index": index,
+            "item": _json.loads(removed.model_dump_json()),
+        },
+    }
+
+
+@app.post("/api/schedule/restore")
+@confidentiality_guard
+async def restore_schedule_item(request: Request) -> dict[str, Any]:
+    """Undo a schedule delete. Body: the ``undo`` object from the delete."""
+    from hermes_assistant.scheduling.model import ScheduledItem
+    from hermes_assistant.webapp.import_json import _is_safe_path_segment
+
+    body = _json_body(await request.body())
+    project_id = body.get("project_id")
+    if not isinstance(project_id, str) or not _is_safe_path_segment(project_id):
+        raise HTTPException(status_code=422, detail="Invalid project_id")
+
+    raw = body.get("item")
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=422, detail="item must be a JSON object")
+    try:
+        item = ScheduledItem.model_validate(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="item is not a schedule item") from exc
+
+    sched_file = Path(settings.projects_path) / project_id / "schedule.json"
+    schedule = _read_schedule(sched_file)
+
+    # Undo twice, or undo after the row came back on a re-import, must not
+    # duplicate it. Restoring is "make sure this is present at this position",
+    # not "insert one more".
+    if any(it.item_id == item.item_id for it in schedule.items):
+        return {"restored": 0, "reason": "already present"}
+
+    index = body.get("index")
+    if not isinstance(index, int) or index < 0:
+        index = len(schedule.items)
+    schedule.items.insert(min(index, len(schedule.items)), item)
+    _write_schedule(sched_file, schedule)
+    return {"restored": 1}
 
 
 @app.post("/api/tasks/{task_id}/status")

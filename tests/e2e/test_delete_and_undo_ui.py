@@ -278,3 +278,101 @@ def test_undo_brings_the_project_back(todo_page: Page) -> None:
     _open_projects(todo_page)
     todo_page.locator('input[aria-label="Filter projects"]').fill(pid)
     expect(_row(todo_page, pid)).to_have_count(1, timeout=10000)
+
+
+# --------------------------------------------------------------------------- #
+# Deleting a dated plan item
+#
+# The list merges two stores, so "delete this row" is two different requests.
+# Every row went to /api/tasks, which is where "Task not found" came from: a
+# swept schedule item's id has never been in the task database.
+# --------------------------------------------------------------------------- #
+
+
+def _plan_row(page: Page):
+    """The first row the sweep contributed, not a hand-made to-do."""
+    return page.locator("tbody tr").filter(
+        has=page.locator('.kind-chip:has-text("Termin")')
+    ).first
+
+
+def _undo(page: Page) -> None:
+    """Press Rückgängig if the toast is still up, and wait for it to land."""
+    undo = page.locator('[data-testid="toast-undo"]')
+    if undo.count():
+        undo.first.click()
+        page.wait_for_timeout(2000)
+
+
+def _plan_count(page: Page) -> int:
+    return page.evaluate(
+        """async () => (await (await fetch('/api/dashboard')).json()).ablaufplan.length"""
+    )
+
+
+def test_a_plan_item_delete_goes_to_the_schedule_route(todo_page: Page) -> None:
+    """The routing IS the bug. A test that only checks the row disappeared
+    would pass on a fix that deleted the wrong thing.
+    """
+    _open_todos(todo_page)
+    if not _plan_row(todo_page).count():
+        pytest.skip("no swept plan item in this data")
+
+    seen: list[str] = []
+    todo_page.on(
+        "request",
+        lambda r: seen.append(f"{r.method} {r.url}") if r.method == "DELETE" else None,
+    )
+    todo_page.on("dialog", lambda d: d.accept())
+    _plan_row(todo_page).locator('[data-testid="delete-work"]').click()
+    expect(todo_page.locator('[data-testid="toast-undo"]')).to_be_visible(timeout=10000)
+    try:
+        assert len(seen) == 1, seen
+        assert "/api/schedule/" in seen[0], seen[0]
+        assert "/api/tasks/" not in seen[0], seen[0]
+    finally:
+        # ALWAYS put it back. These tests run against one long-lived server
+        # with shared data: the first draft of this test left the row deleted,
+        # and three tests in another file — the ones that need an overdue item
+        # — quietly started skipping. A skip is not a pass, and a test that
+        # eats another test's fixture is worse than no test.
+        _undo(todo_page)
+
+
+def test_deleting_a_plan_item_removes_it(todo_page: Page) -> None:
+    _open_todos(todo_page)
+    if not _plan_row(todo_page).count():
+        pytest.skip("no swept plan item in this data")
+    before = _plan_count(todo_page)
+
+    todo_page.on("dialog", lambda d: d.accept())
+    _plan_row(todo_page).locator('[data-testid="delete-work"]').click()
+    expect(todo_page.locator('[data-testid="toast-undo"]')).to_be_visible(timeout=10000)
+
+    try:
+        assert _plan_count(todo_page) == before - 1
+    finally:
+        _undo(todo_page)
+    assert _plan_count(todo_page) == before
+
+
+def test_a_failed_delete_says_so_rather_than_pretending(todo_page: Page) -> None:
+    """What the user actually saw — "Task not found" — must still surface if
+    a delete fails for a real reason, rather than the row quietly vanishing."""
+    _open_todos(todo_page)
+    todo_page.route(
+        "**/api/schedule/**",
+        lambda route: route.fulfill(
+            status=404,
+            content_type="application/json",
+            body='{"detail": "Item not found"}',
+        ),
+    )
+    if not _plan_row(todo_page).count():
+        pytest.skip("no swept plan item in this data")
+    before = _plan_count(todo_page)
+
+    todo_page.on("dialog", lambda d: d.accept())
+    _plan_row(todo_page).locator('[data-testid="delete-work"]').click()
+    expect(todo_page.locator(".toast")).to_contain_text("Item not found", timeout=8000)
+    assert _plan_count(todo_page) == before

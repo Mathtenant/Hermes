@@ -445,15 +445,32 @@ async function submitCreate() {
 // intent, not safety. The project confirm is the blunter of the two because a
 // project directory holds the user's own documents.
 
-/** Delete a to-do or work package, offering Undo in the toast. */
-async function deleteTask(task) {
+/** Delete a to-do, work package or dated plan item, offering Undo.
+ *
+ * The list on Planung merges two stores, so "delete this row" is two
+ * different requests. Sending every row to /api/tasks was the bug behind
+ * "Task not found": a swept schedule item's id has never been in the task
+ * database, so the store looked, correctly, and did not find it.
+ *
+ * The KIND decides, not a guess at the shape of the object: both rows carry
+ * an id and a title, so any sniffing here would be one imported field away
+ * from picking the wrong endpoint again.
+ */
+async function deleteTask(task, kind) {
   if (!task || !task.id) return;
   const label = task.title || 'Eintrag';
+  const plan = kind === 'termin';
+  if (plan && !task.project_id) {
+    showToast('Diesem Plan-Eintrag fehlt die Projekt-Zuordnung', true);
+    return;
+  }
+  const url = plan
+    ? `/api/schedule/${encodeURIComponent(task.project_id)}`
+      + `/items/${encodeURIComponent(task.id)}`
+    : `/api/tasks/${encodeURIComponent(task.id)}`;
   if (!window.confirm(`"${label}" löschen?`)) return;
   try {
-    const resp = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
-      method: 'DELETE',
-    });
+    const resp = await fetch(url, { method: 'DELETE' });
     if (!resp.ok) {
       const detail = await resp.json().catch(() => ({}));
       showToast(detail.detail || 'Löschen fehlgeschlagen', true);
@@ -465,7 +482,7 @@ async function deleteTask(task) {
     const extra = body.deleted > 1 ? ` (mit ${body.deleted - 1} Unterpunkten)` : '';
     await refresh();
     showToast(`"${label}" gelöscht${extra}`, false, {
-      url: '/api/tasks/restore',
+      url: plan ? '/api/schedule/restore' : '/api/tasks/restore',
       body: body.undo,
       okMessage: `"${label}" wiederhergestellt`,
     });

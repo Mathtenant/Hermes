@@ -2312,7 +2312,7 @@ const WorkScreen = {
                               data-testid="delete-work"
                               :aria-label="r.title + ' löschen'"
                               title="Löschen"
-                              @click="$emit('delete-task', r.raw)">&times;</button>
+                              @click="$emit('delete-task', r.raw, r.kind)">&times;</button>
                     </td>
                   </tr>
                 </tbody>

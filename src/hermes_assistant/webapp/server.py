@@ -837,6 +837,176 @@ async def set_schedule_item_owner(
     }
 
 
+
+# --------------------------------------------------------------------------- #
+# Copilot POC — status and connection probe
+#
+# The one integration in HERMES that leaves the machine, and the one that is
+# hardest to tell the state of: it needs an app registration, admin-granted
+# permissions, two environment variables, an optional dependency and a signed-in
+# person, and any of the five can be the reason nothing works. These endpoints
+# answer "where exactly am I stuck" without anyone reading source.
+# --------------------------------------------------------------------------- #
+
+
+def _m365_checks() -> list[dict[str, Any]]:
+    """Every precondition, each with what to do about it.
+
+    Local facts only — nothing here contacts Microsoft, so the page can be
+    opened on a machine with no network and still be useful. The live call is
+    the separate probe below, and it is never made on page load.
+    """
+    from hermes_assistant.m365.auth import _token_cache_path
+
+    try:
+        import msal  # noqa: F401
+
+        msal_ok = True
+    except ImportError:
+        msal_ok = False
+
+    cache = _token_cache_path()
+    cache_mode = ""
+    if cache.is_file():
+        cache_mode = oct(cache.stat().st_mode & 0o777)
+
+    return [
+        {
+            "id": "enabled",
+            "label": "Integration eingeschaltet",
+            "ok": bool(settings.m365_enabled),
+            "detail": "HERMES_M365_ENABLED=1" if settings.m365_enabled else "aus",
+            "fix": "HERMES_M365_ENABLED=1 setzen und den Server neu starten.",
+        },
+        {
+            "id": "tenant",
+            "label": "Tenant-ID gesetzt",
+            "ok": bool(settings.m365_tenant_id),
+            # The value itself is not echoed: a tenant id identifies the
+            # organisation, and this response is rendered in a browser and
+            # copied into bug reports.
+            "detail": "gesetzt" if settings.m365_tenant_id else "fehlt",
+            "fix": "HERMES_M365_TENANT_ID=<Verzeichnis-ID aus Entra ID>.",
+        },
+        {
+            "id": "client",
+            "label": "Client-ID gesetzt",
+            "ok": bool(settings.m365_client_id),
+            "detail": "gesetzt" if settings.m365_client_id else "fehlt",
+            "fix": "HERMES_M365_CLIENT_ID=<Anwendungs-ID der App-Registrierung>.",
+        },
+        {
+            "id": "msal",
+            "label": "MSAL installiert",
+            "ok": msal_ok,
+            "detail": "msal" if msal_ok else "nicht installiert",
+            "fix": "pip install -e '.[m365]' — bewusst ein Extra, damit eine "
+                   "rein lokale Installation keine Auth-Bibliothek mitschleppt.",
+        },
+        {
+            "id": "token",
+            "label": "Angemeldet (Token im Cache)",
+            "ok": cache.is_file(),
+            "detail": f"{cache} ({cache_mode})" if cache.is_file() else "kein Cache",
+            "fix": "hermes m365-login — Gerätecode, einmal pro Ablauf.",
+        },
+    ]
+
+
+@app.get("/api/m365/status")
+@confidentiality_guard
+async def m365_status() -> dict[str, Any]:
+    """What is configured, what is missing, and what the limits are."""
+    from hermes_assistant.m365.auth import CHAT_SCOPES, RETRIEVAL_SCOPES
+    from hermes_assistant.m365.models import DATA_SOURCES, MAX_QUERY_CHARS, MAX_RESULTS
+
+    checks = _m365_checks()
+    prompts_dir = Path(__file__).parent / "static" / "prompts"
+    prompts = (
+        [
+            {"file": p.name, "bytes": p.stat().st_size}
+            for p in sorted(prompts_dir.glob("copilot_*.txt"))
+        ]
+        if prompts_dir.is_dir()
+        else []
+    )
+
+    return {
+        "ready": all(c["ok"] for c in checks),
+        "checks": checks,
+        "limits": {
+            "max_query_chars": MAX_QUERY_CHARS,
+            "max_results": MAX_RESULTS,
+            "data_sources": list(DATA_SOURCES),
+        },
+        "scopes": {
+            "retrieval": list(RETRIEVAL_SCOPES),
+            "chat": list(CHAT_SCOPES),
+        },
+        "prompts": prompts,
+    }
+
+
+@app.post("/api/m365/probe")
+@confidentiality_guard
+async def m365_probe() -> dict[str, Any]:
+    """One real Retrieval call, to prove the interface end to end.
+
+    ``interactive=False`` throughout. A device-code sign-in blocks until a
+    human types a code on another device, and a web request that waits on that
+    would hold a worker until it timed out — so an unsigned-in state is
+    reported as a state, with the command to fix it, rather than started here.
+
+    The query is deliberately banal and the result is reduced to counts and
+    titles. This answers "does the pipe work", and a POC page is not the place
+    to render tenant document extracts into a browser.
+    """
+    checks = _m365_checks()
+    missing = [c for c in checks if not c["ok"]]
+    if missing:
+        return {
+            "ok": False,
+            "stage": "preconditions",
+            "detail": "Noch nicht eingerichtet: "
+                      + ", ".join(c["label"] for c in missing),
+            "missing": [c["id"] for c in missing],
+        }
+
+    from hermes_assistant.m365.auth import DeviceCodeAuth, M365AuthError, scopes_for
+    from hermes_assistant.m365.client import CopilotAPIError, CopilotClient
+
+    try:
+        auth = DeviceCodeAuth()
+        auth.token(scopes_for("sharePoint"), interactive=False)
+    except M365AuthError as exc:
+        return {
+            "ok": False,
+            "stage": "auth",
+            "detail": f"{type(exc).__name__}: {exc}",
+            "fix": "hermes m365-login",
+        }
+
+    try:
+        result = CopilotClient(auth=auth).retrieve(
+            "Projektstatus", data_source="sharePoint", maximum_results=3
+        )
+    except (CopilotAPIError, ValueError) as exc:
+        status = getattr(exc, "status", None)
+        return {
+            "ok": False,
+            "stage": "retrieval",
+            "status": status,
+            "detail": f"{type(exc).__name__}: {exc}",
+        }
+
+    return {
+        "ok": True,
+        "stage": "retrieval",
+        "hits": len(result.retrieval_hits),
+        "extracts": result.extract_count,
+        "titles": [h.title for h in result.retrieval_hits[:3]],
+    }
+
 @app.delete("/api/schedule/{project_id}/items/{item_id}")
 @confidentiality_guard
 async def delete_schedule_item(project_id: str, item_id: str) -> dict[str, Any]:

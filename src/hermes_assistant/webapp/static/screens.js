@@ -2392,6 +2392,358 @@ const WorkScreen = {
   `,
 };
 
+
+// ── CopilotPocScreen ───────────────────────────────────────────────────────
+// TEMPORARY. This page documents an integration that is still a proof of
+// concept, in one place, so that evaluating it does not mean reading source.
+// When the POC is either adopted or dropped, delete this screen — the marker
+// in the sidebar says so, and the heading repeats it.
+//
+// There are TWO interfaces to Copilot and conflating them is the main source
+// of confusion:
+//
+//   Prompt-Export   Copy a prompt into the Copilot UI, paste the JSON back.
+//                   Works today, on any tenant, with no setup. This is what
+//                   every number on the dashboard currently came from.
+//   Graph API       POST /beta/copilot/retrieval and /chat, signed in as a
+//                   person. Removes the copy-paste, needs an app
+//                   registration, and is off by default.
+const CopilotPocScreen = {
+  props: ['data', 'loading', 'error'],
+  setup() {
+    const status = ref(null);
+    const statusError = ref('');
+    const probe = ref(null);
+    const probing = ref(false);
+
+    async function loadStatus() {
+      statusError.value = '';
+      try {
+        const resp = await fetch('/api/m365/status');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        status.value = await resp.json();
+      } catch (err) {
+        statusError.value = String(err.message || err);
+      }
+    }
+
+    async function runProbe() {
+      if (probing.value) return;
+      probing.value = true;
+      probe.value = null;
+      try {
+        const resp = await fetch('/api/m365/probe', { method: 'POST' });
+        probe.value = await resp.json();
+      } catch (err) {
+        probe.value = { ok: false, stage: 'network', detail: String(err.message || err) };
+      } finally {
+        probing.value = false;
+        // The probe signs in from cache, so it can change the "angemeldet"
+        // row. Re-reading keeps the checklist and the result agreeing.
+        loadStatus();
+      }
+    }
+
+    onMounted(loadStatus);
+
+    // What each prompt feeds, so the file names are not the only clue.
+    const PROMPT_ROWS = [
+      ['copilot_wbs.txt', 'Arbeitspakete als Baum', 'Timeline & WBS, Kanban'],
+      ['copilot_faelligkeiten.txt', 'Alles mit Datum, alle Quellen', 'Planung → Zeitstrahl'],
+      ['copilot_pendenzen.txt', 'Offene Punkte ohne Datum', 'Planung → Liste'],
+      ['copilot_beschluesse.txt', 'Entscheide plus Todos daraus', 'Planung → Beschlüsse'],
+      ['copilot_risks.txt', 'Risikoregister', 'Risks'],
+      ['copilot_state_export.txt', 'Rundum-Export in einem Zug', 'alle Screens'],
+    ];
+
+    // The suites that hold this interface, and what each one is actually for.
+    // Named rather than counted: a number here goes stale on the next commit,
+    // a filename does not.
+    const TEST_ROWS = [
+      ['tests/test_m365_copilot.py',
+       'Der API-Client: Limits vor dem Round-Trip, KQL-Prüfung, Throttling, '
+       + 'Token-Cache 0600, und dass der Schalter wirklich schaltet.'],
+      ['tests/test_copilot_tool_prompts.py',
+       'Die sechs Prompts: dass jeder gültiges JSON verlangt, die Felder '
+       + 'nennt, die der Importer liest, und keine Anweisung enthält, die '
+       + 'Copilot zum Erfinden einlädt.'],
+      ['tests/test_copilot_adapter.py',
+       'Der Weg von Copilots Antwort in die Stores — Feldnamen, fehlende '
+       + 'Felder, Datumsformate, doppelte IDs.'],
+      ['tests/test_no_cloud.py',
+       'Die Gegenprobe: ausserhalb von m365/ darf kein Microsoft-Endpunkt '
+       + 'auftauchen, und die Integration muss ausgeschaltet ausgeliefert '
+       + 'werden.'],
+    ];
+
+    const SETUP_STEPS = [
+      ['App-Registrierung in Entra ID',
+       'Azure-Portal → Entra ID → App-Registrierungen → Neu. Kontotyp: nur '
+       + 'dieses Verzeichnis. Keinen Redirect-URI eintragen — der '
+       + 'Gerätecode-Flow braucht keinen.'],
+      ['Öffentlichen Client erlauben',
+       'Authentifizierung → „Öffentliche Client- und Mobilgeräteflows '
+       + 'zulassen" auf Ja. Ohne das schlägt der Gerätecode mit '
+       + 'AADSTS7000218 fehl.'],
+      ['Delegierte Berechtigungen setzen',
+       'API-Berechtigungen → Microsoft Graph → Delegiert. Nur delegiert: '
+       + 'Anwendungsberechtigungen unterstützt die Retrieval-API nicht, es '
+       + 'gibt also keinen unbeaufsichtigten Dienst-Zugriff. '
+       + 'Administrator-Zustimmung erteilen.'],
+      ['Abhängigkeit installieren',
+       'pip install -e ".[m365]" — ein Extra, damit eine rein lokale '
+       + 'Installation keine Auth-Bibliothek mitschleppt.'],
+      ['Umgebungsvariablen setzen',
+       'HERMES_M365_ENABLED=1, HERMES_M365_TENANT_ID=<Verzeichnis-ID>, '
+       + 'HERMES_M365_CLIENT_ID=<Anwendungs-ID>. Danach Server neu starten.'],
+      ['Anmelden',
+       'hermes m365-login — zeigt einen Code für microsoft.com/devicelogin. '
+       + 'Das Token landet unter data/m365_token_cache.json mit 0600; es '
+       + 'enthält ein Refresh-Token, also Zugangsdaten, keine Daten.'],
+      ['Prüfen',
+       'Verbindungstest oben auf dieser Seite, oder hermes m365-retrieve '
+       + '"Projektstatus" auf der Kommandozeile.'],
+    ];
+
+    return {
+      status, statusError, probe, probing, loadStatus, runProbe,
+      PROMPT_ROWS, TEST_ROWS, SETUP_STEPS,
+    };
+  },
+  template: `
+    <div>
+      <div class="page-head">
+        <h1 class="page-title">Copilot POC</h1>
+        <p class="page-sub">
+          Alles zur Schnittstelle nach Microsoft 365 Copilot — Anleitung,
+          Status und Tests. Diese Seite ist temporär: sie gehört gelöscht,
+          sobald der POC angenommen oder verworfen ist.
+        </p>
+      </div>
+
+      <!-- ── Die zwei Wege ──────────────────────────────────────────────── -->
+      <div class="poc-grid mb-4">
+        <div class="card poc-card">
+          <div class="poc-card-head">
+            <span class="chip chip-plan-erledigt">produktiv</span>
+            <h2 class="poc-card-title">Prompt-Export</h2>
+          </div>
+          <p class="poc-card-body">
+            Prompt in die Copilot-Oberfläche kopieren, JSON zurück-kopieren,
+            über <strong>Import JSON</strong> einlesen. Kein Setup, jeder
+            Tenant, funktioniert heute — <em>alle</em> Zahlen auf diesem
+            Dashboard sind so entstanden.
+          </p>
+          <p class="poc-card-body poc-muted">
+            Der Preis ist die Handarbeit: einmal pro Export, pro Quelle.
+          </p>
+        </div>
+
+        <div class="card poc-card">
+          <div class="poc-card-head">
+            <span class="chip chip-plan-offen">POC · aus</span>
+            <h2 class="poc-card-title">Graph API</h2>
+          </div>
+          <p class="poc-card-body">
+            <code>POST /beta/copilot/retrieval</code> holt
+            berechtigungsgefilterte Textauszüge,
+            <code>…/conversations/{id}/chat</code> führt ein geerdetes
+            Gespräch. Beides <strong>als angemeldete Person</strong> — die
+            Retrieval-API kennt keine Anwendungsberechtigungen, HERMES kann
+            damit also niemandes Zugriff erweitern.
+          </p>
+          <p class="poc-card-body poc-muted">
+            Chat antwortet nur mit Text: keine Dateien, keine Mails, keine
+            Aktionen. Für Zustandsabfragen richtig, für Dokumenterstellung
+            weiterhin die interaktive Copilot-Oberfläche.
+          </p>
+        </div>
+      </div>
+
+      <!-- ── Status ─────────────────────────────────────────────────────── -->
+      <div class="card mb-4">
+        <div class="flex justify-between items-start mb-3">
+          <h2 class="section-title">Status</h2>
+          <button class="btn" data-testid="poc-refresh" @click="loadStatus">
+            Neu prüfen
+          </button>
+        </div>
+
+        <div v-if="statusError" class="notice notice-error">{{ statusError }}</div>
+        <div v-else-if="!status" class="text-sm text-gray-400">
+          <span class="spinner" style="width:12px;height:12px"></span> lädt&hellip;
+        </div>
+        <template v-else>
+          <p class="notice-inline" data-testid="poc-verdict">
+            <template v-if="status.ready">
+              Eingerichtet — der Verbindungstest sollte durchlaufen.
+            </template>
+            <template v-else>
+              Noch nicht einsatzbereit. Die rot markierten Zeilen sagen, was
+              fehlt; die Anleitung darunter, wie es gesetzt wird.
+            </template>
+          </p>
+
+          <table class="data-table" data-testid="poc-checks">
+            <thead>
+              <tr><th>Voraussetzung</th><th>Zustand</th><th>Wenn nicht</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in status.checks" :key="c.id" :data-check="c.id">
+                <td>
+                  <!-- A glyph, not a coloured dot: .chip-mark is an inline
+                       span sized by its flex parent, so in a table cell it
+                       collapsed to nothing and the checklist had no marks at
+                       all while the text above promised red ones. The symbol
+                       also carries the state without relying on colour. -->
+                  <span class="poc-mark" :class="c.ok ? 'is-ok' : 'is-bad'"
+                        :aria-label="c.ok ? 'erfüllt' : 'fehlt'"
+                        >{{ c.ok ? '✓' : '✗' }}</span>
+                  {{ c.label }}
+                </td>
+                <td class="font-mono text-xs">{{ c.detail }}</td>
+                <td class="text-gray-400">
+                  <template v-if="!c.ok"><code>{{ c.fix }}</code></template>
+                  <template v-else>—</template>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+      </div>
+
+      <!-- ── Verbindungstest ────────────────────────────────────────────── -->
+      <div class="card mb-4">
+        <h2 class="section-title mb-2">Verbindungstest</h2>
+        <p class="poc-card-body mb-3">
+          Ein echter Retrieval-Aufruf mit einer banalen Anfrage. Meldet sich
+          <strong>nur aus dem Token-Cache</strong> an: ein Gerätecode würde auf
+          eine Eingabe an einem anderen Gerät warten, und ein Web-Request, der
+          darauf wartet, blockiert einen Worker bis zum Timeout. Ohne
+          Anmeldung sagt der Test das, statt sie zu starten.
+        </p>
+        <button class="btn btn-primary" data-testid="poc-probe"
+                :disabled="probing" @click="runProbe">
+          <span v-if="probing" class="spinner spinner-sm"></span>
+          {{ probing ? 'prüft …' : 'Verbindung testen' }}
+        </button>
+
+        <div v-if="probe" class="mt-3" data-testid="poc-probe-result">
+          <div v-if="probe.ok" class="notice notice-info">
+            <strong>OK</strong> — {{ probe.hits }} Dokumente,
+            {{ probe.extracts }} Auszüge.
+            <template v-if="probe.titles && probe.titles.length">
+              <br><span class="text-xs text-gray-400">
+                {{ probe.titles.join(' · ') }}
+              </span>
+            </template>
+          </div>
+          <div v-else class="notice notice-warn">
+            <strong>{{ probe.stage }}</strong> — {{ probe.detail }}
+            <template v-if="probe.fix">
+              <br><code>{{ probe.fix }}</code>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Anleitung ──────────────────────────────────────────────────── -->
+      <div class="card mb-4">
+        <h2 class="section-title mb-3">Einrichtung</h2>
+        <ol class="poc-steps" data-testid="poc-steps">
+          <li v-for="(s, i) in SETUP_STEPS" :key="i">
+            <strong>{{ s[0] }}</strong>
+            <p>{{ s[1] }}</p>
+          </li>
+        </ol>
+      </div>
+
+      <!-- ── Grenzen ────────────────────────────────────────────────────── -->
+      <div class="card mb-4" v-if="status">
+        <h2 class="section-title mb-3">Grenzen und Berechtigungen</h2>
+        <div class="poc-grid">
+          <div>
+            <p class="poc-label">Dienstgrenzen</p>
+            <ul class="poc-list">
+              <li>Anfrage: max. {{ status.limits.max_query_chars }} Zeichen —
+                  clientseitig geprüft, damit der Fehler vor dem Round-Trip
+                  kommt.</li>
+              <li>Treffer: max. {{ status.limits.max_results }} pro Aufruf.</li>
+              <li>Eine Datenquelle pro Aufruf, kein „alles durchsuchen":
+                  {{ status.limits.data_sources.join(', ') }}.</li>
+            </ul>
+          </div>
+          <div>
+            <p class="poc-label">Delegierte Scopes</p>
+            <ul class="poc-list">
+              <li><strong>Retrieval:</strong>
+                  <code>{{ status.scopes.retrieval.join(', ') }}</code></li>
+              <li><strong>Chat:</strong>
+                  <code>{{ status.scopes.chat.join(', ') }}</code></li>
+            </ul>
+            <p class="poc-muted text-xs mt-2">
+              Der POC fragt die Vereinigung in einem Zug ab, um eine einzige
+              Zustimmung zu brauchen. Ein Produktivbau sollte nur anfragen,
+              was die jeweilige Funktion nutzt — Zustimmung zum Mitlesen von
+              Mail sammelt man nicht nebenbei.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Prompts ────────────────────────────────────────────────────── -->
+      <div class="card mb-4">
+        <h2 class="section-title mb-3">Die sechs Prompts</h2>
+        <table class="data-table" data-testid="poc-prompts">
+          <thead>
+            <tr><th>Datei</th><th>Was sie holt</th><th>Landet in</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in PROMPT_ROWS" :key="p[0]">
+              <td><a :href="'/static/prompts/' + p[0]" target="_blank"
+                     rel="noopener"><code>{{ p[0] }}</code></a></td>
+              <td>{{ p[1] }}</td>
+              <td class="text-gray-400">{{ p[2] }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="poc-muted text-xs mt-2">
+          Bequemer über <strong>Import JSON</strong> in der Kopfzeile: dort
+          steht der Prompt zum Kopieren neben dem Feld, in das die Antwort
+          zurück soll.
+        </p>
+      </div>
+
+      <!-- ── Tests ──────────────────────────────────────────────────────── -->
+      <div class="card">
+        <h2 class="section-title mb-3">Tests</h2>
+        <table class="data-table" data-testid="poc-tests">
+          <thead><tr><th>Suite</th><th>Was sie absichert</th></tr></thead>
+          <tbody>
+            <tr v-for="t in TEST_ROWS" :key="t[0]">
+              <td><code>{{ t[0] }}</code></td>
+              <td>{{ t[1] }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="poc-card-body mt-3">
+          Alle laufen <strong>ohne Tenant</strong> — der HTTP-Verkehr ist
+          gestubbt. Das ist Absicht: ein Test, der eine Anmeldung braucht, ist
+          ein Test, der still nicht mehr läuft.
+        </p>
+        <pre class="poc-code">.venv/bin/python -m pytest tests/test_m365_copilot.py \
+  tests/test_copilot_tool_prompts.py tests/test_copilot_adapter.py \
+  tests/test_no_cloud.py -q</pre>
+        <p class="poc-muted text-xs">
+          Was sie <em>nicht</em> absichern: dass ein echter Tenant so
+          antwortet, wie die Modelle es erwarten. Dafür ist der
+          Verbindungstest oben da, und der braucht eine Anmeldung.
+        </p>
+      </div>
+    </div>
+  `,
+};
+
 global.AblaufplanScreen = AblaufplanScreen;
 global.WorkScreen = WorkScreen;
 global.OverviewScreen = OverviewScreen;
@@ -2399,5 +2751,6 @@ global.ProjectListScreen = ProjectListScreen;
 global.ProjectDetailScreen = ProjectDetailScreen;
 global.RisksScreen = RisksScreen;
 global.ReviewsScreen = ReviewsScreen;
+global.CopilotPocScreen = CopilotPocScreen;
 global.KanbanTab = KanbanTab;
 }(window));

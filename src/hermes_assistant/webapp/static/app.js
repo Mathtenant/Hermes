@@ -303,6 +303,51 @@ const createForm = reactive({
   node_kind: 'task', status: 'open', project_id: '',
 });
 
+// ── Smart capture ────────────────────────────────────────────────────────
+// One line of German or English, split into the form's fields by the local
+// model. It FILLS the dialog; it never creates anything. A small model reading
+// a hurried sentence will sometimes read it wrong, and the difference between
+// a wrong draft you can see and a wrong row already in the database is the
+// whole design.
+const captureText = ref('');
+const captureBusy = ref(false);
+const captureError = ref('');
+const captureNote = ref('');
+
+async function captureTodo() {
+  const text = captureText.value.trim();
+  if (!text || captureBusy.value) return;
+  captureBusy.value = true;
+  captureError.value = '';
+  captureNote.value = '';
+  try {
+    const resp = await fetch('/api/todos/parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+    // The typed line is the fallback title: a model that returns an empty one
+    // should leave the person with their own words, not an empty form.
+    createForm.title = data.title || text;
+    if (data.owner) createForm.owner = data.owner;
+    if (data.priority) createForm.priority = data.priority;
+    if (data.due_date) {
+      createForm.due_date = data.due_date;
+      createForm.due_preset = 'date';
+    }
+    // Named, because which model read the sentence is worth knowing when it
+    // read it badly.
+    captureNote.value = `Vorschlag von ${data.model} — bitte prüfen.`;
+  } catch (err) {
+    captureError.value = String(err.message || err);
+  } finally {
+    captureBusy.value = false;
+  }
+}
+
 function setDuePreset(key) {
   createForm.due_preset = key;
   // The calendar deliberately KEEPS its value while another preset is
@@ -329,6 +374,9 @@ function closeCreate() {
 }
 
 function resetCreateForm() {
+  captureText.value = '';
+  captureError.value = '';
+  captureNote.value = '';
   Object.assign(createForm, {
     title: '', owner: '', priority: 'medium', due_date: '', description: '',
     due_preset: 'none',
@@ -1027,6 +1075,7 @@ const App = {
       // Create dialog
       openCreate, closeCreate, submitCreate, createKind, createForm,
       DUE_PRESETS, setDuePreset, dueDateResolved,
+      captureText, captureBusy, captureError, captureNote, captureTodo,
       createBusy, createError, createValid, CREATE_KINDS,
     };
   },
@@ -1121,7 +1170,12 @@ const App = {
             <path :d="item.icon" />
           </svg>
           <span>{{ item.label }}</span>
-          <span v-if="item.count !== null" class="nav-count">{{ item.count }}</span>
+          <!-- The overview's stat grid used to carry these numbers a second
+               time, and the risk count's test hook with it. The badge is now
+               the single place the count is shown, so the hook lives here. -->
+          <span v-if="item.count !== null" class="nav-count"
+                :data-testid="item.key === 'risks' ? 'risks-count' : null"
+                >{{ item.count }}</span>
           <!-- Drag is not the only way in: Alt+↑/↓ moves the focused item, so
                the order is reachable without a pointer. -->
           <span class="nav-grip" aria-hidden="true" title="Ziehen zum Sortieren">⠿</span>
@@ -1212,6 +1266,31 @@ const App = {
           </p>
 
           <div v-if="createError" class="notice notice-error mb-3">{{ createError }}</div>
+
+          <!-- Smart capture. Above the fields because it is how you avoid
+               filling them, and only for Todos: it is the one kind people
+               create in a hurry, mid-meeting, in one sentence. -->
+          <template v-if="createKind === 'todo'">
+            <div class="capture-row">
+              <input class="text-input capture-input" v-model="captureText"
+                     :disabled="captureBusy"
+                     placeholder="Ein Satz — z. B. „Rechnung Lieferant X bis Freitag prüfen, Controlling, dringend“"
+                     aria-label="Todo in einem Satz"
+                     data-testid="capture-input"
+                     @keydown.enter.prevent="captureTodo">
+              <button class="btn capture-btn"
+                      :disabled="captureBusy || !captureText.trim()"
+                      data-testid="capture-submit"
+                      @click="captureTodo">
+                <span v-if="captureBusy" class="spinner spinner-sm"></span>
+                {{ captureBusy ? 'liest …' : 'Ausfüllen' }}
+              </button>
+            </div>
+            <p v-if="captureError" class="notice notice-warn mb-3"
+               data-testid="capture-error">{{ captureError }}</p>
+            <p v-else-if="captureNote" class="form-hint mb-3"
+               data-testid="capture-note">{{ captureNote }}</p>
+          </template>
 
           <!-- Project needs only an id; it becomes a directory name. -->
           <template v-if="createKind === 'project'">

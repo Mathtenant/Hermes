@@ -515,18 +515,8 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
    layout that lost something. */
 .overview-head.is-single { grid-template-columns: minmax(240px, 320px); }
 
-/* Fixed three columns rather than auto-fit: the five secondary counts are a
-   known set, so a 3×2 block sits square against the hero instead of running
-   out to five-across and leaving one tile orphaned on its own row. */
-.overview-head .stat-grid {
-  margin-bottom: 0;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.75rem;
-}
-
 @media (max-width: 1100px) {
   .overview-head { grid-template-columns: 1fr; }
-  .overview-head .stat-grid { grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); }
 }
 
 .hero-tile {
@@ -564,23 +554,6 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 
 .hero-hint { font-size: 0.8125rem; color: var(--c-text-muted); }
 
-.stat-tile {
-  background: var(--c-bg-card);
-  border: 1px solid var(--c-border);
-  border-radius: var(--radius);
-  padding: 0.75rem 0.875rem;
-  text-align: left;
-  box-shadow: var(--shadow-sm);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-  display: block;
-  width: 100%;
-}
-
-.stat-tile:hover {
-  border-color: var(--c-primary);
-  box-shadow: var(--shadow-md);
-}
-
 /* Sentence case, not ALL CAPS: a shouted label competes with the figure it
    is supposed to introduce. */
 .stat-label {
@@ -590,26 +563,9 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
   display: block;
 }
 
-.stat-value {
-  display: block;
-  font-size: 1.5rem;
-  font-weight: 650;
-  line-height: 1.15;
-  margin-top: 0.125rem;
-  letter-spacing: -0.02em;
-}
-
-.stat-hint {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--c-text-faint);
-  margin-top: 0.125rem;
-}
-
 /* A count is a neutral total, so it never turns red. The alert rides on the
    hint — the one part that actually says something is wrong — and pairs a
    colour with a word, never colour alone. */
-.stat-hint.is-alert,
 .hero-hint.is-alert {
   color: var(--st-critical-ink);
   font-weight: 600;

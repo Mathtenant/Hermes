@@ -65,11 +65,11 @@ dashboard down and no Python test will notice.
 project document: specification, POC runbook and the delivered-release history,
 in one self-contained file. Document a change there.
 
-`docs/MASTER.md` is superseded and kept for history only. It is easy to mistake
-for the live document — it is called MASTER, it is Markdown, and its own
-closing line used to say "extend the relevant Part above". It now carries a
-banner saying otherwise, because that mistake has already been made once and
-cost a round of work.
+There is no Markdown master any more. `docs/MASTER.md` was deleted once its
+content was superseded: it was easy to mistake for the live document — it was
+called MASTER, it was Markdown, and its own closing line said "extend the
+relevant Part above" — and that mistake had already been made once. Its
+history is in git if you need it.
 
 The HTML is a generated bundle with no generator in the repo, so it is edited
 in place. Three things to know before doing that:

@@ -231,9 +231,16 @@ def test_import_atomicity_enforced() -> None:
 
 
 def test_data_directory_not_tracked_in_git() -> None:
-    """Runtime artefacts (data/) must not be committed to git."""
+    """Runtime artefacts must not be committed to git.
+
+    Both trees, not only ``data/``. Three SQLite files sat tracked under
+    ``src/hermes_assistant/data/`` for months: ``.gitignore`` had covered that
+    path all along, but they were committed BEFORE the rule, and an ignore
+    rule does nothing about a file that is already tracked. Checking only
+    ``data/`` is what let them survive every run of this audit.
+    """
     result = subprocess.run(
-        ["git", "ls-files", "data/"],
+        ["git", "ls-files", "data/", "src/hermes_assistant/data/"],
         cwd=str(_ROOT),
         capture_output=True,
         text=True,
@@ -241,7 +248,7 @@ def test_data_directory_not_tracked_in_git() -> None:
     )
     tracked = [ln for ln in result.stdout.splitlines() if ln.strip()]
     assert not tracked, (
-        f"data/ files are tracked in git (should be .gitignored):\n"
+        "runtime files are tracked in git (should be .gitignored):\n"
         + "\n".join(tracked)
     )
 

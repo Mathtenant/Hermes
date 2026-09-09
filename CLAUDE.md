@@ -58,3 +58,30 @@ skips silently unless a server is listening on `localhost:8000`, and needs
 "skipped" is not green. Before pushing static-asset changes, also run
 `node --check` over `webapp/static/*.js` — a syntax error there takes the whole
 dashboard down and no Python test will notice.
+
+## The project document is the HTML, not the Markdown
+
+`HERMES_Local_Assistant_COMPLETE.html` in the repository root **is** the
+project document: specification, POC runbook and the delivered-release history,
+in one self-contained file. Document a change there.
+
+There is no Markdown master any more. `docs/MASTER.md` was deleted once its
+content was superseded: it was easy to mistake for the live document — it was
+called MASTER, it was Markdown, and its own closing line said "extend the
+relevant Part above" — and that mistake had already been made once. Its
+history is in git if you need it.
+
+The HTML is a generated bundle with no generator in the repo, so it is edited
+in place. Three things to know before doing that:
+
+- Sections are `<h2 class="secthead" id="…">N &middot; Title</h2><div class="doc">…</div>`,
+  with a matching `<a class="top" href="#…">` in the `<nav>`.
+- The `<script type="application/json" id="manifest">` at the end is the source
+  bundle behind the download buttons. It is a **POC-era snapshot** and still
+  names files that no longer exist under those paths; that is history, not rot.
+- It is a raw text element, so its payload is plain JSON — not HTML-escaped —
+  and it must sit *before* the `<script>` that reads it. Both were wrong
+  originally, which left every download button in the bundle inert.
+
+After editing, open the file in a browser and check for page errors: nothing
+else tests it.

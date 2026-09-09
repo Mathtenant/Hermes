@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,29 @@ def scopes_for(data_source: str | None = None, *, chat: bool = False) -> list[st
     return scopes
 
 
+# A tenant is identified by a GUID or by a verified domain
+# ("contoso.onmicrosoft.com"); an app registration only ever by a GUID. Both
+# are checked here rather than left to MSAL, which answers a malformed value
+# with a tenant-discovery round trip and a ValueError forty frames deep.
+_GUID = re.compile(r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
+_DOMAIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}$")
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    """True for a value that was copied out of documentation unedited.
+
+    `<deine-Verzeichnis-ID>` reached MSAL once and cost a forty-line traceback
+    ending in "double check your tenant name or GUID is correct" — accurate,
+    and not what the reader needed to be told.
+    """
+    return bool(
+        value != value.strip()
+        or any(c in value for c in "<>{}[]")
+        or " " in value
+        or value.lower() in {"your_tenant", "tenant_id", "client_id", "changeme"}
+    )
+
+
 class DeviceCodeAuth:
     """Acquire and cache a delegated Graph token.
 
@@ -96,13 +120,51 @@ class DeviceCodeAuth:
         self.cache_path = cache_path or _token_cache_path()
 
     # ------------------------------------------------------------------ #
+    _SETUP_HINT = (
+        "Both come from an Entra app registration with the delegated Graph "
+        "scopes and 'Allow public client flows' enabled. Put them in a .env "
+        "file next to pyproject.toml, or export them, then run "
+        "`hermes m365-login`."
+    )
+
     def _require_config(self) -> None:
+        """Refuse a value MSAL would only reject after a round trip.
+
+        Emptiness was the only thing checked here, so a placeholder pasted
+        straight out of the setup instructions was passed to MSAL as a real
+        tenant, and the person got a traceback instead of a sentence.
+        """
         if not self.tenant_id or not self.client_id:
             raise M365NotConfiguredError(
-                "M365 integration is not configured. Set HERMES_M365_TENANT_ID and "
-                "HERMES_M365_CLIENT_ID (an Entra app registration with the delegated "
-                "Graph scopes, 'Allow public client flows' enabled), then run "
-                "`hermes m365-login`."
+                "M365 integration is not configured. Set HERMES_M365_TENANT_ID "
+                "and HERMES_M365_CLIENT_ID. " + self._SETUP_HINT
+            )
+
+        for name, value, kind in (
+            ("HERMES_M365_TENANT_ID", self.tenant_id, "tenant"),
+            ("HERMES_M365_CLIENT_ID", self.client_id, "client"),
+        ):
+            if _looks_like_placeholder(value):
+                raise M365NotConfiguredError(
+                    f"{name} still holds a placeholder ({value!r}), not a real "
+                    f"value. " + self._SETUP_HINT
+                )
+
+        if not _GUID.match(self.client_id):
+            raise M365NotConfiguredError(
+                f"HERMES_M365_CLIENT_ID is not a GUID ({self.client_id!r}). It is "
+                "the Application (client) ID of the app registration — the "
+                "Directory (tenant) ID is a different GUID. " + self._SETUP_HINT
+            )
+
+        # A tenant may also be named by its domain, which is what people
+        # usually have to hand.
+        if not (_GUID.match(self.tenant_id) or _DOMAIN.match(self.tenant_id)):
+            raise M365NotConfiguredError(
+                f"HERMES_M365_TENANT_ID is neither a GUID nor a domain "
+                f"({self.tenant_id!r}). Use the Directory (tenant) ID from "
+                "Entra ID, or a verified domain such as "
+                "contoso.onmicrosoft.com. " + self._SETUP_HINT
             )
 
     def _build_app(self) -> Any:
@@ -123,11 +185,22 @@ class DeviceCodeAuth:
                 # simply signs in again and it is overwritten.
                 logger.warning("Ignoring unreadable token cache at %s", self.cache_path)
 
-        return msal.PublicClientApplication(
-            self.client_id,
-            authority=f"https://login.microsoftonline.com/{self.tenant_id}",
-            token_cache=cache,
-        )
+        # MSAL reaches out to the tenant-discovery endpoint here, so this is
+        # the first line that can fail on a wrong-but-well-formed tenant, on a
+        # blocked proxy, or offline. It raises ValueError, which the CLI does
+        # not catch — so the person saw a traceback rather than a message.
+        try:
+            return msal.PublicClientApplication(
+                self.client_id,
+                authority=f"https://login.microsoftonline.com/{self.tenant_id}",
+                token_cache=cache,
+            )
+        except ValueError as exc:
+            raise M365AuthError(
+                f"Microsoft could not resolve tenant {self.tenant_id!r}. Check "
+                "the Directory (tenant) ID, and that this machine can reach "
+                f"login.microsoftonline.com. Details: {exc}"
+            ) from exc
 
     def _save_cache(self, app: Any) -> None:
         cache = app.token_cache

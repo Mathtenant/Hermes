@@ -4,6 +4,7 @@ from __future__ import annotations
 import functools
 import json as _json
 import logging
+import os
 import re
 import shutil
 from datetime import UTC, date, datetime
@@ -739,6 +740,31 @@ async def restore_project(request: Request) -> dict[str, Any]:
     return {"project_id": project_id, "restored": True}
 
 
+def _read_schedule(path: Path):
+    """Load one project's schedule, or 404/500 the way its writers expect."""
+    from hermes_assistant.scheduling.model import Schedule
+
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Project has no schedule")
+    try:
+        return Schedule.model_validate_json(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="Internal error") from exc
+
+
+def _write_schedule(path: Path, schedule) -> None:
+    """Write a schedule back, atomically.
+
+    Via a temp file in the same directory and os.replace: a plan is the
+    project's own record, and a half-written schedule.json — a crash, a full
+    disk — takes the whole dashboard down with a parse error rather than
+    losing one edit.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(schedule.model_dump_json(indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 @app.post("/api/schedule/{project_id}/items/{item_id}/owner")
 @confidentiality_guard
 async def set_schedule_item_owner(
@@ -802,13 +828,279 @@ async def set_schedule_item_owner(
     else:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    sched_file.write_text(schedule.model_dump_json(indent=2), encoding="utf-8")
+    _write_schedule(sched_file, schedule)
     return {
         "project_id": project_id,
         "item_id": item_id,
         "owner": owner,
         "redacted": redactions,
     }
+
+
+
+# --------------------------------------------------------------------------- #
+# Copilot POC — status and connection probe
+#
+# The one integration in HERMES that leaves the machine, and the one that is
+# hardest to tell the state of: it needs an app registration, admin-granted
+# permissions, two environment variables, an optional dependency and a signed-in
+# person, and any of the five can be the reason nothing works. These endpoints
+# answer "where exactly am I stuck" without anyone reading source.
+# --------------------------------------------------------------------------- #
+
+
+def _m365_checks() -> list[dict[str, Any]]:
+    """Every precondition, each with what to do about it.
+
+    Local facts only — nothing here contacts Microsoft, so the page can be
+    opened on a machine with no network and still be useful. The live call is
+    the separate probe below, and it is never made on page load.
+    """
+    from hermes_assistant.m365.auth import _token_cache_path
+
+    try:
+        import msal  # noqa: F401
+
+        msal_ok = True
+    except ImportError:
+        msal_ok = False
+
+    cache = _token_cache_path()
+    cache_mode = ""
+    if cache.is_file():
+        cache_mode = oct(cache.stat().st_mode & 0o777)
+
+    return [
+        {
+            "id": "enabled",
+            "label": "Integration eingeschaltet",
+            "ok": bool(settings.m365_enabled),
+            "detail": "HERMES_M365_ENABLED=1" if settings.m365_enabled else "aus",
+            "fix": "HERMES_M365_ENABLED=1 setzen und den Server neu starten.",
+        },
+        {
+            "id": "tenant",
+            "label": "Tenant-ID gesetzt",
+            "ok": bool(settings.m365_tenant_id),
+            # The value itself is not echoed: a tenant id identifies the
+            # organisation, and this response is rendered in a browser and
+            # copied into bug reports.
+            "detail": "gesetzt" if settings.m365_tenant_id else "fehlt",
+            "fix": "HERMES_M365_TENANT_ID=<Verzeichnis-ID aus Entra ID>.",
+        },
+        {
+            "id": "client",
+            "label": "Client-ID gesetzt",
+            "ok": bool(settings.m365_client_id),
+            "detail": "gesetzt" if settings.m365_client_id else "fehlt",
+            "fix": "HERMES_M365_CLIENT_ID=<Anwendungs-ID der App-Registrierung>.",
+        },
+        {
+            "id": "msal",
+            "label": "MSAL installiert",
+            "ok": msal_ok,
+            "detail": "msal" if msal_ok else "nicht installiert",
+            "fix": "pip install -e '.[m365]' — bewusst ein Extra, damit eine "
+                   "rein lokale Installation keine Auth-Bibliothek mitschleppt.",
+        },
+        {
+            "id": "token",
+            "label": "Angemeldet (Token im Cache)",
+            "ok": cache.is_file(),
+            "detail": f"{cache} ({cache_mode})" if cache.is_file() else "kein Cache",
+            "fix": "hermes m365-login — Gerätecode, einmal pro Ablauf.",
+        },
+    ]
+
+
+@app.get("/api/m365/status")
+@confidentiality_guard
+async def m365_status() -> dict[str, Any]:
+    """What is configured, what is missing, and what the limits are."""
+    from hermes_assistant.m365.auth import CHAT_SCOPES, RETRIEVAL_SCOPES
+    from hermes_assistant.m365.models import DATA_SOURCES, MAX_QUERY_CHARS, MAX_RESULTS
+
+    checks = _m365_checks()
+    prompts_dir = Path(__file__).parent / "static" / "prompts"
+    prompts = (
+        [
+            {"file": p.name, "bytes": p.stat().st_size}
+            for p in sorted(prompts_dir.glob("copilot_*.txt"))
+        ]
+        if prompts_dir.is_dir()
+        else []
+    )
+
+    return {
+        "ready": all(c["ok"] for c in checks),
+        "checks": checks,
+        "limits": {
+            "max_query_chars": MAX_QUERY_CHARS,
+            "max_results": MAX_RESULTS,
+            "data_sources": list(DATA_SOURCES),
+        },
+        "scopes": {
+            "retrieval": list(RETRIEVAL_SCOPES),
+            "chat": list(CHAT_SCOPES),
+        },
+        "prompts": prompts,
+    }
+
+
+@app.post("/api/m365/probe")
+@confidentiality_guard
+async def m365_probe() -> dict[str, Any]:
+    """One real Retrieval call, to prove the interface end to end.
+
+    ``interactive=False`` throughout. A device-code sign-in blocks until a
+    human types a code on another device, and a web request that waits on that
+    would hold a worker until it timed out — so an unsigned-in state is
+    reported as a state, with the command to fix it, rather than started here.
+
+    The query is deliberately banal and the result is reduced to counts and
+    titles. This answers "does the pipe work", and a POC page is not the place
+    to render tenant document extracts into a browser.
+    """
+    checks = _m365_checks()
+    missing = [c for c in checks if not c["ok"]]
+    if missing:
+        return {
+            "ok": False,
+            "stage": "preconditions",
+            "detail": "Noch nicht eingerichtet: "
+                      + ", ".join(c["label"] for c in missing),
+            "missing": [c["id"] for c in missing],
+        }
+
+    from hermes_assistant.m365.auth import DeviceCodeAuth, M365AuthError, scopes_for
+    from hermes_assistant.m365.client import CopilotAPIError, CopilotClient
+
+    try:
+        auth = DeviceCodeAuth()
+        auth.token(scopes_for("sharePoint"), interactive=False)
+    except M365AuthError as exc:
+        return {
+            "ok": False,
+            "stage": "auth",
+            "detail": f"{type(exc).__name__}: {exc}",
+            "fix": "hermes m365-login",
+        }
+
+    try:
+        result = CopilotClient(auth=auth).retrieve(
+            "Projektstatus", data_source="sharePoint", maximum_results=3
+        )
+    except (CopilotAPIError, ValueError) as exc:
+        status = getattr(exc, "status", None)
+        return {
+            "ok": False,
+            "stage": "retrieval",
+            "status": status,
+            "detail": f"{type(exc).__name__}: {exc}",
+        }
+
+    return {
+        "ok": True,
+        "stage": "retrieval",
+        "hits": len(result.retrieval_hits),
+        "extracts": result.extract_count,
+        "titles": [h.title for h in result.retrieval_hits[:3]],
+    }
+
+@app.delete("/api/schedule/{project_id}/items/{item_id}")
+@confidentiality_guard
+async def delete_schedule_item(project_id: str, item_id: str) -> dict[str, Any]:
+    """Remove one dated obligation from a project's plan.
+
+    The list on Planung merges two stores — to-dos from the task database and
+    dated items swept out of each project's ``schedule.json`` — and offered a
+    delete button on every row of the merged table. Only the first half could
+    honour it: the other rows were sent to ``DELETE /api/tasks/<id>`` with an
+    id that store has never seen, and came back "Task not found".
+
+    Deleting the row rather than hiding the button, because these are
+    imported rows a plan owner has every reason to strike: a line the sweep
+    read out of a protocol twice, or an obligation that no longer exists.
+
+    The item's position is part of the undo token. Re-appending it on restore
+    would silently reorder a plan somebody may have arranged, and an undo that
+    does not undo is worse than no undo.
+    """
+    from hermes_assistant.scheduling.model import Schedule
+    from hermes_assistant.webapp.import_json import _is_safe_path_segment
+
+    # Same guard as the owner edit: the id builds a path, so it must not be
+    # able to climb out of the projects root.
+    if not _is_safe_path_segment(project_id):
+        raise HTTPException(status_code=422, detail="Invalid project_id")
+
+    sched_file = Path(settings.projects_path) / project_id / "schedule.json"
+    if not sched_file.is_file():
+        raise HTTPException(status_code=404, detail="Project has no schedule")
+
+    try:
+        schedule = Schedule.model_validate_json(sched_file.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="Internal error") from exc
+
+    index = next(
+        (i for i, it in enumerate(schedule.items) if it.item_id == item_id), None
+    )
+    if index is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    removed = schedule.items.pop(index)
+    # negative_float names item_ids; leaving a dangling one behind would keep
+    # colouring a row that no longer exists on the next import.
+    schedule.negative_float = [x for x in schedule.negative_float if x != item_id]
+    _write_schedule(sched_file, schedule)
+
+    return {
+        "deleted": 1,
+        "undo": {
+            "kind": "schedule",
+            "project_id": project_id,
+            "index": index,
+            "item": _json.loads(removed.model_dump_json()),
+        },
+    }
+
+
+@app.post("/api/schedule/restore")
+@confidentiality_guard
+async def restore_schedule_item(request: Request) -> dict[str, Any]:
+    """Undo a schedule delete. Body: the ``undo`` object from the delete."""
+    from hermes_assistant.scheduling.model import ScheduledItem
+    from hermes_assistant.webapp.import_json import _is_safe_path_segment
+
+    body = _json_body(await request.body())
+    project_id = body.get("project_id")
+    if not isinstance(project_id, str) or not _is_safe_path_segment(project_id):
+        raise HTTPException(status_code=422, detail="Invalid project_id")
+
+    raw = body.get("item")
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=422, detail="item must be a JSON object")
+    try:
+        item = ScheduledItem.model_validate(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="item is not a schedule item") from exc
+
+    sched_file = Path(settings.projects_path) / project_id / "schedule.json"
+    schedule = _read_schedule(sched_file)
+
+    # Undo twice, or undo after the row came back on a re-import, must not
+    # duplicate it. Restoring is "make sure this is present at this position",
+    # not "insert one more".
+    if any(it.item_id == item.item_id for it in schedule.items):
+        return {"restored": 0, "reason": "already present"}
+
+    index = body.get("index")
+    if not isinstance(index, int) or index < 0:
+        index = len(schedule.items)
+    schedule.items.insert(min(index, len(schedule.items)), item)
+    _write_schedule(sched_file, schedule)
+    return {"restored": 1}
 
 
 @app.post("/api/tasks/{task_id}/status")

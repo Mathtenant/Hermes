@@ -3,7 +3,7 @@
  * Requires (in load order): vendor/vue.global.prod.js, components.js, screens.js
  */
 /* global Vue, OverviewScreen, ProjectListScreen, ProjectDetailScreen,
-          ReviewsScreen, RisksScreen, WorkScreen,
+          ReviewsScreen, RisksScreen, WorkScreen, CopilotPocScreen,
           WbsNodeItem, WbsTab, KanbanTab */
 (function () {
 'use strict';
@@ -20,6 +20,10 @@ const {
 // sidebar orders keep working.
 const SCREENS = [
   'overview', 'projects', 'detail', 'work', 'risks', 'reviews',
+  // TEMPORARY. Documents an integration that is still a proof of concept, so
+  // that evaluating it does not mean reading source. Delete the screen, this
+  // key and its nav entry together once the POC is adopted or dropped.
+  'copilot',
 ];
 
 // Retired screen keys → where they live now. Bookmarks and the persisted
@@ -38,6 +42,7 @@ const NAV_ICONS = {
   work:      'M4 6h9M8 12h10M4 18h7M4 4v16',
   risks:     'M12 4l8.5 15h-17zM12 10v4M12 17.2v.1',
   reviews:   'M4.5 12.5l4.5 4.5 10.5-11',
+  copilot:   'M7 8h10a4 4 0 010 8H7a4 4 0 010-8zM9.5 12h.01M14.5 12h.01',
 };
 
 // ── Sidebar order ──────────────────────────────────────────────────────────
@@ -445,15 +450,32 @@ async function submitCreate() {
 // intent, not safety. The project confirm is the blunter of the two because a
 // project directory holds the user's own documents.
 
-/** Delete a to-do or work package, offering Undo in the toast. */
-async function deleteTask(task) {
+/** Delete a to-do, work package or dated plan item, offering Undo.
+ *
+ * The list on Planung merges two stores, so "delete this row" is two
+ * different requests. Sending every row to /api/tasks was the bug behind
+ * "Task not found": a swept schedule item's id has never been in the task
+ * database, so the store looked, correctly, and did not find it.
+ *
+ * The KIND decides, not a guess at the shape of the object: both rows carry
+ * an id and a title, so any sniffing here would be one imported field away
+ * from picking the wrong endpoint again.
+ */
+async function deleteTask(task, kind) {
   if (!task || !task.id) return;
   const label = task.title || 'Eintrag';
+  const plan = kind === 'termin';
+  if (plan && !task.project_id) {
+    showToast('Diesem Plan-Eintrag fehlt die Projekt-Zuordnung', true);
+    return;
+  }
+  const url = plan
+    ? `/api/schedule/${encodeURIComponent(task.project_id)}`
+      + `/items/${encodeURIComponent(task.id)}`
+    : `/api/tasks/${encodeURIComponent(task.id)}`;
   if (!window.confirm(`"${label}" löschen?`)) return;
   try {
-    const resp = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
-      method: 'DELETE',
-    });
+    const resp = await fetch(url, { method: 'DELETE' });
     if (!resp.ok) {
       const detail = await resp.json().catch(() => ({}));
       showToast(detail.detail || 'Löschen fehlgeschlagen', true);
@@ -465,7 +487,7 @@ async function deleteTask(task) {
     const extra = body.deleted > 1 ? ` (mit ${body.deleted - 1} Unterpunkten)` : '';
     await refresh();
     showToast(`"${label}" gelöscht${extra}`, false, {
-      url: '/api/tasks/restore',
+      url: plan ? '/api/schedule/restore' : '/api/tasks/restore',
       body: body.undo,
       okMessage: `"${label}" wiederhergestellt`,
     });
@@ -918,6 +940,7 @@ const App = {
     ReviewsScreen,
     RisksScreen,
     WorkScreen,
+    CopilotPocScreen,
   },
   setup() {
     // Surface API errors as a toast
@@ -983,6 +1006,10 @@ const App = {
         count: counts.value.ablaufplan + counts.value.pendenzen },
       { key: 'risks',     label: 'Risks',     icon: NAV_ICONS.risks,     count: counts.value.risks },
       { key: 'reviews',   label: 'Reviews',   icon: NAV_ICONS.reviews,   count: counts.value.reviews },
+      // count: null — there is nothing to count, and a "0" badge beside a
+      // documentation page reads as "nothing here" rather than "not a list".
+      { key: 'copilot',   label: 'Copilot POC', icon: NAV_ICONS.copilot,  count: null,
+        temporary: true },
     ]);
 
     // Definitions stay canonical; the user's order is applied on top, so the
@@ -1170,6 +1197,12 @@ const App = {
             <path :d="item.icon" />
           </svg>
           <span>{{ item.label }}</span>
+          <!-- A page that is meant to be deleted says so where it is clicked,
+               not only once it is open. -->
+          <span v-if="item.temporary" class="nav-temp"
+                data-testid="nav-temp-marker"
+                title="Temporär — entfällt, sobald der POC entschieden ist"
+                >temp</span>
           <!-- The overview's stat grid used to carry these numbers a second
                time, and the risk count's test hook with it. The badge is now
                the single place the count is shown, so the hook lives here. -->
@@ -1221,6 +1254,12 @@ const App = {
         />
         <risks-screen
           v-else-if="state.screen === 'risks'"
+          :data="state.data"
+          :loading="state.loading"
+          :error="state.error"
+        />
+        <copilot-poc-screen
+          v-else-if="state.screen === 'copilot'"
           :data="state.data"
           :loading="state.loading"
           :error="state.error"

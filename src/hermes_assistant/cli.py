@@ -1292,9 +1292,9 @@ def _require_m365() -> None:
             "  2. HERMES_M365_ENABLED=1\n"
             "  3. HERMES_M365_TENANT_ID=<Directory (tenant) ID, a GUID>\n"
             "  4. HERMES_M365_CLIENT_ID=<Application (client) ID, a GUID>\n\n"
-            "A .env file next to pyproject.toml works for 2-4. The dashboard's "
-            "[cyan]Copilot POC[/cyan] page shows which of these are still "
-            "missing, and tests the connection once they are not."
+            "A .env file next to pyproject.toml works for 2-4. Section 4 of "
+            "HERMES_Local_Assistant_COMPLETE.html has the full setup, the "
+            "scopes and the service limits."
         )
         raise typer.Exit(code=2)
 

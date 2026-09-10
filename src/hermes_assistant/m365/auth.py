@@ -41,17 +41,6 @@ GRAPH_BASE = "https://graph.microsoft.com"
 # to read someone's mail is not a thing to collect casually.
 RETRIEVAL_SCOPES = ("Files.Read.All", "Sites.Read.All")
 CONNECTOR_SCOPES = ("ExternalItem.Read.All",)
-CHAT_SCOPES = (
-    "Sites.Read.All",
-    "Mail.Read",
-    "People.Read.All",
-    "OnlineMeetingTranscript.Read.All",
-    "Chat.Read",
-    "ChannelMessage.Read.All",
-    "ExternalItem.Read.All",
-)
-
-
 class M365AuthError(RuntimeError):
     """Sign-in could not be completed."""
 
@@ -64,14 +53,17 @@ def _token_cache_path() -> Path:
     return Path(settings.data_dir) / "m365_token_cache.json"
 
 
-def scopes_for(data_source: str | None = None, *, chat: bool = False) -> list[str]:
+def scopes_for(data_source: str | None = None) -> list[str]:
     """The scope set a given call needs.
 
     Kept as a function rather than a constant so the connector scope is only
     requested when a connector is actually being queried.
+
+    There is no chat variant any more, and that is the point: the scopes this
+    can ask for are read scopes over files and sites. Mail, chat messages and
+    meeting transcripts are no longer requestable, so no consent screen can
+    grant them and no future call site can quietly start using them.
     """
-    if chat:
-        return list(CHAT_SCOPES)
     scopes = list(RETRIEVAL_SCOPES)
     if data_source == "externalItem":
         scopes += list(CONNECTOR_SCOPES)

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from hermes_assistant.agents import panel_eval as panel_eval_module
@@ -1277,11 +1278,23 @@ def tui() -> None:
 def _require_m365() -> None:
     """Refuse unless the integration was deliberately enabled."""
     if not settings.m365_enabled:
+        # All four preconditions, not three. Naming only the environment
+        # variables sent people into the next failure one at a time: enable,
+        # then discover msal is missing, then discover the ids are wrong.
         console.print(
             "[red]error[/red] The Microsoft 365 integration is off. "
-            "Everything else in HERMES stays on this machine; these commands do "
-            "not. Enable deliberately with HERMES_M365_ENABLED=1 and set "
-            "HERMES_M365_TENANT_ID / HERMES_M365_CLIENT_ID."
+            "Everything else in HERMES stays on this machine; these commands "
+            "do not.\n\n"
+            # Rich parses [m365] as a style tag and swallows it, which turned
+            # this line into `pip install -e "."` — the one command that
+            # would NOT fix the problem it is printed for.
+            "  1. pip install -e \".\\[m365]\"\n"
+            "  2. HERMES_M365_ENABLED=1\n"
+            "  3. HERMES_M365_TENANT_ID=<Directory (tenant) ID, a GUID>\n"
+            "  4. HERMES_M365_CLIENT_ID=<Application (client) ID, a GUID>\n\n"
+            "A .env file next to pyproject.toml works for 2-4. Section 4 of "
+            "HERMES_Local_Assistant_COMPLETE.html has the full setup, the "
+            "scopes and the service limits."
         )
         raise typer.Exit(code=2)
 
@@ -1296,7 +1309,7 @@ def m365_login() -> None:
     try:
         auth.token(list(CHAT_SCOPES), interactive=True)
     except M365AuthError as exc:
-        console.print(f"[red]sign-in failed[/red] {exc}")
+        console.print(f"[red]sign-in failed[/red] {escape(str(exc))}")
         raise typer.Exit(code=1) from exc
     console.print("[green]signed in[/green] token cached at "
                   f"{auth.cache_path} (mode 0600)")

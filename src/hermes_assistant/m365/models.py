@@ -87,31 +87,3 @@ class RetrievalResult(BaseModel):
     @property
     def extract_count(self) -> int:
         return sum(len(h.extracts) for h in self.retrieval_hits)
-
-
-class ChatAttribution(BaseModel):
-    """Where Copilot says an answer came from.
-
-    The reason the Chat API is usable for state capture at all: an unsourced
-    summary of a project is not evidence, and these are what make a claim
-    checkable against the document it came from.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    attribution_type: str | None = Field(default=None, alias="attributionType")
-    provider_display_name: str | None = Field(
-        default=None, alias="providerDisplayName"
-    )
-    see_more_web_url: str | None = Field(default=None, alias="seeMoreWebUrl")
-
-
-class ChatAnswer(BaseModel):
-    """One assistant turn, flattened out of the conversation envelope."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    conversation_id: str = ""
-    text: str = ""
-    attributions: list[ChatAttribution] = Field(default_factory=list)
-    turn_count: int | None = None

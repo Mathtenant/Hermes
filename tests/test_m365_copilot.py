@@ -287,88 +287,6 @@ def test_a_graph_error_message_reaches_the_caller() -> None:
 # --------------------------------------------------------------------------- #
 
 _CONVERSATION = {"id": "conv-1"}
-_ANSWER = {
-    "id": "conv-1",
-    "turnCount": 1,
-    "messages": [
-        {"@odata.type": "#microsoft.graph.copilotUserMessage", "text": "Frage"},
-        {
-            "@odata.type": "#microsoft.graph.copilotResponseMessage",
-            "text": "Die Abnahme ist am 30.09.",
-            "attributions": [
-                {
-                    "attributionType": "file",
-                    "providerDisplayName": "Protokoll.docx",
-                    "seeMoreWebUrl": "https://contoso.sharepoint.com/x",
-                }
-            ],
-        },
-    ],
-}
-
-
-def test_chat_opens_a_conversation_then_posts_the_turn() -> None:
-    client, session, _ = _client(_Resp(201, _CONVERSATION), _Resp(200, _ANSWER))
-    client.chat("Frage")
-    assert session.calls[0]["url"].endswith("/copilot/conversations")
-    assert session.calls[1]["url"].endswith("/copilot/conversations/conv-1/chat")
-
-
-def test_chat_reuses_a_conversation_when_given_one() -> None:
-    """Continuing a thread must not cost an extra round trip."""
-    client, session, _ = _client(_Resp(200, _ANSWER))
-    client.chat("Zweite Frage", conversation_id="conv-9")
-    assert len(session.calls) == 1
-    assert session.calls[0]["url"].endswith("/copilot/conversations/conv-9/chat")
-
-
-def test_chat_sends_the_documented_message_shape() -> None:
-    client, session, _ = _client(_Resp(200, _ANSWER))
-    client.chat("Frage", conversation_id="c", time_zone="W. Europe Standard Time")
-    body = session.calls[0]["json"]
-    assert body["message"]["text"] == "Frage"
-    assert body["locationHint"]["timeZone"] == "W. Europe Standard Time"
-
-
-def test_additional_context_is_wrapped_per_item() -> None:
-    client, session, _ = _client(_Resp(200, _ANSWER))
-    client.chat("Frage", conversation_id="c", additional_context=["A", "B"])
-    assert session.calls[0]["json"]["additionalContext"] == [
-        {"text": "A"},
-        {"text": "B"},
-    ]
-
-
-def test_chat_returns_the_assistant_turn_not_the_prompt() -> None:
-    """The response carries the whole thread, the user's own message included."""
-    client, _, _ = _client(_Resp(200, _ANSWER))
-    answer = client.chat("Frage", conversation_id="conv-1")
-    assert answer.text == "Die Abnahme ist am 30.09."
-
-
-def test_chat_keeps_the_attributions() -> None:
-    """An unsourced summary of a project is not evidence."""
-    client, _, _ = _client(_Resp(200, _ANSWER))
-    answer = client.chat("Frage", conversation_id="conv-1")
-    assert answer.attributions[0].provider_display_name == "Protokoll.docx"
-    assert answer.attributions[0].see_more_web_url.endswith("/x")
-
-
-def test_chat_carries_the_conversation_id_back_for_the_next_turn() -> None:
-    client, _, _ = _client(_Resp(200, _ANSWER))
-    assert client.chat("Frage", conversation_id="conv-1").conversation_id == "conv-1"
-
-
-def test_an_empty_chat_message_is_refused() -> None:
-    client, _, _ = _client()
-    with pytest.raises(ValueError):
-        client.chat("  ")
-
-
-def test_a_conversation_without_an_id_is_an_error() -> None:
-    client, _, _ = _client(_Resp(201, {}))
-    with pytest.raises(CopilotAPIError, match="without an id"):
-        client.chat("Frage")
 
 
 # --------------------------------------------------------------------------- #
@@ -385,13 +303,6 @@ def test_retrieval_asks_only_for_file_scopes() -> None:
 
 def test_querying_a_connector_adds_the_connector_scope() -> None:
     assert "ExternalItem.Read.All" in scopes_for(data_source="externalItem")
-
-
-def test_chat_asks_for_the_wider_grounding_scopes() -> None:
-    """Chat grounds across mail, chat and meetings, so it needs more."""
-    scopes = scopes_for(chat=True)
-    assert "Mail.Read" in scopes
-    assert "ChannelMessage.Read.All" in scopes
 
 
 def test_the_client_never_requests_an_interactive_sign_in() -> None:
@@ -423,7 +334,7 @@ def test_the_m365_integration_is_off_by_default() -> None:
     assert Settings().m365_enabled is False
 
 
-@pytest.mark.parametrize("command", ["m365-retrieve", "m365-chat", "m365-login"])
+@pytest.mark.parametrize("command", ["m365-retrieve", "m365-login"])
 def test_the_commands_refuse_while_the_integration_is_off(command: str) -> None:
     from typer.testing import CliRunner
 

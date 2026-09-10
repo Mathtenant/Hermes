@@ -1370,7 +1370,6 @@ def m365_retrieve(
             console.print(f"  [dim]({score}{pages})[/dim] {extract.text.strip()[:400]}")
 
 
-@app.command(name="m365-chat")
 def m365_chat(
     message: str = typer.Argument(..., help="What to ask Copilot."),
     conversation: str = typer.Option("", "--conversation", "-c", help="Continue an existing conversation id."),

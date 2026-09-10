@@ -23,8 +23,6 @@ from hermes_assistant.m365.models import (
     DATA_SOURCES,
     MAX_QUERY_CHARS,
     MAX_RESULTS,
-    ChatAnswer,
-    ChatAttribution,
     RetrievalResult,
 )
 
@@ -50,7 +48,7 @@ class CopilotThrottledError(CopilotAPIError):
 
 
 class CopilotClient:
-    """Talks to ``/copilot/retrieval`` and ``/copilot/conversations``.
+    """Talks to ``/copilot/retrieval``, and to nothing else.
 
     ``api_version`` defaults to beta: at the time of writing the Chat API is
     beta-only, and pinning one version for both keeps a POC from silently
@@ -194,55 +192,6 @@ class CopilotClient:
         )
         return RetrievalResult.model_validate(data)
 
-    # ------------------------------------------------------------------ #
-    # Chat
-    # ------------------------------------------------------------------ #
-    def start_conversation(self) -> str:
-        """Open a conversation and return its id."""
-        data = self._post("/copilot/conversations", {}, scopes_for(chat=True))
-        conversation_id = data.get("id")
-        if not isinstance(conversation_id, str) or not conversation_id:
-            raise CopilotAPIError("Conversation was created without an id")
-        return conversation_id
-
-    def chat(
-        self,
-        text: str,
-        *,
-        conversation_id: str | None = None,
-        additional_context: list[str] | None = None,
-        time_zone: str | None = None,
-    ) -> ChatAnswer:
-        """Send one turn and return Copilot's reply.
-
-        Text answers only. The Chat API cannot create a file, send mail, run
-        code, or start a long task — so this is the right tool for reading the
-        tenant's state back out, and the wrong one for producing a deliverable.
-        Document generation stays in the interactive Copilot UI.
-
-        Passing ``conversation_id`` continues an existing thread; omitting it
-        opens a new one, which costs an extra round trip.
-        """
-        text = (text or "").strip()
-        if not text:
-            raise ValueError("text must not be empty")
-
-        if conversation_id is None:
-            conversation_id = self.start_conversation()
-
-        payload: dict[str, Any] = {"message": {"text": text}}
-        if additional_context:
-            payload["additionalContext"] = [{"text": c} for c in additional_context]
-        if time_zone:
-            payload["locationHint"] = {"timeZone": time_zone}
-
-        data = self._post(
-            f"/copilot/conversations/{conversation_id}/chat",
-            payload,
-            scopes_for(chat=True),
-        )
-        return _to_answer(data, conversation_id)
-
 
 def _error_detail(resp: requests.Response) -> str:
     """Pull Graph's own message out of an error body, falling back to text."""
@@ -271,42 +220,3 @@ def _check_kql(expression: str) -> None:
             "rejected by the service — it is ignored, and the search silently "
             'widens to the whole tenant. Example: path:"https://host/sites/X/"'
         )
-
-
-def _to_answer(data: dict[str, Any], conversation_id: str) -> ChatAnswer:
-    """Flatten a conversation envelope down to the last assistant turn.
-
-    The response carries the whole thread, user turns included. Callers want
-    the answer, so pick the last message that has text and is not the prompt
-    that was just sent.
-    """
-    messages = data.get("messages")
-    if not isinstance(messages, list):
-        messages = []
-
-    text = ""
-    attributions: list[ChatAttribution] = []
-    for message in reversed(messages):
-        if not isinstance(message, dict):
-            continue
-        odata_type = str(message.get("@odata.type", ""))
-        if "userMessage" in odata_type:
-            continue
-        candidate = message.get("text")
-        if isinstance(candidate, str) and candidate.strip():
-            text = candidate
-            raw = message.get("attributions")
-            if isinstance(raw, list):
-                attributions = [
-                    ChatAttribution.model_validate(a)
-                    for a in raw
-                    if isinstance(a, dict)
-                ]
-            break
-
-    return ChatAnswer(
-        conversation_id=str(data.get("id") or conversation_id),
-        text=text,
-        attributions=attributions,
-        turn_count=data.get("turnCount"),
-    )

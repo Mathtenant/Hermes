@@ -110,3 +110,81 @@ def test_client_default_host_is_loopback() -> None:
     """The client defaults to a loopback Ollama host."""
     host = OllamaClient().host
     assert any(lb in host for lb in _LOOPBACK)
+
+
+# --------------------------------------------------------------------------- #
+# Unidirectional egress
+#
+# The rule, stated once: **pulling content in is allowed; project data going
+# out is not.** HERMES may ask a question of a remote service and read the
+# answer; it may not upload a plan, a risk register or a meeting note.
+#
+# These tests exist because that is exactly the kind of rule that decays into
+# a comment nobody reads. The Chat API was built here and then removed for
+# this reason — a chat turn is a push by construction, since carrying context
+# outward is its entire purpose. What follows makes the removal a property of
+# the code rather than a decision someone has to keep re-making.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_only_remote_call_is_a_retrieval() -> None:
+    """One outbound path, and it is a read.
+
+    Asserted against the Graph paths the client can build, not against a list
+    of function names: a new method that posts somewhere else would be caught,
+    a renamed one would not be a false alarm.
+    """
+    import re as _re
+
+    client_src = (_M365_PKG / "client.py").read_text(encoding="utf-8")
+    paths = set(_re.findall(r'_post\(\s*[fr]?["\']([^"\']+)', client_src))
+    paths |= set(_re.findall(r'_url\(\s*[fr]?["\']([^"\']+)', client_src))
+    assert paths == {"/copilot/retrieval"}, f"unexpected outbound paths: {paths}"
+
+
+def test_the_chat_api_is_gone_and_stays_gone() -> None:
+    """Its absence is the feature. A helpful re-add would silently reopen the
+    one channel that carries project content outward."""
+    from hermes_assistant.m365.client import CopilotClient
+
+    for name in ("chat", "start_conversation"):
+        assert not hasattr(CopilotClient, name), f"CopilotClient.{name} is back"
+
+    src = (_M365_PKG / "client.py").read_text(encoding="utf-8")
+    assert "/copilot/conversations" not in src
+
+
+def test_no_scope_grants_more_than_reading_files_and_sites() -> None:
+    """A scope is a promise to the person consenting.
+
+    Mail, chat messages and meeting transcripts were requested while the Chat
+    API existed. They must not be requestable now: no consent screen can grant
+    what nothing asks for.
+    """
+    from hermes_assistant.m365 import auth
+
+    granted = set()
+    for source in (auth.RETRIEVAL_SCOPES, auth.CONNECTOR_SCOPES):
+        granted |= set(source)
+    granted |= set(auth.scopes_for("sharePoint"))
+    granted |= set(auth.scopes_for("externalItem"))
+
+    forbidden = {
+        "Mail.Read", "Chat.Read", "ChannelMessage.Read.All",
+        "OnlineMeetingTranscript.Read.All", "People.Read.All",
+    }
+    assert not (granted & forbidden), f"outbound-capable scopes: {granted & forbidden}"
+    assert not hasattr(auth, "CHAT_SCOPES")
+
+
+def test_nothing_writes_to_graph() -> None:
+    """Read verbs only. A PUT, PATCH or DELETE against Graph would mean HERMES
+    had started changing the tenant rather than reading it."""
+    import re as _re
+
+    src = (_M365_PKG / "client.py").read_text(encoding="utf-8")
+    verbs = set(_re.findall(r"self\._session\.(\w+)\(", src))
+    # requests.Session() is a constructor, not a verb — matching it made this
+    # test fail on the very code it is meant to approve.
+    verbs |= {v for v in _re.findall(r"requests\.([a-z]\w+)\(", src)}
+    assert verbs <= {"post", "get"}, f"non-read verbs against Graph: {verbs}"

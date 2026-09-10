@@ -1,9 +1,10 @@
 """E2E browser tests for the risk lifecycle (Phase 4c).
 
-The dashboard frontend currently exposes risks only as a read-only count
-(``data-testid="risks-count"``) plus the chat assistant, which can create a
-risk via the ``create_risk`` intent. There is no dedicated risk-management
-panel (owner assignment, status transitions, source filtering) in the UI yet
+The dashboard frontend exposes risks through the chat assistant, which can
+create one via the ``create_risk`` intent, and — while the Risks screen is
+hidden from the sidebar — nowhere else: the count that used to be readable off
+a badge is now read from ``/api/dashboard``. There is no dedicated
+risk-management panel (owner assignment, status transitions, source filtering)
 — those scenarios are written against the real backend routes they would use
 once the panel ships, and ``pytest.skip`` with a clear reason if the expected
 UI hook is absent, rather than asserting against fabricated selectors.
@@ -19,6 +20,8 @@ import pytest
 
 pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import Page  # noqa: E402
+
+from tests.e2e.hidden_screens import risk_count  # noqa: E402
 
 pytestmark = pytest.mark.e2e
 
@@ -39,8 +42,13 @@ def _require_server():
 
 @pytest.fixture
 def dashboard(page: Page) -> Page:
+    """Overview, loaded.
+
+    Readiness used to be "the risk badge is on screen". Hiding the Risks
+    screen removed the badge, so it is the hero the Overview always renders.
+    """
     page.goto(f"{BASE_URL}/#/overview")
-    page.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
+    page.wait_for_selector(".hero-label", timeout=10000)
     return page
 
 
@@ -50,7 +58,7 @@ def dashboard(page: Page) -> Page:
 
 
 def test_create_risk_via_chat_increments_dashboard_count(dashboard: Page):
-    before = int(dashboard.locator('[data-testid="risks-count"]').inner_text() or "0")
+    before = risk_count(dashboard, BASE_URL)
 
     dashboard.wait_for_selector("#chat-widget", timeout=5000)
     dashboard.locator(".chat-input").fill(
@@ -59,11 +67,7 @@ def test_create_risk_via_chat_increments_dashboard_count(dashboard: Page):
     dashboard.locator(".chat-send").click()
     dashboard.wait_for_selector(".chat-messages div", timeout=5000)
 
-    # Refresh dashboard data to observe the new risk.
-    dashboard.goto(f"{BASE_URL}/#/overview")
-    dashboard.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
-    after = int(dashboard.locator('[data-testid="risks-count"]').inner_text() or "0")
-    assert after >= before
+    assert risk_count(dashboard, BASE_URL) >= before
 
 
 # ---------------------------------------------------------------------------

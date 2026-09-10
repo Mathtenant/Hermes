@@ -22,6 +22,8 @@ import pytest
 pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import Page  # noqa: E402
 
+from tests.e2e.hidden_screens import require_screen  # noqa: E402
+
 pytestmark = pytest.mark.e2e
 
 BASE_URL = "http://localhost:8000"
@@ -42,6 +44,8 @@ def _require_server():
 def _open_tab(page: Page, tab: str) -> None:
     page.goto(BASE_URL)
     page.wait_for_selector(".nav-btn", timeout=10000)
+    # Both tabs live on Timeline & WBS, which currently ships hidden.
+    require_screen(page, "detail")
     page.click('[data-testid="nav-detail"]')
     page.click(f'button.tab-btn:has-text("{tab}")')
 
@@ -218,6 +222,7 @@ def test_status_change_survives_a_reload(board_page: Page):
 
     board_page.goto(BASE_URL)
     board_page.wait_for_selector(".nav-btn", timeout=10000)
+    require_screen(board_page, "detail")
     board_page.click('[data-testid="nav-detail"]')
     board_page.click('button.tab-btn:has-text("Kanban")')
     board_page.wait_for_selector(".kanban-board", timeout=5000)

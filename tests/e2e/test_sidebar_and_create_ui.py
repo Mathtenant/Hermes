@@ -74,6 +74,19 @@ def _nav(page: Page) -> list[str]:
     return [t.strip() for t in page.locator(".nav-btn span:nth-child(2)").all_text_contents()]
 
 
+def _movable(page: Page) -> tuple[str, str]:
+    """The last sidebar row, as ``(key, label)``.
+
+    These tests need one row that is not the first, so Alt+ArrowUp has
+    somewhere to go. They used to name Risks — which stopped being in the
+    sidebar the day that screen was hidden, for a reason with nothing to do
+    with reordering. Reading the row off what is actually rendered keeps them
+    about the order whichever screens ship.
+    """
+    key = page.locator(".nav-btn").last.get_attribute("data-testid")
+    return key.removeprefix("nav-"), _nav(page)[-1]
+
+
 # --------------------------------------------------------------------------- #
 # Rename
 # --------------------------------------------------------------------------- #
@@ -114,13 +127,14 @@ def test_the_old_route_key_still_resolves(app_page: Page):
 
 def test_alt_arrow_moves_the_focused_item(app_page: Page):
     """Drag is not the only way in — the order must be reachable by keyboard."""
+    key, label = _movable(app_page)
     before = _nav(app_page)
-    app_page.locator('[data-testid="nav-risks"]').focus()
+    app_page.locator(f'[data-testid="nav-{key}"]').focus()
     app_page.keyboard.press("Alt+ArrowUp")
     app_page.wait_for_timeout(300)
     after = _nav(app_page)
     assert after != before
-    assert after.index("Risks") == before.index("Risks") - 1
+    assert after.index(label) == before.index(label) - 1
 
 
 def test_alt_arrow_down_moves_the_other_way(app_page: Page):
@@ -151,7 +165,8 @@ def test_dragging_reorders(app_page: Page):
 
 
 def test_the_order_survives_a_reload(app_page: Page):
-    app_page.locator('[data-testid="nav-risks"]').focus()
+    key, _label = _movable(app_page)
+    app_page.locator(f'[data-testid="nav-{key}"]').focus()
     app_page.keyboard.press("Alt+ArrowUp")
     app_page.wait_for_timeout(300)
     moved = _nav(app_page)
@@ -164,12 +179,13 @@ def test_the_order_survives_a_reload(app_page: Page):
 
 def test_reordering_does_not_break_navigation(app_page: Page):
     """A draggable button still has to behave like a button."""
-    app_page.locator('[data-testid="nav-risks"]').focus()
+    key, label = _movable(app_page)
+    app_page.locator(f'[data-testid="nav-{key}"]').focus()
     app_page.keyboard.press("Alt+ArrowUp")
     app_page.wait_for_timeout(300)
-    app_page.click('[data-testid="nav-risks"]')
+    app_page.click(f'[data-testid="nav-{key}"]')
     app_page.wait_for_timeout(500)
-    assert app_page.locator(".page-title").inner_text().strip() == "Risks"
+    assert app_page.locator(".page-title").inner_text().strip() == label
 
 
 def test_the_shortcut_digits_do_not_move_with_the_rows(app_page: Page):
@@ -180,30 +196,33 @@ def test_the_shortcut_digits_do_not_move_with_the_rows(app_page: Page):
     test hard-coded "6" and broke the moment two screens merged into one, for
     a reason that had nothing to do with what it was testing.
     """
+    key, label = _movable(app_page)
     canonical = _nav(app_page)
-    digit = str(canonical.index("Risks") + 1)
+    digit = str(canonical.index(label) + 1)
 
-    app_page.locator('[data-testid="nav-risks"]').focus()
+    app_page.locator(f'[data-testid="nav-{key}"]').focus()
     app_page.keyboard.press("Alt+ArrowUp")
     app_page.wait_for_timeout(300)
     app_page.locator("body").click()
     app_page.keyboard.press(digit)
     app_page.wait_for_timeout(500)
-    assert app_page.locator(".page-title").inner_text().strip() == "Risks"
+    assert app_page.locator(".page-title").inner_text().strip() == label
 
 
 def test_an_unknown_stored_key_is_ignored(app_page: Page):
     """A screen removed in a later version must not leave a hole, and one
     added must not vanish."""
+    key, label = _movable(app_page)
     canonical = _nav(app_page)
     app_page.evaluate(
-        "localStorage.setItem('hermes-nav-order',"
-        " JSON.stringify(['risks','gibt-es-nicht','overview']))"
+        "(k) => localStorage.setItem('hermes-nav-order',"
+        " JSON.stringify([k,'gibt-es-nicht','overview']))",
+        key,
     )
     app_page.reload()
     app_page.wait_for_selector(".nav-btn", timeout=10000)
     nav = _nav(app_page)
-    assert nav[0] == "Risks"          # stored order honoured
+    assert nav[0] == label            # stored order honoured
     assert nav[1] == "Overview"
     # Screens absent from the stored list survive, and the bogus key is
     # dropped — compared against the shipped set rather than a written-in

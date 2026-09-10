@@ -20,6 +20,8 @@ import urllib.request  # noqa: E402
 
 from playwright.sync_api import Page  # noqa: E402
 
+from tests.e2e.hidden_screens import require_screen  # noqa: E402
+
 pytestmark = pytest.mark.e2e
 
 BASE_URL = "http://localhost:8000"
@@ -338,6 +340,7 @@ def test_decision_status_is_a_labelled_chip(decisions_page: Page):
 
 def test_decisions_do_not_appear_on_the_kanban_board(decisions_page: Page):
     """A Beschluss is a settled fact, not a work package."""
+    require_screen(decisions_page, "detail")
     decisions_page.click('[data-testid="nav-detail"]')
     decisions_page.click('button.tab-btn:has-text("Kanban")')
     decisions_page.wait_for_selector(".kanban-board", timeout=5000)
@@ -675,6 +678,7 @@ def test_the_detail_screen_no_longer_carries_a_timeline_tab(page: Page):
     status was derived from the date rather than stated by the plan."""
     page.goto(BASE_URL)
     page.wait_for_selector(".nav-btn", timeout=10000)
+    require_screen(page, "detail")
     page.click('[data-testid="nav-detail"]')
     page.wait_for_timeout(600)
     labels = [t.strip() for t in page.locator(".tab-bar .tab-btn").all_text_contents()]

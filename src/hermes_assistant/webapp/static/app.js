@@ -22,6 +22,26 @@ const SCREENS = [
   'overview', 'projects', 'detail', 'work', 'risks', 'reviews',
 ];
 
+// TEMPORARY — screens taken out of the sidebar while the plan is the focus.
+//
+// Deliberately a hide, not a delete. The components, the routes, the
+// endpoints behind them and their tests all stay exactly where they are, so
+// bringing a screen back is emptying this list — one line, no archaeology.
+// That is the difference between "not shown right now" and "removed", and it
+// is worth keeping visible in the code rather than in someone's memory.
+//
+// A hidden key is also unreachable: it is filtered out of the sidebar AND
+// resolves to nothing, so a stale bookmark falls through to the landing
+// screen instead of opening a page with no way back to it.
+const HIDDEN_SCREENS = ['detail', 'risks'];
+
+/** The screens actually offered right now. */
+const VISIBLE_SCREENS = SCREENS.filter((k) => !HIDDEN_SCREENS.includes(k));
+
+// Published for the screens, which load before this file. They read it
+// lazily from inside setup(), which runs after this module has executed.
+window.HERMES_VISIBLE_SCREENS = VISIBLE_SCREENS;
+
 // Retired screen keys → where they live now. Bookmarks and the persisted
 // sidebar order both hold raw keys, so dropping a key without a forwarding
 // address would silently strand them.
@@ -66,7 +86,7 @@ function reconcileOrder(stored, canonical) {
   return [...known, ...canonical.filter((k) => !known.includes(k))];
 }
 
-const navOrder = ref(reconcileOrder(readNavOrder(), SCREENS));
+const navOrder = ref(reconcileOrder(readNavOrder(), VISIBLE_SCREENS));
 
 function persistNavOrder() {
   try {
@@ -539,7 +559,7 @@ function syncHash() {
 /** Map a possibly-retired screen key onto a live one, or '' if unknown. */
 function resolveScreen(screen) {
   const target = SCREEN_ALIASES[screen] || screen;
-  return SCREENS.includes(target) ? target : '';
+  return VISIBLE_SCREENS.includes(target) ? target : '';
 }
 
 function goTo(rawScreen) {
@@ -910,8 +930,12 @@ function onKeydown(e) {
   // items and the help dialog were three copies of this mapping and had
   // already drifted — 4 went to Todo while the help promised Termine &
   // Fristen, and 7 did nothing at all.
+  // VISIBLE_SCREENS, not SCREENS: indexing the full list would leave the
+  // digits of hidden screens as dead keys and push every screen after them
+  // one digit along from what the help dialog — built off the filtered nav —
+  // promises. That is the same drift this derivation was written to end.
   if (/^[1-9]$/.test(e.key)) {
-    const target = SCREENS[Number(e.key) - 1];
+    const target = VISIBLE_SCREENS[Number(e.key) - 1];
     if (target) goTo(target);
     return;
   }
@@ -1000,7 +1024,7 @@ const App = {
         count: counts.value.ablaufplan + counts.value.pendenzen },
       { key: 'risks',     label: 'Risks',     icon: NAV_ICONS.risks,     count: counts.value.risks },
       { key: 'reviews',   label: 'Reviews',   icon: NAV_ICONS.reviews,   count: counts.value.reviews },
-    ]);
+    ].filter((item) => !HIDDEN_SCREENS.includes(item.key)));
 
     // Definitions stay canonical; the user's order is applied on top, so the
     // shortcut digits keep pointing at the same screens however the sidebar is

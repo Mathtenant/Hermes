@@ -115,9 +115,21 @@ const OverviewScreen = {
       return 'low';
     }
 
+    /** Is a screen currently offered? See HIDDEN_SCREENS in app.js.
+     *
+     * Read at call time rather than captured: app.js publishes the list and
+     * loads after this file, so a value read at definition time would always
+     * be undefined. Missing list means "everything is reachable", which is
+     * the right answer for a screen rendered before the app is wired up.
+     */
+    function canReach(key) {
+      const visible = window.HERMES_VISIBLE_SCREENS;
+      return !visible || visible.includes(key);
+    }
+
     return {
       openPendenzen, blockers, openRisks, upcoming, topRisks,
-      urgentPendenzen, isEmpty, scoreBand,
+      urgentPendenzen, isEmpty, scoreBand, canReach,
     };
   },
   template: `
@@ -186,7 +198,11 @@ const OverviewScreen = {
           <section class="card">
             <div class="flex justify-between items-center mb-3">
               <h2 class="text-base font-semibold">Coming up</h2>
-              <button class="btn-link" @click="$emit('navigate', 'detail')">Timeline &rarr;</button>
+              <!-- Hidden while the screen it points at is: see HIDDEN_SCREENS
+                   in app.js. The panel's content still informs; a link that
+                   lands somewhere else would not. -->
+              <button v-if="canReach('detail')" class="btn-link"
+                      @click="$emit('navigate', 'detail')">Timeline &rarr;</button>
             </div>
             <div v-if="!upcoming.length" class="text-sm text-gray-400 py-2">
               Nothing scheduled ahead.
@@ -220,7 +236,8 @@ const OverviewScreen = {
           <section class="card">
             <div class="flex justify-between items-center mb-3">
               <h2 class="text-base font-semibold">Highest-scoring risks</h2>
-              <button class="btn-link" @click="$emit('navigate', 'risks')">Risks &rarr;</button>
+              <button v-if="canReach('risks')" class="btn-link"
+                      @click="$emit('navigate', 'risks')">Risks &rarr;</button>
             </div>
             <div v-if="!topRisks.length" class="text-sm text-gray-400 py-2">
               No risks recorded.

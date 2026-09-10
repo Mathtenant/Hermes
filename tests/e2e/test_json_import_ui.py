@@ -6,6 +6,7 @@ advance past step 1 first — see :func:`_open_paste_step`.
 """
 import json
 import socket
+import uuid
 
 import pytest
 
@@ -178,21 +179,37 @@ class TestJsonImportUI:
         assert page.locator('[data-testid="json-import-modal"]').is_visible()
 
     def test_import_refreshes_dashboard(self, page):
-        """Dashboard data reloads after a successful import."""
-        page.goto(f"{BASE_URL}/#/overview")
-        page.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
-        before = int(page.locator('[data-testid="risks-count"]').text_content() or "0")
+        """Dashboard data reloads after a successful import.
+
+        This one has to be read off the rendered page: that a count changes
+        *without a reload* is the whole property, and asking the API instead
+        would pass whether or not the UI ever refreshed.
+
+        It used to watch the risk badge. Risks is hidden from the sidebar, so
+        it watches Planung's badge and imports a Pendenz to move it. The id is
+        unique per run — a fixed one would update the same row in place on the
+        second run and leave the count where it was.
+        """
+        page.goto(BASE_URL)
+        page.wait_for_selector('[data-testid="nav-work"]', timeout=10000)
+        # An unloaded badge renders "0", which would read as a real count.
+        page.wait_for_selector(".gantt, .empty-state-title", timeout=15000)
+        badge = page.locator('[data-testid="nav-work"] .nav-count')
+        before = int(badge.text_content() or "0")
 
         page.locator('button:has-text("Import JSON")').click()
         page.locator('[data-testid="import-next-btn"]').click()
         page.wait_for_selector('[data-testid="raw-json-input"]', timeout=5000)
-        _submit(page, {"risks": [{"title": "New Risk For Refresh"}]})
+        _submit(page, {"pendenzen": [{
+            "id": f"pd-e2e-refresh-{uuid.uuid4().hex[:8]}",
+            "title": "E2E Import refreshes the badge",
+            "status": "open",
+        }]})
         page.locator("text=Successfully imported").wait_for(timeout=5000)
 
         page.keyboard.press("Escape")
         page.wait_for_timeout(500)
-        after = int(page.locator('[data-testid="risks-count"]').text_content() or "0")
-        assert after > before
+        assert int(badge.text_content() or "0") > before
 
     def test_import_file_upload(self, page, tmp_path):
         """Import via file upload."""

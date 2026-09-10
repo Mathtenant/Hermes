@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import json
 import socket
+import uuid
 
 import pytest
 
 pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import Page  # noqa: E402
+
+from tests.e2e.hidden_screens import risk_count, risk_titles  # noqa: E402
 
 pytestmark = pytest.mark.e2e
 
@@ -100,22 +103,27 @@ def test_paste_missing_entity_type_shows_error_on_submit(import_modal: Page):
 
 
 def test_successful_import_populates_risk_count(import_modal: Page):
+    """The register used to be read off the page; the Risks screen is hidden,
+    so it is read off ``/api/dashboard`` — the same data, one layer down.
+
+    Comparing counts alone would pass on any import at all, so the title is
+    checked too: it is made unique per run because an id-less risk is a new
+    row every time, and a repeat run must not be able to satisfy this from a
+    previous one's leftovers.
+    """
+    title = f"E2E import risk {uuid.uuid4().hex[:8]}"
+    before = risk_count(import_modal, BASE_URL)
+
     next_btn = import_modal.locator('[data-testid="import-next-btn"]')
     if next_btn.count() > 0:
         next_btn.click()
-    before = int(
-        import_modal.locator('[data-testid="risks-count"]').inner_text() or "0"
-    ) if import_modal.locator('[data-testid="risks-count"]').count() else 0
-
     textarea = import_modal.locator('[data-testid="raw-json-input"]')
-    textarea.fill(json.dumps({"risks": [{"title": "E2E import risk"}]}))
+    textarea.fill(json.dumps({"risks": [{"title": title}]}))
     import_modal.locator('[data-testid="import-submit-btn"]').click()
     import_modal.locator("text=Successfully imported").wait_for(timeout=5000)
 
-    import_modal.goto(f"{BASE_URL}/#/overview")
-    import_modal.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
-    after = int(import_modal.locator('[data-testid="risks-count"]').inner_text() or "0")
-    assert after >= before
+    assert risk_count(import_modal, BASE_URL) > before
+    assert title in risk_titles(import_modal, BASE_URL)
 
 
 # ---------------------------------------------------------------------------
@@ -140,14 +148,10 @@ def test_reimport_same_json_does_not_duplicate(page: Page):
         page.locator("text=Successfully imported").wait_for(timeout=5000)
 
     _do_import()
-    page.goto(f"{BASE_URL}/#/overview")
-    page.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
-    count_after_first = int(page.locator('[data-testid="risks-count"]').inner_text() or "0")
+    count_after_first = risk_count(page, BASE_URL)
 
     _do_import()
-    page.goto(f"{BASE_URL}/#/overview")
-    page.wait_for_selector('[data-testid="risks-count"]', timeout=5000)
-    count_after_second = int(page.locator('[data-testid="risks-count"]').inner_text() or "0")
+    count_after_second = risk_count(page, BASE_URL)
 
     # Same fixed id -> the second import updates in place, not a new row.
     assert count_after_second == count_after_first
